@@ -34,8 +34,13 @@ class ConversationRepository:
         return result.scalar_one_or_none()
 
     async def list(self, *, limit: int = 50) -> list[Conversation]:
+        # Tiebreak on id: two updates can land in the same timestamp tick
+        # (seen in practice on fast hardware), which would otherwise make
+        # pagination/ordering non-deterministic for same-instant rows.
         result = await self._session.execute(
-            select(Conversation).order_by(Conversation.updated_at.desc()).limit(limit)
+            select(Conversation)
+            .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 

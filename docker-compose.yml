@@ -11,6 +11,15 @@ services:
       API_V1_PREFIX: /api/v1
       DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
       REDIS_URL: redis://redis:6379/0
+      # Explicit (not left to the config default): the Dockerfile only
+      # copies backend/app, not the whole repo, so the config's "relative
+      # to the repo root" fallback would resolve to a different, surprising
+      # path inside the container. Bind-mounted below to the host's
+      # data/uploads/ so uploads land in the same place as local (non-
+      # Docker) runs and survive container recreation.
+      DOCUMENT_STORAGE_DIR: /data/uploads
+    volumes:
+      - ./data/uploads:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy

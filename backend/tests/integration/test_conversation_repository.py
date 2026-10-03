@@ -6,6 +6,7 @@ docs/development/setup.md. Skips automatically if Postgres is unreachable.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -58,6 +59,13 @@ async def test_list_orders_by_most_recently_updated(db_session: AsyncSession) ->
     repo = ConversationRepository(db_session)
     first = await repo.create(title="first")
     second = await repo.create(title="second")
+    # Windows' clock resolution can be as coarse as ~15ms, so two
+    # back-to-back timestamps can otherwise land in the exact same tick —
+    # this touch would then tie with (not clearly follow) `second`'s
+    # creation timestamp, making the assertion below flaky rather than
+    # actually wrong. A real "most recently updated" list only needs to
+    # get this right at ordinary human-interaction timescales.
+    await asyncio.sleep(0.02)
     await repo.touch(first)
     await db_session.flush()
 

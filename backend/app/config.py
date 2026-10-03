@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
 
+    # Document ingestion (Milestone 3). Stored outside backend/app on
+    # purpose — see app.storage. document_allowed_types holds raw strings
+    # (not DocumentType) so this module stays free of any domain import;
+    # app.documents.validation is what maps/validates them against
+    # DocumentType.
+    document_storage_dir: str = str(_REPO_ROOT / "data" / "uploads")
+    document_max_upload_size_bytes: int = 20 * 1024 * 1024  # 20 MB
+    document_chunk_size: int = 1000  # characters, not tokens — see ADR 005
+    document_chunk_overlap: int = 150  # characters
+    document_allowed_types: list[str] = ["pdf", "docx", "txt", "markdown"]
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -9,11 +9,14 @@ async workers, and eventually containerized/Kubernetes deployment.
 
 **Milestone 0** built the project foundation. **Milestone 1** added a
 production-quality, provider-neutral LLM gateway backed by Groq.
-**Milestone 2** turns that into a real conversational application:
+**Milestone 2** turned that into a real conversational application:
 persisted conversations/messages, prompt management, and model-role
-selection, for both plain and streaming chat. RAG, embeddings, vector
-search, LangGraph, agents, MCP, A2A, and memory beyond plain conversation
-history are **not** implemented yet — see [Roadmap](#roadmap) below.
+selection, for both plain and streaming chat. **Milestone 3** adds document
+intelligence and ingestion — upload, validate, store, extract, normalize,
+and chunk PDF/DOCX/TXT/Markdown files — as the foundation the future RAG
+pipeline will consume. Embeddings, vector search, RAG retrieval, LangGraph,
+agents, MCP, A2A, and memory beyond plain conversation history are **not**
+implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -44,6 +47,19 @@ history are **not** implemented yet — see [Roadmap](#roadmap) below.
   (accumulated), as one assistant message, after completion.
 - `GET /api/v1/conversations`, `GET /api/v1/conversations/{id}` (with
   ordered messages), `DELETE /api/v1/conversations/{id}`.
+- **Document ingestion** (`backend/app/documents/`, `backend/app/storage/`)
+  — upload PDF/DOCX/TXT/Markdown, with layered validation (extension,
+  declared MIME type, magic bytes, size), SHA-256 checksum-based duplicate
+  detection, provider-neutral local file storage, format-specific text
+  extraction (`pypdf`, `python-docx`), conservative normalization, and
+  deterministic, page-aware chunking (`RecursiveChunker`) — all tracked
+  through a `Document`/`DocumentChunk` lifecycle
+  (`uploaded → processing → processed | failed`). A processing failure
+  never loses the upload record or leaves partial chunks behind. See
+  [ADR 005](docs/architecture/decisions/005-document-ingestion.md).
+- `POST /api/v1/documents`, `GET /api/v1/documents`,
+  `GET /api/v1/documents/{id}`, `GET /api/v1/documents/{id}/chunks`,
+  `DELETE /api/v1/documents/{id}`.
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra or API key required) and integration
   tests that skip gracefully when Postgres/Redis/`GROQ_API_KEY` aren't
@@ -54,8 +70,8 @@ history are **not** implemented yet — see [Roadmap](#roadmap) below.
 ## Stack
 
 Python 3.12+ · uv · FastAPI · Pydantic v2 + pydantic-settings · SQLAlchemy
-2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pytest ·
-Ruff · pyright · Docker/Docker Compose · Streamlit
+2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pypdf ·
+python-docx · pytest · Ruff · pyright · Docker/Docker Compose · Streamlit
 
 ## Architecture
 
@@ -69,10 +85,12 @@ for the reasoning.
 backend/app/
   api/            thin HTTP routes + request/response schemas
   core/           logging, middleware, exception handling (security/RBAC reserved)
-  domain/         ORM models (Conversation, Message) + enums (MessageRole)
+  domain/         ORM models (Conversation, Message, Document, DocumentChunk)
+                  + enums (MessageRole, DocumentStatus, DocumentType)
   services/       business logic orchestration
     chat_service.py          conversation lifecycle, prompt, LLM call, persistence
     conversation_service.py  list/get/delete (thin, no LLM concerns)
+    document_service.py      upload/validate/store/extract/normalize/chunk/persist
   prompts/        prompt management — implemented (see ADR 004)
     templates.py     versioned PromptTemplate(s), e.g. the AegisAI system prompt
     builder.py       PromptBuilder: [system, history, new message]
@@ -82,6 +100,16 @@ backend/app/
     schemas.py       ModelRole, ChatMessage, CompletionResponse, StreamChunk
     exceptions.py    typed LLMError hierarchy
     providers/groq.py  the only module allowed to import the `groq` SDK
+  documents/      document ingestion — implemented (see ADR 005)
+    validation.py    extension/MIME/size/magic-byte checks, safe filenames
+    normalization.py conservative whitespace/encoding cleanup
+    chunk_ids.py     deterministic (UUID5) chunk identifiers
+    extractors/      one module per DocumentType: pdf.py (pypdf), docx.py
+                     (python-docx), text.py / markdown.py (no dependency)
+    chunking/        RecursiveChunker: character-based, per-page, overlap-aware
+  storage/        provider-neutral file storage — implemented (see ADR 005)
+    base.py         DocumentStorage interface
+    local.py        LocalFileStorage — the only implementation so far
   rag/            RAG / embeddings / vector search (reserved)
   agents/         LangGraph agents (reserved)
   tools/          tool calling (reserved)
@@ -91,19 +119,24 @@ backend/app/
   observability/  LLMOps observability (reserved)
   workers/        async workers (reserved)
   db/             SQLAlchemy session + Redis client management
-    repositories/   ConversationRepository, MessageRepository — the only
+    repositories/   ConversationRepository, MessageRepository,
+                     DocumentRepository, DocumentChunkRepository — the only
                      code that issues SQLAlchemy queries
 ```
 
 Routes never contain business logic or database queries; they delegate to
-`services/`, which depends on `prompts/`, `llm/`, and `db/`. The LLM call
-chain is strictly `api -> service -> LLMGateway -> LLMProvider interface ->
-GroqProvider -> groq SDK` — nothing above `providers/groq.py` ever imports
-`groq`, and nothing outside `db/repositories/` builds a SQLAlchemy query.
-See [docs/architecture/system-design.md](docs/architecture/system-design.md)
+`services/`, which depends on `prompts/`, `llm/`, `documents/`, `storage/`,
+and `db/`. The LLM call chain is strictly `api -> service -> LLMGateway ->
+LLMProvider interface -> GroqProvider -> groq SDK` — nothing above
+`providers/groq.py` ever imports `groq`; nothing outside
+`documents/extractors/` imports `pypdf`/`docx`; nothing outside `storage/`
+touches the filesystem; nothing outside `db/repositories/` builds a
+SQLAlchemy query. See
+[docs/architecture/system-design.md](docs/architecture/system-design.md)
 for the full picture and
 [docs/architecture/data-flow.md](docs/architecture/data-flow.md) for the
-readiness-check, chat/streaming, and conversation-retrieval data flows.
+readiness-check, chat/streaming, conversation-retrieval, and
+document-ingestion data flows.
 
 ## Quickstart
 
@@ -141,6 +174,16 @@ curl http://localhost:8000/api/v1/conversations
 curl http://localhost:8000/api/v1/conversations/<id>
 ```
 
+Document upload doesn't need `GROQ_API_KEY` at all:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/documents -F "file=@/path/to/a.pdf"
+
+curl http://localhost:8000/api/v1/documents
+curl http://localhost:8000/api/v1/documents/<id>
+curl http://localhost:8000/api/v1/documents/<id>/chunks
+```
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
 every endpoint — chat requests respond with a `503 llm_unavailable` instead
 (and persist nothing, per the atomic-turn design — see
@@ -171,12 +214,13 @@ all available targets (`run`, `docker-up`, `migrate`, ...).
 
 ## Roadmap
 
-Milestone 0 (foundation), Milestone 1 (LLM gateway), and Milestone 2
-(conversational chat + persistence) are done. Remaining, in rough order,
-each as its own milestone: RAG / embeddings / vector search → LangGraph
-agents & tool calling → MCP → multi-agent workflows (A2A) → memory beyond
-conversation history → evaluation → security/RBAC → observability/LLMOps →
-async workers → Kubernetes → multimodal/voice.
+Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
+(conversational chat + persistence), and Milestone 3 (document ingestion)
+are done. Remaining, in rough order, each as its own milestone: embeddings
+& vector search → RAG retrieval → LangGraph agents & tool calling → MCP →
+multi-agent workflows (A2A) → memory beyond conversation history →
+evaluation → security/RBAC → observability/LLMOps → async workers →
+Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

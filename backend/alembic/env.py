@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.db.base import Base
 
 # Imported so Base.metadata is complete for autogenerate support.
-from app.domain.models import Conversation, Message  # noqa: F401
+from app.domain.models import Conversation, Document, DocumentChunk, Message  # noqa: F401
 
 config = context.config
 

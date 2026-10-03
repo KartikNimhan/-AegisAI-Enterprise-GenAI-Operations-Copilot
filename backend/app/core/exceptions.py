@@ -9,6 +9,7 @@ from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.documents.exceptions import DocumentValidationError
 from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMError,
@@ -85,6 +86,16 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, code="http_error", message=detail),
+        )
+
+    @app.exception_handler(DocumentValidationError)
+    async def handle_document_validation_error(
+        request: Request, exc: DocumentValidationError
+    ) -> JSONResponse:
+        logger.warning("document_validation_error", error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=_error_payload(request, code="document_validation_error", message=str(exc)),
         )
 
     @app.exception_handler(LLMRateLimitError)

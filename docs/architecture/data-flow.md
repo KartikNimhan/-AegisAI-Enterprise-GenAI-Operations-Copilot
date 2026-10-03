@@ -178,10 +178,82 @@ Returned as `ConversationDetail` (`id`, `title`, `created_at`,
 /api/v1/conversations` and `DELETE /api/v1/conversations/{id}` follow the
 same thin API -> service -> repository path.
 
+## `POST /api/v1/documents` (upload)
+
+```
+Client
+   │  POST /api/v1/documents  (multipart/form-data)
+   ▼
+api/v1/documents.py (upload_document)
+   │  bounded read: file.read(max_size + 1) — never buffers more than
+   │  that, regardless of what the client claims or sends
+   ▼
+services/document_service.py (DocumentService.upload)
+   │  1. sanitize_filename, determine_document_type, validate_size,
+   │     validate_content_type, validate_magic_bytes
+   │     (any failure here -> DocumentValidationError -> HTTP 400,
+   │      nothing stored, nothing in the database)
+   │  2. compute SHA-256 checksum
+   │  3. look up by checksum — a match returns the EXISTING document
+   │     immediately (is_duplicate: true, HTTP 200, no new storage or
+   │     processing)
+   │  4. _create_and_store: insert Document(status=UPLOADED), flush to
+   │     get its id, save the raw bytes via DocumentStorage keyed by
+   │     that id, COMMIT  <-- first of two commits, see below
+   │  5. _process: status -> PROCESSING, then:
+   ▼
+documents/extractors/{pdf,docx,text,markdown}.py (via get_extractor)
+   │  the only code allowed to import pypdf / python-docx
+   │  returns ExtractionResult(pages=[...], metadata={...})
+   │  (offloaded via asyncio.to_thread — CPU-bound, not I/O)
+   ▼
+documents/normalization.py (normalize_text, per page)
+   ▼
+documents/metadata.py (build_document_metadata)
+   ▼
+documents/chunking/recursive.py (RecursiveChunker.chunk, per page)
+   │  deterministic chunk ids via documents/chunk_ids.py
+   ▼
+db/repositories/document_chunk_repository.py (add_all, inside a SAVEPOINT)
+   │  status -> PROCESSED (+ chunks) or FAILED (+ safe error_message,
+   │  no chunks — the SAVEPOINT rolls back just the failed chunk insert,
+   │  not the UPLOADED row from step 4), COMMIT  <-- second commit
+   ▼
+PostgreSQL + local disk (data/uploads/, via DocumentStorage)
+```
+
+**Why two commits, not one** (unlike the chat flow above, which is
+strictly one commit per request): by the time processing could fail, the
+file is already durably on disk and the upload itself succeeded. The
+`Document` row must survive that outcome either way — see
+[ADR 005](decisions/005-document-ingestion.md) for the full reasoning,
+including a cross-clock-source bug this design surfaced and fixed.
+
+**Error path**: validation errors (step 1) are the only ones that become
+an HTTP 4xx — they happen before anything is stored. Everything after
+storage (extraction, normalization, chunking, persistence) is caught
+inside `DocumentService._process` and recorded as `status: "failed"` with
+a safe `error_message`; the HTTP response is still `201 Created`, since
+the upload itself succeeded. The client discovers a processing failure by
+reading the returned (or later re-fetched) document's `status`, not via an
+error response.
+
+## `GET /api/v1/documents/{document_id}` and `.../chunks`
+
+Same thin API -> `DocumentService` -> repository path as conversations,
+returning `DocumentResponse` / paginated `DocumentChunkResponse` — never
+the raw ORM object, and never `Document.filename` (the internal storage
+key); only `original_filename`. `DELETE /api/v1/documents/{document_id}`
+deletes the database row first (cascading to chunks via
+`ON DELETE CASCADE`), then the stored file — if file deletion fails, it's
+logged but doesn't fail the request, since the record (the API's source of
+truth) is already gone.
+
 ## Future data flows
 
-Once RAG and agents are implemented, this document will describe:
-ingestion (document → chunking → embedding → pgvector) and retrieval (query
-→ embedding → similarity search → context assembly feeding into the chat
-flow above). Neither exists yet; adding it here ahead of the code would
-misrepresent the current system.
+Once embeddings, vector search, RAG, and agents are implemented, this
+document will describe: embedding generation (chunk → embedding model →
+vector → pgvector column) and retrieval (query → embedding → similarity
+search → context assembly feeding into the chat flow above). None of that
+exists yet; adding it here ahead of the code would misrepresent the
+current system.

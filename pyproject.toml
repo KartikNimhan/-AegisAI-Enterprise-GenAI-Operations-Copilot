@@ -16,6 +16,9 @@ dependencies = [
     "redis>=5.2",
     "structlog>=24.4",
     "groq>=1.7,<2",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]
