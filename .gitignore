@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Testing & tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+htmlcov/
+.coverage
+coverage.xml
+
+# Alembic (keep versions, ignore local sqlite if ever used)
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Data (keep directory structure, ignore contents)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/evaluation/*
+!data/evaluation/.gitkeep
+
+# Logs
+*.log
