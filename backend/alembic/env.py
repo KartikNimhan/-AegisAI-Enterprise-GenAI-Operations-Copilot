@@ -11,9 +11,8 @@ from alembic import context
 from app.config import get_settings
 from app.db.base import Base
 
-# Import domain models here as they are added, so Base.metadata is complete
-# for autogenerate support, e.g.:
-#   from app.domain.models import *  # noqa: F401,F403
+# Imported so Base.metadata is complete for autogenerate support.
+from app.domain.models import Conversation, Message  # noqa: F401
 
 config = context.config
 

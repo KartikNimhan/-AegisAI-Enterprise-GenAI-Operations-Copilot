@@ -46,6 +46,11 @@ class ServiceUnavailableError(AppError):
         )
 
 
+class NotFoundError(AppError):
+    def __init__(self, message: str = "Resource not found") -> None:
+        super().__init__(message, status_code=status.HTTP_404_NOT_FOUND, code="not_found")
+
+
 def _error_payload(request: Request, *, code: str, message: str) -> dict[str, Any]:
     return {
         "error": {

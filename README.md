@@ -7,10 +7,13 @@ embeddings/vector search, LangGraph agents, tool calling, MCP, multi-agent
 workflows (A2A), memory, evaluation, security/RBAC, observability/LLMOps,
 async workers, and eventually containerized/Kubernetes deployment.
 
-**Milestone 0** built the project foundation. **Milestone 1** adds a
-production-quality, provider-neutral LLM gateway backed by Groq. RAG,
-agents, LangGraph, MCP, A2A, memory, and document processing are **not**
-implemented yet — see [Roadmap](#roadmap) below.
+**Milestone 0** built the project foundation. **Milestone 1** added a
+production-quality, provider-neutral LLM gateway backed by Groq.
+**Milestone 2** turns that into a real conversational application:
+persisted conversations/messages, prompt management, and model-role
+selection, for both plain and streaming chat. RAG, embeddings, vector
+search, LangGraph, agents, MCP, A2A, and memory beyond plain conversation
+history are **not** implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -29,8 +32,18 @@ implemented yet — see [Roadmap](#roadmap) below.
   (`primary` / `fast` / `safety`), sync and streaming (SSE) completion,
   typed errors, retries with backoff, and secret-free structured logging.
   See [ADR 002](docs/architecture/decisions/002-llm-gateway.md).
+- **Persisted conversations** (`backend/app/domain/models/`,
+  `backend/app/db/repositories/`) — `Conversation`/`Message` tables, a
+  repository layer, and a `PromptBuilder` (`backend/app/prompts/`) that
+  assembles `[system, history, new message]` from a versioned system
+  prompt. A chat turn (user message + assistant reply) is persisted
+  atomically — if the LLM call fails, nothing is saved for that turn. See
+  [ADR 004](docs/architecture/decisions/004-conversation-persistence.md).
 - `POST /api/v1/chat/completions` and `POST /api/v1/chat/completions/stream`
-  — thin dev endpoints exercising the gateway end to end.
+  — create or continue a conversation, streamed responses persisted once
+  (accumulated), as one assistant message, after completion.
+- `GET /api/v1/conversations`, `GET /api/v1/conversations/{id}` (with
+  ordered messages), `DELETE /api/v1/conversations/{id}`.
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra or API key required) and integration
   tests that skip gracefully when Postgres/Redis/`GROQ_API_KEY` aren't
@@ -56,8 +69,13 @@ for the reasoning.
 backend/app/
   api/            thin HTTP routes + request/response schemas
   core/           logging, middleware, exception handling (security/RBAC reserved)
-  domain/         shared domain models/enums (empty until first persisted entity)
-  services/       business logic orchestration (chat_service.py implemented)
+  domain/         ORM models (Conversation, Message) + enums (MessageRole)
+  services/       business logic orchestration
+    chat_service.py          conversation lifecycle, prompt, LLM call, persistence
+    conversation_service.py  list/get/delete (thin, no LLM concerns)
+  prompts/        prompt management — implemented (see ADR 004)
+    templates.py     versioned PromptTemplate(s), e.g. the AegisAI system prompt
+    builder.py       PromptBuilder: [system, history, new message]
   llm/            LLM gateway — implemented, Groq-backed (see ADR 002)
     base.py         provider-neutral LLMProvider interface
     gateway.py       LLMGateway: routing, retries, standardized responses
@@ -68,21 +86,24 @@ backend/app/
   agents/         LangGraph agents (reserved)
   tools/          tool calling (reserved)
   mcp/            Model Context Protocol (reserved)
-  memory/         agent/conversation memory (reserved)
+  memory/         agent memory beyond conversation history (reserved)
   evaluation/     evaluation harness (reserved)
   observability/  LLMOps observability (reserved)
   workers/        async workers (reserved)
   db/             SQLAlchemy session + Redis client management
+    repositories/   ConversationRepository, MessageRepository — the only
+                     code that issues SQLAlchemy queries
 ```
 
-Routes never contain business logic; they delegate to `services/`, which
-depends on `llm/`, `domain/`, and `db/`. The LLM call chain is strictly
-`api -> service -> LLMGateway -> LLMProvider interface -> GroqProvider ->
-groq SDK` — nothing above `providers/groq.py` ever imports `groq`. See
-[docs/architecture/system-design.md](docs/architecture/system-design.md)
+Routes never contain business logic or database queries; they delegate to
+`services/`, which depends on `prompts/`, `llm/`, and `db/`. The LLM call
+chain is strictly `api -> service -> LLMGateway -> LLMProvider interface ->
+GroqProvider -> groq SDK` — nothing above `providers/groq.py` ever imports
+`groq`, and nothing outside `db/repositories/` builds a SQLAlchemy query.
+See [docs/architecture/system-design.md](docs/architecture/system-design.md)
 for the full picture and
 [docs/architecture/data-flow.md](docs/architecture/data-flow.md) for the
-readiness-check and chat/streaming data flows.
+readiness-check, chat/streaming, and conversation-retrieval data flows.
 
 ## Quickstart
 
@@ -101,17 +122,30 @@ To run a real Groq request locally, set `GROQ_API_KEY` in `.env` (get one at
 https://console.groq.com/keys), then:
 
 ```bash
+# Starts a new conversation (omit conversation_id)
 curl -X POST http://localhost:8000/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"message": "Say hello in five words.", "model_role": "fast"}'
 
+# Continue it (reuse the conversation_id from the response above)
+curl -X POST http://localhost:8000/api/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id": "<id-from-above>", "message": "Now say it in French.", "model_role": "fast"}'
+
 curl -N -X POST http://localhost:8000/api/v1/chat/completions/stream \
   -H "Content-Type: application/json" \
   -d '{"message": "Count from 1 to 5.", "model_role": "fast"}'
+
+# Review what got persisted
+curl http://localhost:8000/api/v1/conversations
+curl http://localhost:8000/api/v1/conversations/<id>
 ```
 
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
-both endpoints — they respond with a `503 llm_unavailable` instead.
+every endpoint — chat requests respond with a `503 llm_unavailable` instead
+(and persist nothing, per the atomic-turn design — see
+[ADR 004](docs/architecture/decisions/004-conversation-persistence.md)).
+The conversation endpoints work regardless, since they don't call Groq.
 
 Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 
@@ -137,11 +171,12 @@ all available targets (`run`, `docker-up`, `migrate`, ...).
 
 ## Roadmap
 
-Milestone 0 (foundation) and Milestone 1 (LLM gateway) are done. Remaining,
-in rough order, each as its own milestone: RAG / embeddings / vector search
-→ LangGraph agents & tool calling → MCP → multi-agent workflows (A2A) →
-memory → evaluation → security/RBAC → observability/LLMOps → async workers
-→ Kubernetes → multimodal/voice.
+Milestone 0 (foundation), Milestone 1 (LLM gateway), and Milestone 2
+(conversational chat + persistence) are done. Remaining, in rough order,
+each as its own milestone: RAG / embeddings / vector search → LangGraph
+agents & tool calling → MCP → multi-agent workflows (A2A) → memory beyond
+conversation history → evaluation → security/RBAC → observability/LLMOps →
+async workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

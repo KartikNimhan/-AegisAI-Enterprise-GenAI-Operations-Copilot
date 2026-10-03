@@ -15,9 +15,23 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency that yields a request-scoped database session."""
+    """FastAPI dependency that yields a request-scoped database session.
+
+    Commits once, on successful completion of the request, and rolls back
+    on any exception — giving each request a single all-or-nothing unit of
+    work. FastAPI keeps `yield`-dependencies open for the full lifetime of
+    a `StreamingResponse`'s body (verified empirically against this
+    project's FastAPI version), so this applies equally to the streaming
+    chat endpoint: the commit only happens after the stream, including any
+    post-stream persistence, has finished.
+    """
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def check_database(timeout: float = 2.0) -> bool:

@@ -1,1 +1,5 @@
-"""Reserved for shared domain enums, introduced alongside RAG/agent/memory milestones."""
+"""Shared domain enums."""
+
+from app.domain.enums.message_role import MessageRole
+
+__all__ = ["MessageRole"]
