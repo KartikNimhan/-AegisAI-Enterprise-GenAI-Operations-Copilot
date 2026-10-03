@@ -249,11 +249,95 @@ deletes the database row first (cascading to chunks via
 logged but doesn't fail the request, since the record (the API's source of
 truth) is already gone.
 
+## `POST /api/v1/documents/{document_id}/embeddings` (trigger)
+
+```
+Client
+   │  POST /api/v1/documents/{document_id}/embeddings
+   ▼
+api/v1/documents.py (trigger_document_embeddings)
+   │  thin: forwards to the service, wraps the result
+   ▼
+embeddings/service.py (EmbeddingService.embed_document)
+   │  1. load the document; raise NotFoundError (-> HTTP 404) if missing,
+   │     DocumentNotReadyError (-> HTTP 400) if status != PROCESSED
+   │  2. page through its chunks (DocumentChunkRepository.list_by_document,
+   │     EMBEDDING_BATCH_SIZE at a time — never all chunks in memory)
+   │  3. per batch: check which chunk ids already have an embedding for
+   │     the current (model, version) via
+   │     ChunkEmbeddingRepository.get_embedded_chunk_ids — skip those
+   │     (idempotency; no model call, not just no duplicate insert)
+   ▼
+embeddings/providers/local.py (LocalEmbeddingProvider.embed_texts)
+   │  the only module allowed to import sentence_transformers
+   │  offloaded via asyncio.to_thread (CPU-bound, not I/O):
+   │    - lazy model load on first call (cached per process)
+   │    - model.encode(texts, normalize_embeddings=True)
+   │  validates each returned vector's length against the configured
+   │  dimension before returning (-> EmbeddingDimensionMismatchError if not)
+   ▼
+db/repositories/chunk_embedding_repository.py (add_all, inside a SAVEPOINT)
+   │  one ChunkEmbedding row per chunk, stamped with
+   │  provider/model/version/dimension — a batch's persistence failure
+   │  (or an exhausted-retries provider failure) is recorded as
+   │  failed_count for that batch without discarding embeddings already
+   │  committed from earlier batches in the same request
+   ▼
+PostgreSQL (pgvector column)
+```
+
+**Commits once per request** (like the chat flow, unlike document
+ingestion's two commits) — `embed_document` has no durable side effect
+(like a stored file) that must survive a later in-request failure; see
+[ADR 006](decisions/006-embedding-model.md) for why.
+
+**Response**: `EmbeddingTriggerResponse` — document id, provider, model,
+model version, dimension, chunk/batch counts, duration — never a raw
+vector.
+
+## `GET /api/v1/documents/{document_id}/embeddings` (status)
+
+```
+Client
+   │  GET /api/v1/documents/{document_id}/embeddings
+   ▼
+api/v1/documents.py (get_document_embedding_status)
+   ▼
+embeddings/service.py (EmbeddingService.get_embedding_status)
+   │  total chunks vs. embedded chunks (for the current model/version)
+   │  -> "no_chunks" | "not_started" | "partial" | "complete"
+   ▼
+PostgreSQL
+```
+
+Never returns a raw vector — only counts, status, and model metadata.
+
+## Similarity search (foundation, not RAG)
+
+`EmbeddingService.similarity_search(query_text, top_k)` — not yet exposed
+via an API endpoint — embeds the query text with the same provider used
+for storage, then delegates to:
+
+```
+db/repositories/chunk_embedding_repository.py (similarity_search)
+   │  SELECT ... ORDER BY embedding <=> :query_vector LIMIT :top_k
+   │  (pgvector cosine distance, exact — no ANN index yet, see ADR 006)
+   │  filtered to one (embedding_model, embedding_model_version) pair
+   ▼
+PostgreSQL (pgvector column)
+```
+
+Returns chunk id, document id, content, distance, and model metadata.
+Proven against real Postgres with hand-crafted vectors of known cosine
+distance (`tests/integration/test_chunk_embedding_repository.py`) and
+against the real model with a small semantically-varied corpus
+(`tests/integration/test_embedding_model_live.py`, opt-in). No query
+rewriting, filtering, reranking, or context assembly — that's a future
+RAG milestone.
+
 ## Future data flows
 
-Once embeddings, vector search, RAG, and agents are implemented, this
-document will describe: embedding generation (chunk → embedding model →
-vector → pgvector column) and retrieval (query → embedding → similarity
-search → context assembly feeding into the chat flow above). None of that
-exists yet; adding it here ahead of the code would misrepresent the
-current system.
+Once RAG retrieval and agents are implemented, this document will
+describe: query → embedding → similarity search (above) → context
+assembly feeding into the chat flow. None of that exists yet; adding it
+here ahead of the code would misrepresent the current system.

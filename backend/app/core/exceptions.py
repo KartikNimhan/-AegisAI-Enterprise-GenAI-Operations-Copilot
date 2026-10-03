@@ -10,6 +10,11 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.documents.exceptions import DocumentValidationError
+from app.embeddings.exceptions import (
+    DocumentNotReadyError,
+    EmbeddingDimensionMismatchError,
+    EmbeddingProviderError,
+)
 from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMError,
@@ -96,6 +101,41 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=_error_payload(request, code="document_validation_error", message=str(exc)),
+        )
+
+    @app.exception_handler(DocumentNotReadyError)
+    async def handle_document_not_ready_error(
+        request: Request, exc: DocumentNotReadyError
+    ) -> JSONResponse:
+        logger.warning("document_not_ready_for_embedding", error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=_error_payload(request, code="document_not_ready", message=str(exc)),
+        )
+
+    @app.exception_handler(EmbeddingDimensionMismatchError)
+    async def handle_embedding_dimension_mismatch_error(
+        request: Request, exc: EmbeddingDimensionMismatchError
+    ) -> JSONResponse:
+        logger.error("embedding_dimension_mismatch", error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=_error_payload(
+                request, code="embedding_dimension_mismatch", message="Embedding generation failed"
+            ),
+        )
+
+    @app.exception_handler(EmbeddingProviderError)
+    async def handle_embedding_provider_error(
+        request: Request, exc: EmbeddingProviderError
+    ) -> JSONResponse:
+        # Never reflect raw provider/library exception details to the caller.
+        logger.error("embedding_provider_error", error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=_error_payload(
+                request, code="embedding_provider_error", message="Embedding generation failed"
+            ),
         )
 
     @app.exception_handler(LLMRateLimitError)

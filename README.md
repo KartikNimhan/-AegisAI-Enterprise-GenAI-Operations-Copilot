@@ -13,10 +13,13 @@ production-quality, provider-neutral LLM gateway backed by Groq.
 persisted conversations/messages, prompt management, and model-role
 selection, for both plain and streaming chat. **Milestone 3** adds document
 intelligence and ingestion — upload, validate, store, extract, normalize,
-and chunk PDF/DOCX/TXT/Markdown files — as the foundation the future RAG
-pipeline will consume. Embeddings, vector search, RAG retrieval, LangGraph,
-agents, MCP, A2A, and memory beyond plain conversation history are **not**
-implemented yet — see [Roadmap](#roadmap) below.
+and chunk PDF/DOCX/TXT/Markdown files. **Milestone 4** turns those chunks
+into semantic vectors — a provider-neutral embedding pipeline (local
+Sentence Transformers), pgvector storage with multi-model/version support,
+idempotent batch embedding, and a basic similarity-search foundation.
+RAG retrieval, LangGraph, agents, MCP, A2A, and memory beyond plain
+conversation history are **not** implemented yet — see
+[Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -25,8 +28,8 @@ implemented yet — see [Roadmap](#roadmap) below.
 - `GET /health` (liveness) and `GET /health/ready` (readiness: checks
   PostgreSQL and Redis connectivity).
 - Async SQLAlchemy 2.x engine/session wired to PostgreSQL, with Alembic
-  migrations. A migration enables the `pgvector` extension ahead of the RAG
-  milestone (no vector columns or models exist yet).
+  migrations. The `pgvector` extension is enabled and backs the
+  `chunk_embeddings` table's vector column (see Embeddings below).
 - Async Redis connectivity.
 - Consistent JSON error responses for unhandled exceptions and HTTP errors.
 - **An LLM gateway** (`backend/app/llm/`) — a provider-neutral abstraction
@@ -60,10 +63,27 @@ implemented yet — see [Roadmap](#roadmap) below.
 - `POST /api/v1/documents`, `GET /api/v1/documents`,
   `GET /api/v1/documents/{id}`, `GET /api/v1/documents/{id}/chunks`,
   `DELETE /api/v1/documents/{id}`.
+- **Embeddings** (`backend/app/embeddings/`) — a provider-neutral
+  embedding abstraction (`EmbeddingProvider`), backed by a local
+  [Sentence Transformers](https://www.sbert.net/) model
+  (`all-MiniLM-L6-v2`, 384-dim, CPU inference, no API key) as the only
+  implementation. `EmbeddingService` batches chunks, skips work already
+  done (idempotent per chunk/model/version), and persists vectors to a
+  dedicated `chunk_embeddings` table (pgvector), with every row stamped
+  with the exact provider/model/version/dimension that produced it — so a
+  chunk can have embeddings from multiple models at once. A basic,
+  pgvector-cosine-distance similarity-search foundation (not RAG — no
+  retrieval pipeline, reranking, or query rewriting yet) is included and
+  tested against real Postgres. See
+  [ADR 006](docs/architecture/decisions/006-embedding-model.md).
+- `POST /api/v1/documents/{id}/embeddings` (trigger — synchronous,
+  explicit, not automatic on upload), `GET /api/v1/documents/{id}/embeddings`
+  (coverage status) — neither ever returns a raw vector.
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
-- Unit tests (fast, no live infra or API key required) and integration
-  tests that skip gracefully when Postgres/Redis/`GROQ_API_KEY` aren't
-  available, via pytest.
+- Unit tests (fast, no live infra, API key, or embedding model download
+  required) and integration tests that skip gracefully when
+  Postgres/Redis/`GROQ_API_KEY`/the real embedding model aren't available
+  or opted into, via pytest.
 - Ruff (lint + format) and pyright (type checking), both run in CI.
 - A minimal Streamlit page that checks backend connectivity.
 
@@ -71,7 +91,8 @@ implemented yet — see [Roadmap](#roadmap) below.
 
 Python 3.12+ · uv · FastAPI · Pydantic v2 + pydantic-settings · SQLAlchemy
 2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pypdf ·
-python-docx · pytest · Ruff · pyright · Docker/Docker Compose · Streamlit
+python-docx · Sentence Transformers · pytest · Ruff · pyright ·
+Docker/Docker Compose · Streamlit
 
 ## Architecture
 
@@ -85,8 +106,8 @@ for the reasoning.
 backend/app/
   api/            thin HTTP routes + request/response schemas
   core/           logging, middleware, exception handling (security/RBAC reserved)
-  domain/         ORM models (Conversation, Message, Document, DocumentChunk)
-                  + enums (MessageRole, DocumentStatus, DocumentType)
+  domain/         ORM models (Conversation, Message, Document, DocumentChunk,
+                  ChunkEmbedding) + enums (MessageRole, DocumentStatus, DocumentType)
   services/       business logic orchestration
     chat_service.py          conversation lifecycle, prompt, LLM call, persistence
     conversation_service.py  list/get/delete (thin, no LLM concerns)
@@ -110,7 +131,13 @@ backend/app/
   storage/        provider-neutral file storage — implemented (see ADR 005)
     base.py         DocumentStorage interface
     local.py        LocalFileStorage — the only implementation so far
-  rag/            RAG / embeddings / vector search (reserved)
+  embeddings/     text embedding — implemented (see ADR 006)
+    base.py         provider-neutral EmbeddingProvider interface
+    service.py      EmbeddingService: batching, idempotency, persistence
+    schemas.py       EmbeddingJobResult, EmbeddingStatus, SimilarityMatch
+    exceptions.py    typed EmbeddingError hierarchy
+    providers/local.py  the only module allowed to import sentence_transformers
+  rag/            RAG retrieval (reserved)
   agents/         LangGraph agents (reserved)
   tools/          tool calling (reserved)
   mcp/            Model Context Protocol (reserved)
@@ -120,23 +147,27 @@ backend/app/
   workers/        async workers (reserved)
   db/             SQLAlchemy session + Redis client management
     repositories/   ConversationRepository, MessageRepository,
-                     DocumentRepository, DocumentChunkRepository — the only
-                     code that issues SQLAlchemy queries
+                     DocumentRepository, DocumentChunkRepository,
+                     ChunkEmbeddingRepository — the only code that issues
+                     SQLAlchemy queries
 ```
 
 Routes never contain business logic or database queries; they delegate to
 `services/`, which depends on `prompts/`, `llm/`, `documents/`, `storage/`,
-and `db/`. The LLM call chain is strictly `api -> service -> LLMGateway ->
-LLMProvider interface -> GroqProvider -> groq SDK` — nothing above
-`providers/groq.py` ever imports `groq`; nothing outside
-`documents/extractors/` imports `pypdf`/`docx`; nothing outside `storage/`
-touches the filesystem; nothing outside `db/repositories/` builds a
-SQLAlchemy query. See
-[docs/architecture/system-design.md](docs/architecture/system-design.md)
+`embeddings/`, and `db/`. The LLM call chain is strictly
+`api -> service -> LLMGateway -> LLMProvider interface -> GroqProvider ->
+groq SDK`; the embedding call chain is strictly `api -> EmbeddingService ->
+EmbeddingProvider interface -> LocalEmbeddingProvider ->
+sentence_transformers` — nothing above `providers/groq.py` ever imports
+`groq`; nothing outside `documents/extractors/` imports `pypdf`/`docx`;
+nothing outside `embeddings/providers/local.py` imports
+`sentence_transformers`; nothing outside `storage/` touches the
+filesystem; nothing outside `db/repositories/` builds a SQLAlchemy query.
+See [docs/architecture/system-design.md](docs/architecture/system-design.md)
 for the full picture and
 [docs/architecture/data-flow.md](docs/architecture/data-flow.md) for the
-readiness-check, chat/streaming, conversation-retrieval, and
-document-ingestion data flows.
+readiness-check, chat/streaming, conversation-retrieval,
+document-ingestion, and embedding data flows.
 
 ## Quickstart
 
@@ -184,6 +215,15 @@ curl http://localhost:8000/api/v1/documents/<id>
 curl http://localhost:8000/api/v1/documents/<id>/chunks
 ```
 
+Once a document's status is `processed`, generate embeddings for it (the
+first call downloads and caches the ~90MB model, so it's slower than
+subsequent calls):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/documents/<id>/embeddings
+curl http://localhost:8000/api/v1/documents/<id>/embeddings   # coverage status
+```
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
 every endpoint — chat requests respond with a `503 llm_unavailable` instead
 (and persist nothing, per the atomic-turn design — see
@@ -196,8 +236,9 @@ Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 
 ```bash
 uv run pytest       # unit + integration; integration tests skip without live
-                     # Postgres/Redis, and the Groq live test skips without
-                     # a real GROQ_API_KEY — neither is required to pass
+                     # Postgres/Redis, the Groq live test skips without a
+                     # real GROQ_API_KEY, and the embedding live test skips
+                     # unless explicitly opted into — none are required to pass
 uv run ruff check .
 uv run ruff format .
 uv run pyright
@@ -209,18 +250,25 @@ Run the opt-in real Groq test explicitly with:
 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
 ```
 
+Run the opt-in real embedding-model test explicitly with (downloads/loads
+the real Sentence Transformers model):
+
+```bash
+RUN_EMBEDDING_INTEGRATION=1 uv run pytest -m embedding_integration -v
+```
+
 Or `make check` (lint + typecheck + test). See the [Makefile](Makefile) for
 all available targets (`run`, `docker-up`, `migrate`, ...).
 
 ## Roadmap
 
 Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
-(conversational chat + persistence), and Milestone 3 (document ingestion)
-are done. Remaining, in rough order, each as its own milestone: embeddings
-& vector search → RAG retrieval → LangGraph agents & tool calling → MCP →
-multi-agent workflows (A2A) → memory beyond conversation history →
-evaluation → security/RBAC → observability/LLMOps → async workers →
-Kubernetes → multimodal/voice.
+(conversational chat + persistence), Milestone 3 (document ingestion), and
+Milestone 4 (embeddings & vector storage) are done. Remaining, in rough
+order, each as its own milestone: RAG retrieval → LangGraph agents & tool
+calling → MCP → multi-agent workflows (A2A) → memory beyond conversation
+history → evaluation → security/RBAC → observability/LLMOps → async
+workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

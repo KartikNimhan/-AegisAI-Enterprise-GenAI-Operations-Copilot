@@ -8,10 +8,11 @@ in [decisions/](decisions/) for where those are headed.
 ## Overview
 
 AegisAI is a modular monolith: a single FastAPI application (`backend/app`)
-backed by PostgreSQL (conversation/message/document persistence, with
-pgvector available for a future milestone), Redis, local filesystem
-document storage, and the Groq-backed LLM gateway, fronted by a Streamlit
-UI, all orchestrated via Docker Compose in local development.
+backed by PostgreSQL (conversation/message/document/embedding persistence,
+using pgvector for vector storage and similarity search), Redis, local
+filesystem document storage, a local Sentence Transformers embedding
+model, and the Groq-backed LLM gateway, fronted by a Streamlit UI, all
+orchestrated via Docker Compose in local development.
 
 ```
 ┌─────────────────┐       HTTP        ┌──────────────────────────────────────────────────┐
@@ -36,27 +37,32 @@ UI, all orchestrated via Docker Compose in local development.
 | --- | --- |
 | `api/` | Thin HTTP routing and request/response schemas. No business logic, no database queries. |
 | `core/` | Cross-cutting concerns: logging, middleware, exception handling (including LLM error -> HTTP status mapping, and `NotFoundError`). Security/RBAC is reserved, not implemented. |
-| `domain/` | ORM models (`Conversation`, `Message`, `Document`, `DocumentChunk`) and enums (`MessageRole`, `DocumentStatus`, `DocumentType`). |
+| `domain/` | ORM models (`Conversation`, `Message`, `Document`, `DocumentChunk`, `ChunkEmbedding`) and enums (`MessageRole`, `DocumentStatus`, `DocumentType`). |
 | `services/` | Business logic orchestration, called from `api/`. `chat_service.py` (Milestone 1, extended in Milestone 2), `conversation_service.py` (Milestone 2), and `document_service.py` (Milestone 3) are implemented; other service modules are still reserved. |
 | `prompts/` | Prompt management — versioned templates + `PromptBuilder`, which assembles `[system, history, new message]`. Implemented in Milestone 2. See [ADR 004](decisions/004-conversation-persistence.md). |
 | `llm/` | The LLM gateway — a provider-neutral abstraction over chat completion. Implemented in Milestone 1, backed by Groq. See [ADR 002](decisions/002-llm-gateway.md). |
 | `documents/` | Document ingestion: `validation.py`, `normalization.py`, `metadata.py`, `chunk_ids.py`, `extractors/` (one module per `DocumentType`: `pdf.py` via pypdf, `docx.py` via python-docx, `text.py`/`markdown.py`), `chunking/` (`RecursiveChunker`). Implemented in Milestone 3. See [ADR 005](decisions/005-document-ingestion.md). |
 | `storage/` | Provider-neutral file storage (`base.py`); `local.py` (`LocalFileStorage`) is the only implementation. Implemented in Milestone 3. |
-| `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`) — the only code that issues SQLAlchemy queries. |
+| `embeddings/` | Text embedding — a provider-neutral abstraction (`base.py`) over turning text into vectors, plus `service.py` (`EmbeddingService`, orchestration: batching, idempotency, persistence). `providers/local.py` (`LocalEmbeddingProvider`, Sentence Transformers) is the only implementation and the only module allowed to import `sentence_transformers`. Implemented in Milestone 4. See [ADR 006](decisions/006-embedding-model.md). |
+| `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
 | `rag/`, `agents/`, `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. |
 
 Dependency direction is one-way: `api` → `services` →
-`prompts`/`llm`/`documents`/`storage`/`db`. `domain/` sits below everything
-and depends on nothing else in the app (notably, `domain` does not depend
-on `llm` — see [ADR 004](decisions/004-conversation-persistence.md) on why
-`MessageRole` and `ChatRole` are separate types). Within `llm/`:
-`gateway.py` → `base.py` (the `LLMProvider` interface) → `providers/groq.py`.
-Routes never talk to the database, Redis, the Groq SDK, the filesystem, or
-a parsing library directly — `app.llm.providers.groq` is the *only* module
-allowed to import `groq`; `app.documents.extractors` is the only code
-allowed to import `pypdf`/`docx`; `app.storage` is the only code that
-touches the filesystem; `app.db.repositories` is the only code that builds
-SQLAlchemy queries.
+`prompts`/`llm`/`documents`/`storage`/`embeddings`/`db`. `domain/` sits
+below everything and depends on nothing else in the app (notably, `domain`
+does not depend on `llm` — see
+[ADR 004](decisions/004-conversation-persistence.md) on why `MessageRole`
+and `ChatRole` are separate types). Within `llm/`: `gateway.py` →
+`base.py` (the `LLMProvider` interface) → `providers/groq.py`. Within
+`embeddings/`: `service.py` → `base.py` (the `EmbeddingProvider`
+interface) → `providers/local.py`. Routes never talk to the database,
+Redis, the Groq SDK, the filesystem, a parsing library, or an embedding
+model directly — `app.llm.providers.groq` is the *only* module allowed to
+import `groq`; `app.documents.extractors` is the only code allowed to
+import `pypdf`/`docx`; `app.embeddings.providers.local` is the only code
+allowed to import `sentence_transformers`; `app.storage` is the only code
+that touches the filesystem; `app.db.repositories` is the only code that
+builds SQLAlchemy queries.
 
 ## Request lifecycle (today)
 
@@ -67,15 +73,17 @@ SQLAlchemy queries.
 2. FastAPI routes the request. `/health`, `/health/ready`
    (`api/v1/health.py`), `/api/v1/chat/completions[/stream]`
    (`api/v1/chat.py`), `/api/v1/conversations[/...]`
-   (`api/v1/conversations.py`), and `/api/v1/documents[/...]`
-   (`api/v1/documents.py`) are implemented; everything else under
-   `/api/v1` is reserved for future business endpoints.
+   (`api/v1/conversations.py`), and `/api/v1/documents[/...]`, including
+   `/api/v1/documents/{id}/embeddings` (`api/v1/documents.py`) are
+   implemented; everything else under `/api/v1` is reserved for future
+   business endpoints.
 3. Unhandled errors — including the typed `LLMError` hierarchy,
-   `NotFoundError`, and `DocumentValidationError` — are caught by handlers
-   registered in `core/exceptions.py` and returned as a consistent JSON
-   envelope: `{"error": {"code", "message", "request_id"}}`. Raw provider
-   exceptions, raw database errors, and raw filesystem paths never reach
-   this layer.
+   `NotFoundError`, `DocumentValidationError`, `DocumentNotReadyError`,
+   `EmbeddingProviderError`, and `EmbeddingDimensionMismatchError` — are
+   caught by handlers registered in `core/exceptions.py` and returned as a
+   consistent JSON envelope: `{"error": {"code", "message", "request_id"}}`.
+   Raw provider exceptions, raw database errors, and raw filesystem paths
+   never reach this layer.
 
 ## Health and readiness
 
@@ -138,8 +146,7 @@ and [data-flow.md](data-flow.md) for the request flow. In brief:
   a random UUID4, see the ADR — `document_id` FK `ON DELETE CASCADE`,
   `chunk_index`, `content`, `character_count`, `token_count` (currently
   always `null` — see the ADR), `metadata` JSONB, `created_at`), with a
-  unique constraint on `(document_id, chunk_index)`. No embedding/vector
-  column yet — that's Milestone 4.
+  unique constraint on `(document_id, chunk_index)`.
 - **`DocumentService`** orchestrates: validate -> checksum -> duplicate
   check -> store -> extract -> normalize -> build metadata -> chunk ->
   persist, updating `DocumentStatus` throughout
@@ -162,6 +169,46 @@ and [data-flow.md](data-flow.md) for the request flow. In brief:
   page reference, and produces deterministic chunk ids reproducible from
   `(document checksum, chunk size, chunk overlap, chunk index)`.
 
+## Embeddings
+
+See [ADR 006](decisions/006-embedding-model.md) for the full rationale and
+[data-flow.md](data-flow.md) for the request flow. In brief:
+
+- **Schema** (migration `0004_add_chunk_embeddings`): `chunk_embeddings`
+  (`id`, `document_chunk_id` FK `ON DELETE CASCADE`, `embedding` —
+  `vector(384)`, fixed-width per the ADR — `embedding_provider`,
+  `embedding_model`, `embedding_model_version`, `embedding_dimension`,
+  `created_at`), with a unique constraint on `(document_chunk_id,
+  embedding_model, embedding_model_version)` — one row per (chunk, model,
+  version), not per chunk, so a chunk can have embeddings from multiple
+  models/versions at once.
+- **Model**: `sentence-transformers/all-MiniLM-L6-v2` (384-dim, CPU
+  inference, locally hosted — no API key, no network call per embedding),
+  run via `LocalEmbeddingProvider` (`app.embeddings.providers.local`),
+  the only module allowed to import `sentence_transformers`. Model loading
+  and inference are both offloaded via `asyncio.to_thread`.
+- **`EmbeddingService`** orchestrates: validate the document is
+  `PROCESSED` -> page through its chunks in
+  `Settings.embedding_batch_size`-sized batches -> skip chunks already
+  embedded for the current model/version (idempotency) -> embed the rest
+  (with bounded retry on transient provider failures) -> persist each
+  batch inside a `SAVEPOINT`. Commits once per request, like `ChatService`
+  — unlike `DocumentService`'s two-commit pattern, since there's no
+  durable side effect (like a stored file) that must survive a later
+  in-request failure. See the ADR for why.
+- **Triggering is explicit and synchronous**: `POST
+  /api/v1/documents/{id}/embeddings`, not automatic on upload and not
+  queued — the brief's stated scope for this milestone. `GET
+  /api/v1/documents/{id}/embeddings` reports coverage status
+  (`not_started` / `partial` / `complete` / `no_chunks`) and model
+  metadata — never a raw vector.
+- **Similarity search** (`ChunkEmbeddingRepository.similarity_search`) uses
+  pgvector's cosine distance, filtered to one `(model, version)` pair, with
+  no approximate-nearest-neighbor index yet — an intentional, documented
+  deferral (see the ADR) since exact search is correct and fast enough at
+  this milestone's corpus size. This is a foundation, not RAG: no query
+  rewriting, filtering, or reranking.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -174,8 +221,14 @@ and the test suite passes without one, and only the chat endpoints fail
 (`DOCUMENT_STORAGE_DIR`, `DOCUMENT_MAX_UPLOAD_SIZE_BYTES`,
 `DOCUMENT_CHUNK_SIZE`, `DOCUMENT_CHUNK_OVERLAP`, `DOCUMENT_ALLOWED_TYPES`)
 all have working defaults, so document upload works out of the box too.
+Embedding settings (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`,
+`EMBEDDING_MODEL_VERSION`, `EMBEDDING_DIMENSION`, `EMBEDDING_BATCH_SIZE`,
+`EMBEDDING_DEVICE`, `EMBEDDING_NORMALIZE`, `EMBEDDING_MAX_RETRIES`) also
+have working defaults; the model downloads from Hugging Face on first use
+(~90MB) and is cached locally afterward — no API key needed.
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
-request, conversation-retrieval, and document-ingestion data flows.
+request, conversation-retrieval, document-ingestion, and embedding data
+flows.

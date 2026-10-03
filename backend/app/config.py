@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     document_chunk_overlap: int = 150  # characters
     document_allowed_types: list[str] = ["pdf", "docx", "txt", "markdown"]
 
+    # Embeddings (Milestone 4). embedding_model_version is an
+    # application-level label (not the HF revision hash) — it exists so we
+    # can mark a "new generation" of vectors even without changing
+    # embedding_model (e.g. if normalization or pooling logic changes),
+    # since model name + version together are what's stored per-vector and
+    # is what future model migration keys off. See ADR 006
+    # (006-embedding-model.md).
+    embedding_provider: str = "local"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model_version: str = "1"
+    embedding_dimension: int = 384
+    embedding_batch_size: int = 32
+    embedding_device: str = "cpu"
+    embedding_normalize: bool = True
+    embedding_max_retries: int = 2
+
 
 @lru_cache
 def get_settings() -> Settings:

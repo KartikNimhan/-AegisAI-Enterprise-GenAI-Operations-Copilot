@@ -21,12 +21,15 @@ from app.api.schemas.documents import (
     PaginatedDocumentChunks,
     PaginatedDocuments,
 )
+from app.api.schemas.embeddings import EmbeddingStatusResponse, EmbeddingTriggerResponse
 from app.config import Settings, get_settings
+from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.services.document_service import DocumentService, get_document_service
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
+EmbeddingServiceDep = Annotated[EmbeddingService, Depends(get_embedding_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
@@ -106,3 +109,22 @@ async def delete_document(document_id: uuid.UUID, document_service: DocumentServ
     deleted = await document_service.delete_document(document_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+
+@router.post("/{document_id}/embeddings", response_model=EmbeddingTriggerResponse)
+async def trigger_document_embeddings(
+    document_id: uuid.UUID, embedding_service: EmbeddingServiceDep
+) -> EmbeddingTriggerResponse:
+    # Synchronous for this milestone (no task queue yet — see
+    # app.embeddings.service docstring). NotFoundError/DocumentNotReadyError
+    # are mapped to HTTP responses by the handlers in app.core.exceptions.
+    result = await embedding_service.embed_document(document_id)
+    return EmbeddingTriggerResponse.from_result(result)
+
+
+@router.get("/{document_id}/embeddings", response_model=EmbeddingStatusResponse)
+async def get_document_embedding_status(
+    document_id: uuid.UUID, embedding_service: EmbeddingServiceDep
+) -> EmbeddingStatusResponse:
+    status_obj = await embedding_service.get_embedding_status(document_id)
+    return EmbeddingStatusResponse.from_status(status_obj)
