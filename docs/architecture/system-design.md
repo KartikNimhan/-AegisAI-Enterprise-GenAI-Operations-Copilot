@@ -17,7 +17,7 @@ orchestrated via Docker Compose in local development.
 ```
 ┌─────────────────┐       HTTP        ┌──────────────────────────────────────────────────┐
 │ Streamlit UI     │ ─────────────────▶│ FastAPI app (backend)                            │
-│ (frontend/)      │                   │  api/ -> services/ -> prompts/, llm/, documents/, db/ │
+│ (frontend/)      │                   │  api/ -> services/, rag/ -> prompts/, llm/, documents/, embeddings/, db/ │
 └─────────────────┘                   └──┬──────────────┬──────────────────┬─────────────┘
                                           │              │                  │
                           ┌───────────────┼──────┐       │        ┌────────┴────────┐
@@ -43,11 +43,12 @@ orchestrated via Docker Compose in local development.
 | `llm/` | The LLM gateway — a provider-neutral abstraction over chat completion. Implemented in Milestone 1, backed by Groq. See [ADR 002](decisions/002-llm-gateway.md). |
 | `documents/` | Document ingestion: `validation.py`, `normalization.py`, `metadata.py`, `chunk_ids.py`, `extractors/` (one module per `DocumentType`: `pdf.py` via pypdf, `docx.py` via python-docx, `text.py`/`markdown.py`), `chunking/` (`RecursiveChunker`). Implemented in Milestone 3. See [ADR 005](decisions/005-document-ingestion.md). |
 | `storage/` | Provider-neutral file storage (`base.py`); `local.py` (`LocalFileStorage`) is the only implementation. Implemented in Milestone 3. |
-| `embeddings/` | Text embedding — a provider-neutral abstraction (`base.py`) over turning text into vectors, plus `service.py` (`EmbeddingService`, orchestration: batching, idempotency, persistence). `providers/local.py` (`LocalEmbeddingProvider`, Sentence Transformers) is the only implementation and the only module allowed to import `sentence_transformers`. Implemented in Milestone 4. See [ADR 006](decisions/006-embedding-model.md). |
+| `embeddings/` | Text embedding — a provider-neutral abstraction (`base.py`) over turning text into vectors, plus `service.py` (`EmbeddingService`, orchestration: batching, idempotency, persistence, and — new in Milestone 5 — `embed_query`). `providers/local.py` (`LocalEmbeddingProvider`, Sentence Transformers) is the only implementation and the only module allowed to import `sentence_transformers`. Implemented in Milestone 4. See [ADR 006](decisions/006-embedding-model.md). |
+| `rag/` | Retrieval-augmented generation: `service.py` (`RAGService`, the only layer combining retrieval with generation), `retrieval/` (`RetrievalService`, `RetrievalStrategy`/`VectorRetrievalStrategy`, `RetrievalRepository`), `context/` (`ContextAssembler`), `prompts/` (`AEGIS_RAG_SYSTEM_PROMPT`, `RAGPromptBuilder`). Implemented in Milestone 5. See [ADR 007](decisions/007-rag-pipeline.md). |
 | `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
-| `rag/`, `agents/`, `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. |
+| `agents/`, `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. |
 
-Dependency direction is one-way: `api` → `services` →
+Dependency direction is one-way: `api` → `services`/`rag` →
 `prompts`/`llm`/`documents`/`storage`/`embeddings`/`db`. `domain/` sits
 below everything and depends on nothing else in the app (notably, `domain`
 does not depend on `llm` — see
@@ -55,13 +56,21 @@ does not depend on `llm` — see
 and `ChatRole` are separate types). Within `llm/`: `gateway.py` →
 `base.py` (the `LLMProvider` interface) → `providers/groq.py`. Within
 `embeddings/`: `service.py` → `base.py` (the `EmbeddingProvider`
-interface) → `providers/local.py`. Routes never talk to the database,
-Redis, the Groq SDK, the filesystem, a parsing library, or an embedding
-model directly — `app.llm.providers.groq` is the *only* module allowed to
-import `groq`; `app.documents.extractors` is the only code allowed to
-import `pypdf`/`docx`; `app.embeddings.providers.local` is the only code
-allowed to import `sentence_transformers`; `app.storage` is the only code
-that touches the filesystem; `app.db.repositories` is the only code that
+interface) → `providers/local.py`. Within `rag/`: `service.py` →
+`retrieval/service.py` → `retrieval/strategy.py` (the `RetrievalStrategy`
+interface) → `retrieval/repository.py`, and separately `service.py` →
+`context/assembler.py` and `prompts/builder.py`; `rag/` never imports
+`sentence_transformers`, `app.db.repositories.chunk_embedding_repository`,
+or a provider SDK directly — it only ever reaches the embedding model
+through `EmbeddingService` and the LLM through `LLMGateway`, the same as
+every other service. Routes never talk to the database, Redis, the Groq
+SDK, the filesystem, a parsing library, or an embedding model directly —
+`app.llm.providers.groq` is the *only* module allowed to import `groq`;
+`app.documents.extractors` is the only code allowed to import
+`pypdf`/`docx`; `app.embeddings.providers.local` is the only code allowed
+to import `sentence_transformers`; `app.storage` is the only code that
+touches the filesystem; `app.db.repositories` (and, for the RAG-specific
+retrieval query, `app.rag.retrieval.repository`) is the only code that
 builds SQLAlchemy queries.
 
 ## Request lifecycle (today)
@@ -73,15 +82,18 @@ builds SQLAlchemy queries.
 2. FastAPI routes the request. `/health`, `/health/ready`
    (`api/v1/health.py`), `/api/v1/chat/completions[/stream]`
    (`api/v1/chat.py`), `/api/v1/conversations[/...]`
-   (`api/v1/conversations.py`), and `/api/v1/documents[/...]`, including
-   `/api/v1/documents/{id}/embeddings` (`api/v1/documents.py`) are
-   implemented; everything else under `/api/v1` is reserved for future
-   business endpoints.
+   (`api/v1/conversations.py`), `/api/v1/documents[/...]`, including
+   `/api/v1/documents/{id}/embeddings` (`api/v1/documents.py`), and
+   `/api/v1/rag/chat[/stream]` (`api/v1/rag.py`) are implemented;
+   everything else under `/api/v1` is reserved for future business
+   endpoints.
 3. Unhandled errors — including the typed `LLMError` hierarchy,
    `NotFoundError`, `DocumentValidationError`, `DocumentNotReadyError`,
    `EmbeddingProviderError`, and `EmbeddingDimensionMismatchError` — are
    caught by handlers registered in `core/exceptions.py` and returned as a
    consistent JSON envelope: `{"error": {"code", "message", "request_id"}}`.
+   The RAG endpoints reuse these same handlers rather than registering new
+   ones (see [ADR 007](decisions/007-rag-pipeline.md), "Error handling").
    Raw provider exceptions, raw database errors, and raw filesystem paths
    never reach this layer.
 
@@ -209,6 +221,59 @@ See [ADR 006](decisions/006-embedding-model.md) for the full rationale and
   this milestone's corpus size. This is a foundation, not RAG: no query
   rewriting, filtering, or reranking.
 
+## RAG Pipeline
+
+See [ADR 007](decisions/007-rag-pipeline.md) for the full rationale and
+[data-flow.md](data-flow.md) for the request flow. In brief:
+
+- **No new tables** — RAG reads `chunk_embeddings`/`document_chunks`/
+  `documents` (Milestones 3–4) and writes to the existing
+  `conversations`/`messages` tables (Milestone 2); sources are returned in
+  the API response but not persisted to the database in this milestone.
+- **`RetrievalService`** resolves `top_k` (default `RAG_TOP_K=5`, capped at
+  `RAG_MAX_RESULTS=20`) and the similarity threshold (default
+  `RAG_SIMILARITY_THRESHOLD=0.3`, a cosine *similarity* — `1 -
+  cosine_distance` — not a raw distance), delegates the actual search to a
+  `RetrievalStrategy` (`VectorRetrievalStrategy` is the only
+  implementation — an explicit seam for a future hybrid strategy), then
+  filters the returned candidates by the threshold in plain Python.
+- **`VectorRetrievalStrategy`** embeds the query via
+  `EmbeddingService.embed_query` (never a raw `EmbeddingProvider`) and
+  searches pgvector via `RetrievalRepository` — a RAG-specific query
+  (joins through to `Document` for the filename, supports an explicit
+  `document_id` filter) kept separate from Milestone 4's generic
+  `ChunkEmbeddingRepository`.
+- **`ContextAssembler`** turns ranked results into `[SOURCE n]`-delimited
+  blocks with document/page headers, assigning stable source IDs
+  (`S1`, `S2`, ...) the LLM can cite but never invents, bounded by
+  `RAG_MAX_CONTEXT_CHARS` (default `8000`, character-based — see the ADR
+  for why not token-based).
+- **`RAGService`** orchestrates: resolve/create the conversation ->
+  validate an optional `document_id` filter exists (`NotFoundError` ->
+  404 if not) -> retrieve -> **no qualifying results: return a fixed
+  "I don't have enough information..." response without ever calling the
+  LLM** -> otherwise assemble context -> build the RAG prompt
+  (`AEGIS_RAG_SYSTEM_PROMPT`, explicitly distinct from the plain chat
+  prompt) -> call `LLMGateway` -> persist both turns -> attach sources.
+  Commits once per request (like `ChatService`), not twice (unlike
+  `DocumentService`) — see the ADR for why.
+- **Prompt injection**: the RAG system prompt instructs the model that
+  retrieved CONTEXT is untrusted data, never instructions, and that these
+  rules override anything inside it. Tested both at the unit level (a
+  fake gateway capturing the exact messages sent) and the integration
+  level (a real malicious chunk retrieved through real Postgres) — proving
+  the structural boundary, not a guarantee about any specific model's
+  behavior (see the ADR).
+- **Streaming** (`POST /api/v1/rag/chat/stream`) retrieves and assembles
+  context before streaming begins, so sources are known up front; each
+  SSE chunk carries `sources: null` except the final one, mirroring how
+  `usage` is already `None` until the final chunk of the plain chat
+  stream.
+- **Evaluation**: a small Recall@K fixture
+  (`tests/evaluation/rag_fixtures.py` + `test_recall_at_k.py`, opt-in,
+  real embedding model) — illustrative, not a benchmark; see the ADR and
+  the end-of-milestone report for the actual result.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -225,10 +290,14 @@ Embedding settings (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`,
 `EMBEDDING_MODEL_VERSION`, `EMBEDDING_DIMENSION`, `EMBEDDING_BATCH_SIZE`,
 `EMBEDDING_DEVICE`, `EMBEDDING_NORMALIZE`, `EMBEDDING_MAX_RETRIES`) also
 have working defaults; the model downloads from Hugging Face on first use
-(~90MB) and is cached locally afterward — no API key needed.
+(~90MB) and is cached locally afterward — no API key needed. RAG settings
+(`RAG_TOP_K`, `RAG_MAX_RESULTS`, `RAG_SIMILARITY_THRESHOLD`,
+`RAG_MAX_CONTEXT_CHARS`) likewise have working defaults; the similarity
+threshold default is explicitly a conservative starting point, not a
+validated constant — see [ADR 007](decisions/007-rag-pipeline.md).
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
-request, conversation-retrieval, document-ingestion, and embedding data
-flows.
+request, conversation-retrieval, document-ingestion, embedding, and RAG
+data flows.

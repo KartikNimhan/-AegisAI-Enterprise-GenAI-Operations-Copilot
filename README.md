@@ -17,7 +17,13 @@ and chunk PDF/DOCX/TXT/Markdown files. **Milestone 4** turns those chunks
 into semantic vectors — a provider-neutral embedding pipeline (local
 Sentence Transformers), pgvector storage with multi-model/version support,
 idempotent batch embedding, and a basic similarity-search foundation.
-RAG retrieval, LangGraph, agents, MCP, A2A, and memory beyond plain
+**Milestone 5** builds the first complete retrieval-augmented generation
+pipeline on top of that: query embedding, pgvector similarity search with
+metadata filtering and a similarity threshold, source-bounded context
+assembly with citations the LLM can reference but never invents, a
+dedicated RAG prompt that treats retrieved documents as untrusted data, a
+mandatory no-fabrication no-context response, and both plain and streaming
+RAG chat endpoints. LangGraph, agents, MCP, A2A, and memory beyond plain
 conversation history are **not** implemented yet — see
 [Roadmap](#roadmap) below.
 
@@ -79,6 +85,24 @@ conversation history are **not** implemented yet — see
 - `POST /api/v1/documents/{id}/embeddings` (trigger — synchronous,
   explicit, not automatic on upload), `GET /api/v1/documents/{id}/embeddings`
   (coverage status) — neither ever returns a raw vector.
+- **Retrieval-augmented generation** (`backend/app/rag/`) — `RAGService`
+  orchestrates: embed the question via the existing `EmbeddingService`,
+  retrieve ranked chunks via pgvector (`RetrievalService` ->
+  `VectorRetrievalStrategy`, an explicit seam for a future hybrid
+  strategy), filter by a configurable similarity threshold, assemble
+  `[SOURCE n]`-delimited context with application-assigned citation IDs
+  (never invented by the LLM), build a dedicated RAG prompt that treats
+  retrieved content as untrusted data, call the LLM gateway, and attach
+  structured sources to the response. A question with no sufficiently
+  relevant context gets a fixed, honest "I don't have enough
+  information..." response — the LLM is never called just to produce
+  something. Optional `document_id` filtering, both plain and streaming
+  endpoints, and conversation persistence reused from Milestone 2 (no
+  duplicated logic). See
+  [ADR 007](docs/architecture/decisions/007-rag-pipeline.md).
+- `POST /api/v1/rag/chat` and `POST /api/v1/rag/chat/stream` — ask a
+  question grounded in ingested documents, with structured source
+  citations and retrieval metadata in the response.
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra, API key, or embedding model download
   required) and integration tests that skip gracefully when
@@ -133,11 +157,19 @@ backend/app/
     local.py        LocalFileStorage — the only implementation so far
   embeddings/     text embedding — implemented (see ADR 006)
     base.py         provider-neutral EmbeddingProvider interface
-    service.py      EmbeddingService: batching, idempotency, persistence
+    service.py      EmbeddingService: batching, idempotency, persistence,
+                     embed_query (Milestone 5)
     schemas.py       EmbeddingJobResult, EmbeddingStatus, SimilarityMatch
     exceptions.py    typed EmbeddingError hierarchy
     providers/local.py  the only module allowed to import sentence_transformers
-  rag/            RAG retrieval (reserved)
+  rag/            retrieval-augmented generation — implemented (see ADR 007)
+    service.py       RAGService: the only layer combining retrieval + generation
+    schemas.py       RAGAnswer, RAGSource, RAGRetrievalMetadata
+    exceptions.py    RAGError (minimal — most failures reuse existing types)
+    retrieval/       RetrievalService, RetrievalStrategy/VectorRetrievalStrategy,
+                     RetrievalRepository (RAG-specific pgvector query)
+    context/          ContextAssembler: source-bounded context + citation IDs
+    prompts/          AEGIS_RAG_SYSTEM_PROMPT, RAGPromptBuilder
   agents/         LangGraph agents (reserved)
   tools/          tool calling (reserved)
   mcp/            Model Context Protocol (reserved)
@@ -153,21 +185,27 @@ backend/app/
 ```
 
 Routes never contain business logic or database queries; they delegate to
-`services/`, which depends on `prompts/`, `llm/`, `documents/`, `storage/`,
-`embeddings/`, and `db/`. The LLM call chain is strictly
+`services/` or `rag/`, which depend on `prompts/`, `llm/`, `documents/`,
+`storage/`, `embeddings/`, and `db/`. The LLM call chain is strictly
 `api -> service -> LLMGateway -> LLMProvider interface -> GroqProvider ->
 groq SDK`; the embedding call chain is strictly `api -> EmbeddingService ->
 EmbeddingProvider interface -> LocalEmbeddingProvider ->
-sentence_transformers` — nothing above `providers/groq.py` ever imports
-`groq`; nothing outside `documents/extractors/` imports `pypdf`/`docx`;
-nothing outside `embeddings/providers/local.py` imports
-`sentence_transformers`; nothing outside `storage/` touches the
-filesystem; nothing outside `db/repositories/` builds a SQLAlchemy query.
-See [docs/architecture/system-design.md](docs/architecture/system-design.md)
+sentence_transformers`; the RAG call chain is
+`api -> RAGService -> RetrievalService -> RetrievalStrategy ->
+EmbeddingService/RetrievalRepository`, with generation going through the
+same `LLMGateway` as plain chat — `rag/` never imports
+`sentence_transformers` or a provider SDK directly. Nothing above
+`providers/groq.py` ever imports `groq`; nothing outside
+`documents/extractors/` imports `pypdf`/`docx`; nothing outside
+`embeddings/providers/local.py` imports `sentence_transformers`; nothing
+outside `storage/` touches the filesystem; nothing outside
+`db/repositories/` (and, for the RAG-specific retrieval query,
+`rag/retrieval/repository.py`) builds a SQLAlchemy query. See
+[docs/architecture/system-design.md](docs/architecture/system-design.md)
 for the full picture and
 [docs/architecture/data-flow.md](docs/architecture/data-flow.md) for the
 readiness-check, chat/streaming, conversation-retrieval,
-document-ingestion, and embedding data flows.
+document-ingestion, embedding, and RAG data flows.
 
 ## Quickstart
 
@@ -224,9 +262,29 @@ curl -X POST http://localhost:8000/api/v1/documents/<id>/embeddings
 curl http://localhost:8000/api/v1/documents/<id>/embeddings   # coverage status
 ```
 
+With embeddings in place, ask a question grounded in that document (needs
+`GROQ_API_KEY` for a real generated answer — retrieval itself doesn't):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/rag/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What does this document say about travel expenses?"}'
+
+# Restrict retrieval to one document, and stream the answer
+curl -N -X POST http://localhost:8000/api/v1/rag/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Summarize the key points.", "document_id": "<id>"}'
+```
+
+A question with no relevant ingested content returns `has_context: false`
+and a fixed "I don't have enough information..." answer — the LLM is never
+called in that case, so it works even without `GROQ_API_KEY` set for that
+specific response.
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
-every endpoint — chat requests respond with a `503 llm_unavailable` instead
-(and persist nothing, per the atomic-turn design — see
+every endpoint — chat and grounded-RAG requests respond with a
+`503 llm_unavailable` instead (and persist nothing, per the atomic-turn
+design — see
 [ADR 004](docs/architecture/decisions/004-conversation-persistence.md)).
 The conversation endpoints work regardless, since they don't call Groq.
 
@@ -237,8 +295,9 @@ Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 ```bash
 uv run pytest       # unit + integration; integration tests skip without live
                      # Postgres/Redis, the Groq live test skips without a
-                     # real GROQ_API_KEY, and the embedding live test skips
-                     # unless explicitly opted into — none are required to pass
+                     # real GROQ_API_KEY, and the real-embedding-model tests
+                     # (embeddings + RAG pipeline + Recall@K) skip unless
+                     # explicitly opted into — none are required to pass
 uv run ruff check .
 uv run ruff format .
 uv run pyright
@@ -250,8 +309,9 @@ Run the opt-in real Groq test explicitly with:
 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
 ```
 
-Run the opt-in real embedding-model test explicitly with (downloads/loads
-the real Sentence Transformers model):
+Run the opt-in real-embedding-model tests explicitly with (downloads/loads
+the real Sentence Transformers model; covers the Milestone 4 embedding
+test, the full RAG pipeline test, and the Recall@K evaluation):
 
 ```bash
 RUN_EMBEDDING_INTEGRATION=1 uv run pytest -m embedding_integration -v
@@ -263,12 +323,12 @@ all available targets (`run`, `docker-up`, `migrate`, ...).
 ## Roadmap
 
 Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
-(conversational chat + persistence), Milestone 3 (document ingestion), and
-Milestone 4 (embeddings & vector storage) are done. Remaining, in rough
-order, each as its own milestone: RAG retrieval → LangGraph agents & tool
-calling → MCP → multi-agent workflows (A2A) → memory beyond conversation
-history → evaluation → security/RBAC → observability/LLMOps → async
-workers → Kubernetes → multimodal/voice.
+(conversational chat + persistence), Milestone 3 (document ingestion),
+Milestone 4 (embeddings & vector storage), and Milestone 5 (retrieval-
+augmented generation) are done. Remaining, in rough order, each as its own
+milestone: LangGraph agents & tool calling → MCP → multi-agent workflows
+(A2A) → memory beyond conversation history → evaluation → security/RBAC →
+observability/LLMOps → async workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

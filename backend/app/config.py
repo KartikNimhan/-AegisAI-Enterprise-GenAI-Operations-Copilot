@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     embedding_normalize: bool = True
     embedding_max_retries: int = 2
 
+    # RAG (Milestone 5). rag_similarity_threshold is a cosine SIMILARITY
+    # (1 - cosine_distance), not a raw distance — see ADR 007. The default
+    # is a conservative starting point, not a scientifically validated
+    # universal value: the correct threshold depends on the embedding
+    # model, normalization, corpus, and query distribution, and should be
+    # tuned against real usage. rag_max_results is a hard ceiling a
+    # client's `top_k` override cannot exceed, independent of the default.
+    rag_top_k: int = 5
+    rag_max_results: int = 20
+    rag_similarity_threshold: float = 0.3
+    rag_max_context_chars: int = 8000
+
 
 @lru_cache
 def get_settings() -> Settings:

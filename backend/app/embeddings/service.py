@@ -64,6 +64,30 @@ class EmbeddingService:
         self._chunks = chunks
         self._embeddings = embeddings
 
+    @property
+    def provider_name(self) -> str:
+        return self._provider.name
+
+    @property
+    def model_name(self) -> str:
+        return self._provider.model_name
+
+    @property
+    def model_version(self) -> str:
+        return self._provider.model_version
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embeds free text (e.g. a RAG query) that isn't a persisted
+        `DocumentChunk`, via the same provider/model used to embed stored
+        chunks. This is the one sanctioned path for embedding arbitrary
+        text from outside this service — callers (e.g. the RAG retrieval
+        layer) must never import or construct an `EmbeddingProvider`
+        directly. Use `model_name`/`model_version` above to filter a
+        similarity search to vectors produced by this same model/version —
+        comparing vectors from different models is meaningless.
+        """
+        return await self._provider.embed_text(text)
+
     async def embed_document(self, document_id: uuid.UUID) -> EmbeddingJobResult:
         document = await self._documents.get(document_id)
         if document is None:
