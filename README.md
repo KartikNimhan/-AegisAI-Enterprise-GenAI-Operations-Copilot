@@ -23,9 +23,14 @@ metadata filtering and a similarity threshold, source-bounded context
 assembly with citations the LLM can reference but never invents, a
 dedicated RAG prompt that treats retrieved documents as untrusted data, a
 mandatory no-fabrication no-context response, and both plain and streaming
-RAG chat endpoints. LangGraph, agents, MCP, A2A, and memory beyond plain
-conversation history are **not** implemented yet — see
-[Roadmap](#roadmap) below.
+RAG chat endpoints. **Milestone 6** adds the first agentic layer: a
+single, LangGraph-orchestrated agent with controlled tool calling
+(knowledge-base search, a safe AST-based calculator, document metadata
+lookup), an explicit tool registry with no path to arbitrary code
+execution, configurable step/tool-call/timeout safety limits, and both
+plain and streaming agent endpoints that never expose chain-of-thought.
+MCP, A2A, multi-agent orchestration, and memory beyond plain conversation
+history are **not** implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -103,6 +108,29 @@ conversation history are **not** implemented yet — see
 - `POST /api/v1/rag/chat` and `POST /api/v1/rag/chat/stream` — ask a
   question grounded in ingested documents, with structured source
   citations and retrieval metadata in the response.
+- **Agentic AI** (`backend/app/agents/`) — a single LangGraph-orchestrated
+  agent with explicit, controlled tool calling: `AgentService` builds a
+  `StateGraph` where an `agent` node asks the (extended) `LLMGateway`
+  whether a registered tool is needed, and a `tools` node is the *only*
+  code that executes one — the LLM never executes a tool directly. Three
+  tools are registered: `search_knowledge_base` (reuses `RetrievalService`
+  directly — agentic RAG, not a second retrieval path), `calculator` (an
+  AST-based safe arithmetic evaluator — never `eval`/`exec`, with
+  operand/exponent magnitude bounds against computational DoS), and
+  `get_document_metadata` (reuses `DocumentRepository`, returns only
+  already-safe fields). Every tool call's model-generated arguments are
+  JSON-schema-validated before execution, and a failure becomes a
+  structured result the model sees as data — never a crash or a fabricated
+  success. Configurable `AGENT_MAX_STEPS`/`AGENT_MAX_TOOL_CALLS` stop a
+  runaway loop with a controlled response (checked before acting, not
+  after), and `AGENT_TIMEOUT_SECONDS` is a wall-clock backstop. See
+  [ADR 008](docs/architecture/decisions/008-agent-architecture.md).
+- `POST /api/v1/agents/run` and `POST /api/v1/agents/run/stream` — ask the
+  agent a question; the response includes the final answer, a per-tool
+  usage summary, knowledge-base sources when used, and run status. The
+  streaming endpoint emits only safe, structured events
+  (`tool_started`/`tool_completed`/`answer_delta`/`completed`) — never the
+  model's intermediate reasoning.
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra, API key, or embedding model download
   required) and integration tests that skip gracefully when
@@ -115,7 +143,7 @@ conversation history are **not** implemented yet — see
 
 Python 3.12+ · uv · FastAPI · Pydantic v2 + pydantic-settings · SQLAlchemy
 2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pypdf ·
-python-docx · Sentence Transformers · pytest · Ruff · pyright ·
+python-docx · Sentence Transformers · LangGraph · pytest · Ruff · pyright ·
 Docker/Docker Compose · Streamlit
 
 ## Architecture
@@ -142,7 +170,8 @@ backend/app/
   llm/            LLM gateway — implemented, Groq-backed (see ADR 002)
     base.py         provider-neutral LLMProvider interface
     gateway.py       LLMGateway: routing, retries, standardized responses
-    schemas.py       ModelRole, ChatMessage, CompletionResponse, StreamChunk
+    schemas.py       ModelRole, ChatMessage, CompletionResponse, StreamChunk,
+                     ToolSpec/ToolCall (tool calling, Milestone 6)
     exceptions.py    typed LLMError hierarchy
     providers/groq.py  the only module allowed to import the `groq` SDK
   documents/      document ingestion — implemented (see ADR 005)
@@ -170,8 +199,17 @@ backend/app/
                      RetrievalRepository (RAG-specific pgvector query)
     context/          ContextAssembler: source-bounded context + citation IDs
     prompts/          AEGIS_RAG_SYSTEM_PROMPT, RAGPromptBuilder
-  agents/         LangGraph agents (reserved)
-  tools/          tool calling (reserved)
+  agents/         single-agent LangGraph orchestration — implemented (see ADR 008)
+    service.py       AgentService: build state, run the graph, persist, extract results
+    graph.py         the StateGraph: agent node -> should_continue -> tools | END
+    schemas.py       AgentState, AgentRunResult, ToolUsageSummary, AgentSource
+    messages.py      LangChain-message <-> ChatMessage boundary translation
+    prompts.py       AEGIS_AGENT_SYSTEM_PROMPT
+    exceptions.py    AgentError, AgentTimeoutError
+    tools/           ToolRegistry/ToolDefinition + calculator, get_document_metadata,
+                     search_knowledge_base — the only path from a tool name to code
+  tools/          reserved for a possible future non-agent-specific tool need
+                  (Milestone 6's own tool calling lives in agents/tools/ above)
   mcp/            Model Context Protocol (reserved)
   memory/         agent memory beyond conversation history (reserved)
   evaluation/     evaluation harness (reserved)
@@ -185,27 +223,31 @@ backend/app/
 ```
 
 Routes never contain business logic or database queries; they delegate to
-`services/` or `rag/`, which depend on `prompts/`, `llm/`, `documents/`,
-`storage/`, `embeddings/`, and `db/`. The LLM call chain is strictly
-`api -> service -> LLMGateway -> LLMProvider interface -> GroqProvider ->
-groq SDK`; the embedding call chain is strictly `api -> EmbeddingService ->
-EmbeddingProvider interface -> LocalEmbeddingProvider ->
-sentence_transformers`; the RAG call chain is
+`services/`, `rag/`, or `agents/`, which depend on `prompts/`, `llm/`,
+`documents/`, `storage/`, `embeddings/`, and `db/`. The LLM call chain is
+strictly `api -> service -> LLMGateway -> LLMProvider interface ->
+GroqProvider -> groq SDK`; the embedding call chain is strictly
+`api -> EmbeddingService -> EmbeddingProvider interface ->
+LocalEmbeddingProvider -> sentence_transformers`; the RAG call chain is
 `api -> RAGService -> RetrievalService -> RetrievalStrategy ->
-EmbeddingService/RetrievalRepository`, with generation going through the
-same `LLMGateway` as plain chat — `rag/` never imports
-`sentence_transformers` or a provider SDK directly. Nothing above
-`providers/groq.py` ever imports `groq`; nothing outside
+EmbeddingService/RetrievalRepository`; the agent call chain is
+`api -> AgentService -> StateGraph -> ToolRegistry -> (calculator |
+DocumentRepository | RetrievalService)`, with every LLM call (plain or
+tool-calling) going through the same `LLMGateway` — `agents/` never
+imports a provider SDK or `sentence_transformers` directly, and the
+tool registry is the only path from a tool name to executable code.
+Nothing above `providers/groq.py` ever imports `groq`; nothing outside
 `documents/extractors/` imports `pypdf`/`docx`; nothing outside
 `embeddings/providers/local.py` imports `sentence_transformers`; nothing
 outside `storage/` touches the filesystem; nothing outside
 `db/repositories/` (and, for the RAG-specific retrieval query,
-`rag/retrieval/repository.py`) builds a SQLAlchemy query. See
+`rag/retrieval/repository.py`) builds a SQLAlchemy query; nothing outside
+`agents/tools/` calls a registered tool's executor. See
 [docs/architecture/system-design.md](docs/architecture/system-design.md)
 for the full picture and
 [docs/architecture/data-flow.md](docs/architecture/data-flow.md) for the
 readiness-check, chat/streaming, conversation-retrieval,
-document-ingestion, embedding, and RAG data flows.
+document-ingestion, embedding, RAG, and agent data flows.
 
 ## Quickstart
 
@@ -281,8 +323,27 @@ and a fixed "I don't have enough information..." answer — the LLM is never
 called in that case, so it works even without `GROQ_API_KEY` set for that
 specific response.
 
+Ask the agent a question — it decides for itself whether to search the
+knowledge base, use the calculator, look up document metadata, or just
+answer directly (needs `GROQ_API_KEY`):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/agents/run \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is 250 * 0.18, and what does our travel policy say about hotel expenses?"}'
+
+# Stream safe progress events (tool_started/tool_completed/answer_delta/completed)
+curl -N -X POST http://localhost:8000/api/v1/agents/run/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is 12 * 7?"}'
+```
+
+The response includes the final answer, a per-tool usage summary, and any
+knowledge-base sources consulted — never raw graph state or a tool's raw
+arguments/result payload.
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
-every endpoint — chat and grounded-RAG requests respond with a
+every endpoint — chat, grounded-RAG, and agent requests respond with a
 `503 llm_unavailable` instead (and persist nothing, per the atomic-turn
 design — see
 [ADR 004](docs/architecture/decisions/004-conversation-persistence.md)).
@@ -294,16 +355,18 @@ Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 
 ```bash
 uv run pytest       # unit + integration; integration tests skip without live
-                     # Postgres/Redis, the Groq live test skips without a
-                     # real GROQ_API_KEY, and the real-embedding-model tests
-                     # (embeddings + RAG pipeline + Recall@K) skip unless
-                     # explicitly opted into — none are required to pass
+                     # Postgres/Redis, the Groq live tests (chat + agent
+                     # tool selection) skip without a real GROQ_API_KEY, and
+                     # the real-embedding-model tests (embeddings + RAG
+                     # pipeline + Recall@K) skip unless explicitly opted
+                     # into — none are required to pass
 uv run ruff check .
 uv run ruff format .
 uv run pyright
 ```
 
-Run the opt-in real Groq test explicitly with:
+Run the opt-in real Groq tests explicitly with (covers plain chat and the
+agent's real tool-selection behavior):
 
 ```bash
 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
@@ -324,10 +387,11 @@ all available targets (`run`, `docker-up`, `migrate`, ...).
 
 Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
 (conversational chat + persistence), Milestone 3 (document ingestion),
-Milestone 4 (embeddings & vector storage), and Milestone 5 (retrieval-
-augmented generation) are done. Remaining, in rough order, each as its own
-milestone: LangGraph agents & tool calling → MCP → multi-agent workflows
-(A2A) → memory beyond conversation history → evaluation → security/RBAC →
+Milestone 4 (embeddings & vector storage), Milestone 5 (retrieval-
+augmented generation), and Milestone 6 (single-agent LangGraph
+orchestration with controlled tool calling) are done. Remaining, in rough
+order, each as its own milestone: MCP → multi-agent workflows (A2A) →
+memory beyond conversation history → evaluation → security/RBAC →
 observability/LLMOps → async workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in

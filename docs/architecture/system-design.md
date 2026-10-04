@@ -17,7 +17,7 @@ orchestrated via Docker Compose in local development.
 ```
 ┌─────────────────┐       HTTP        ┌──────────────────────────────────────────────────┐
 │ Streamlit UI     │ ─────────────────▶│ FastAPI app (backend)                            │
-│ (frontend/)      │                   │  api/ -> services/, rag/ -> prompts/, llm/, documents/, embeddings/, db/ │
+│ (frontend/)      │                   │  api/ -> services/, rag/, agents/ -> prompts/, llm/, documents/, embeddings/, db/ │
 └─────────────────┘                   └──┬──────────────┬──────────────────┬─────────────┘
                                           │              │                  │
                           ┌───────────────┼──────┐       │        ┌────────┴────────┐
@@ -45,10 +45,11 @@ orchestrated via Docker Compose in local development.
 | `storage/` | Provider-neutral file storage (`base.py`); `local.py` (`LocalFileStorage`) is the only implementation. Implemented in Milestone 3. |
 | `embeddings/` | Text embedding — a provider-neutral abstraction (`base.py`) over turning text into vectors, plus `service.py` (`EmbeddingService`, orchestration: batching, idempotency, persistence, and — new in Milestone 5 — `embed_query`). `providers/local.py` (`LocalEmbeddingProvider`, Sentence Transformers) is the only implementation and the only module allowed to import `sentence_transformers`. Implemented in Milestone 4. See [ADR 006](decisions/006-embedding-model.md). |
 | `rag/` | Retrieval-augmented generation: `service.py` (`RAGService`, the only layer combining retrieval with generation), `retrieval/` (`RetrievalService`, `RetrievalStrategy`/`VectorRetrievalStrategy`, `RetrievalRepository`), `context/` (`ContextAssembler`), `prompts/` (`AEGIS_RAG_SYSTEM_PROMPT`, `RAGPromptBuilder`). Implemented in Milestone 5. See [ADR 007](decisions/007-rag-pipeline.md). |
+| `agents/` | Single-agent LangGraph orchestration with controlled tool calling: `service.py` (`AgentService`), `graph.py` (the `StateGraph`), `schemas.py` (`AgentState` and result types), `messages.py` (LangChain-message ↔ `ChatMessage` boundary), `prompts.py` (`AEGIS_AGENT_SYSTEM_PROMPT`), `tools/` (`ToolRegistry`/`ToolDefinition` + the three registered tools: `calculator`, `get_document_metadata`, `search_knowledge_base`). Implemented in Milestone 6. See [ADR 008](decisions/008-agent-architecture.md). |
 | `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
-| `agents/`, `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. |
+| `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
 
-Dependency direction is one-way: `api` → `services`/`rag` →
+Dependency direction is one-way: `api` → `services`/`rag`/`agents` →
 `prompts`/`llm`/`documents`/`storage`/`embeddings`/`db`. `domain/` sits
 below everything and depends on nothing else in the app (notably, `domain`
 does not depend on `llm` — see
@@ -63,15 +64,22 @@ interface) → `retrieval/repository.py`, and separately `service.py` →
 `sentence_transformers`, `app.db.repositories.chunk_embedding_repository`,
 or a provider SDK directly — it only ever reaches the embedding model
 through `EmbeddingService` and the LLM through `LLMGateway`, the same as
-every other service. Routes never talk to the database, Redis, the Groq
-SDK, the filesystem, a parsing library, or an embedding model directly —
-`app.llm.providers.groq` is the *only* module allowed to import `groq`;
-`app.documents.extractors` is the only code allowed to import
-`pypdf`/`docx`; `app.embeddings.providers.local` is the only code allowed
-to import `sentence_transformers`; `app.storage` is the only code that
-touches the filesystem; `app.db.repositories` (and, for the RAG-specific
-retrieval query, `app.rag.retrieval.repository`) is the only code that
-builds SQLAlchemy queries.
+every other service. Within `agents/`: `service.py` → `graph.py` (the
+`StateGraph`) → `tools/registry.py` (which assembles the explicit
+`ToolRegistry` — the only path from a tool name to an executable
+function); `agents/` never imports a provider SDK or
+`sentence_transformers` either — the knowledge-base tool reaches pgvector
+only through the existing `RetrievalService`, and all LLM calls (including
+tool-calling ones) go through the existing `LLMGateway`. Routes never talk
+to the database, Redis, the Groq SDK, the filesystem, a parsing library,
+or an embedding model directly — `app.llm.providers.groq` is the *only*
+module allowed to import `groq`; `app.documents.extractors` is the only
+code allowed to import `pypdf`/`docx`; `app.embeddings.providers.local` is
+the only code allowed to import `sentence_transformers`; `app.storage` is
+the only code that touches the filesystem; `app.db.repositories` (and, for
+the RAG-specific retrieval query, `app.rag.retrieval.repository`) is the
+only code that builds SQLAlchemy queries; `app.agents.tools` is the only
+code that calls a registered tool's executor.
 
 ## Request lifecycle (today)
 
@@ -83,17 +91,20 @@ builds SQLAlchemy queries.
    (`api/v1/health.py`), `/api/v1/chat/completions[/stream]`
    (`api/v1/chat.py`), `/api/v1/conversations[/...]`
    (`api/v1/conversations.py`), `/api/v1/documents[/...]`, including
-   `/api/v1/documents/{id}/embeddings` (`api/v1/documents.py`), and
-   `/api/v1/rag/chat[/stream]` (`api/v1/rag.py`) are implemented;
+   `/api/v1/documents/{id}/embeddings` (`api/v1/documents.py`),
+   `/api/v1/rag/chat[/stream]` (`api/v1/rag.py`), and
+   `/api/v1/agents/run[/stream]` (`api/v1/agents.py`) are implemented;
    everything else under `/api/v1` is reserved for future business
    endpoints.
 3. Unhandled errors — including the typed `LLMError` hierarchy,
    `NotFoundError`, `DocumentValidationError`, `DocumentNotReadyError`,
-   `EmbeddingProviderError`, and `EmbeddingDimensionMismatchError` — are
-   caught by handlers registered in `core/exceptions.py` and returned as a
-   consistent JSON envelope: `{"error": {"code", "message", "request_id"}}`.
-   The RAG endpoints reuse these same handlers rather than registering new
-   ones (see [ADR 007](decisions/007-rag-pipeline.md), "Error handling").
+   `EmbeddingProviderError`, `EmbeddingDimensionMismatchError`, and
+   `AgentTimeoutError` — are caught by handlers registered in
+   `core/exceptions.py` and returned as a consistent JSON envelope:
+   `{"error": {"code", "message", "request_id"}}`. The RAG and agent
+   endpoints both reuse these same handlers rather than registering
+   duplicate ones per milestone (see [ADR 007](decisions/007-rag-pipeline.md)
+   and [ADR 008](decisions/008-agent-architecture.md), "Error handling").
    Raw provider exceptions, raw database errors, and raw filesystem paths
    never reach this layer.
 
@@ -274,6 +285,61 @@ See [ADR 007](decisions/007-rag-pipeline.md) for the full rationale and
   real embedding model) — illustrative, not a benchmark; see the ADR and
   the end-of-milestone report for the actual result.
 
+## Agents
+
+See [ADR 008](decisions/008-agent-architecture.md) for the full rationale
+and [data-flow.md](data-flow.md) for the request flow. In brief:
+
+- **No new tables** — like RAG, the agent reads/writes the existing
+  `conversations`/`messages` tables only; per-run workflow state
+  (`AgentState`) lives only in memory for the duration of one LangGraph
+  invocation and is never persisted.
+- **`AgentService`** orchestrates: resolve/create the conversation -> load
+  history -> build the initial LangGraph state -> invoke the graph
+  (wrapped in `asyncio.wait_for(..., timeout=AGENT_TIMEOUT_SECONDS)`) ->
+  extract the final answer/tool-usage-summary/knowledge-base sources ->
+  persist only the user question and final assistant answer (never
+  intermediate tool traffic) -> return a normalized result.
+- **The graph** (`app/agents/graph.py`, LangGraph `StateGraph`,
+  `langgraph==1.2.12`): `agent` node calls `LLMGateway.chat_completion`
+  (extended this milestone with an optional `tools` parameter) and never
+  executes a tool itself; `tools` node is the only code that calls
+  `ToolRegistry.execute`; `should_continue` routes to `tools` (under both
+  limits), a `max_steps`/`max_tool_calls` stop node, or `END` — every path
+  terminates in a bounded number of steps.
+- **Three registered tools** (`app.agents.tools`): `calculator` (AST-based
+  arithmetic — never `eval`/`exec` — with operand/exponent magnitude
+  bounds against computational DoS), `get_document_metadata` (reuses
+  `DocumentRepository.get`), `search_knowledge_base` (reuses
+  `RetrievalService.retrieve` directly — agentic RAG, not a duplicate
+  retrieval path). The registry is an explicit, closed allowlist: an
+  unregistered tool name can never execute.
+- **Tool arguments are untrusted input**: every call goes through
+  JSON-parsing, then `args_schema.model_validate` (Pydantic), before an
+  executor ever runs; `ToolRegistry.execute` never raises — it always
+  returns a structured `ToolResult(success, data, error, error_code)`,
+  even when the executor itself throws.
+- **Safety limits**: `AGENT_MAX_STEPS` (default `8`) and
+  `AGENT_MAX_TOOL_CALLS` (default `10`) are checked *before* acting, not
+  after, and produce a controlled `AgentRunResult` (HTTP `200`,
+  `status: "max_steps_exceeded"`/`"max_tool_calls_exceeded"`) — the same
+  "safe self-stop is not an error" reasoning as RAG's "no context."
+  `AGENT_TIMEOUT_SECONDS` (default `60.0`) is a wall-clock backstop that
+  *does* map to an error (`AgentTimeoutError` -> HTTP `504`), since a
+  timeout means the run didn't complete at all.
+- **Streaming** (`POST /api/v1/agents/run/stream`) emits only
+  `tool_started`/`tool_completed`/`answer_delta`/`completed` events —
+  never an intermediate `AIMessage`'s free-text reasoning. The final
+  answer is delivered as one complete `answer_delta`, not token-streamed —
+  see the ADR for why (tool-call decisions need complete structured
+  output, so the agent's internal LLM calls are never themselves
+  streaming).
+- **Evaluation**: a 9-scenario deterministic fixture
+  (`tests/evaluation/agent_fixtures.py` + `test_agent_evaluation.py`) run
+  against the real graph/tool registry with every LLM response scripted —
+  a behavioral regression checklist, not a measurement of real-model
+  accuracy; see the ADR.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -294,10 +360,14 @@ have working defaults; the model downloads from Hugging Face on first use
 (`RAG_TOP_K`, `RAG_MAX_RESULTS`, `RAG_SIMILARITY_THRESHOLD`,
 `RAG_MAX_CONTEXT_CHARS`) likewise have working defaults; the similarity
 threshold default is explicitly a conservative starting point, not a
-validated constant — see [ADR 007](decisions/007-rag-pipeline.md).
+validated constant — see [ADR 007](decisions/007-rag-pipeline.md). Agent
+settings (`AGENT_MAX_STEPS`, `AGENT_MAX_TOOL_CALLS`,
+`AGENT_TIMEOUT_SECONDS`) likewise have working, explicitly-conservative
+defaults, not production-tuned claims — see
+[ADR 008](decisions/008-agent-architecture.md).
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
-request, conversation-retrieval, document-ingestion, embedding, and RAG
-data flows.
+request, conversation-retrieval, document-ingestion, embedding, RAG, and
+agent data flows.

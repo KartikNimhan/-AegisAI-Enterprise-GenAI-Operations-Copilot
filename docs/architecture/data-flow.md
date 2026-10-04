@@ -457,9 +457,97 @@ instruction — that depends on the model itself. See
 [ADR 007](decisions/007-rag-pipeline.md), "Prompt injection," for the
 full reasoning and its stated limits.
 
+## `POST /api/v1/agents/run` (non-streaming)
+
+```
+Client
+   │  POST /api/v1/agents/run
+   │  {"message": "...", "conversation_id": null | "<uuid>", "model_role": "primary"}
+   ▼
+api/v1/agents.py (run_agent)
+   │  thin: forwards to the service, wraps the result
+   ▼
+agents/service.py (AgentService.run)
+   │  1. resolve-or-create the conversation (same pattern as ChatService/RAGService)
+   │  2. load prior messages, map to LangChain messages (app.agents.messages)
+   │  3. persist the user message
+   │  4. build initial AgentState: [system prompt, ...history, question]
+   ▼
+agents/graph.py (compiled StateGraph.ainvoke, wrapped in
+                  asyncio.wait_for(..., timeout=AGENT_TIMEOUT_SECONDS))
+   │
+   │  ┌─────────────────────────────────────────┐
+   │  │                                         │
+   ▼  │                                         │
+  agent node ──should_continue?── tool calls, under limits ──► tools node ──┘
+   │                                                              │
+   │   (LLMGateway.chat_completion with tools=ToolRegistry         │
+   │    .to_tool_specs() — never executes a tool itself)           │  ToolRegistry.execute:
+   │                                                              │  JSON parse -> args_schema
+   ├── no tool calls ──────────────► END (final answer)           │  .model_validate -> executor
+   ├── over AGENT_MAX_STEPS ───────► max_steps stop node ─► END   │  -> ToolResult (never raises)
+   └── over AGENT_MAX_TOOL_CALLS ──► max_tool_calls stop node ─► END
+   ▼
+agents/service.py
+   │  extract final answer (last AIMessage with no pending tool
+   │  calls) + tool-usage summary + search_knowledge_base sources
+   │  from the final message list
+   ▼
+persist the final assistant message only (never intermediate tool
+traffic); touch the conversation
+```
+
+**Commits once per request** (like chat/RAG) via
+`app.db.session.get_session`'s ambient commit/rollback.
+
+**Response**: `AgentRunResponse` — `run_id`, `conversation_id`, `answer`,
+`status` (`completed` / `max_steps_exceeded` / `max_tool_calls_exceeded`),
+`steps`, `tool_usage` (per-tool call/success/failure counts), `sources`
+(when `search_knowledge_base` was used) — never raw graph state, never a
+tool's raw arguments or result payload.
+
+**Error path**: an unknown `conversation_id` -> `NotFoundError` -> 404
+(reused, not duplicated). A query-embedding failure inside
+`search_knowledge_base` -> `EmbeddingProviderError`/
+`EmbeddingDimensionMismatchError` -> 502/500 (Milestone 4's existing
+handlers). A generation failure -> the `LLMError` hierarchy -> its
+existing mapped status. A run exceeding `AGENT_TIMEOUT_SECONDS` ->
+`AgentTimeoutError` -> 504 (new handler, same status `LLMTimeoutError`
+uses, for the same "didn't complete" reasoning). Hitting
+`AGENT_MAX_STEPS`/`AGENT_MAX_TOOL_CALLS` is **not** an error — it's a
+successful `200` with a `*_exceeded` status, the same "safe self-stop" as
+RAG's "no context."
+
+## `POST /api/v1/agents/run/stream` (SSE)
+
+Same steps as above through graph construction, then:
+
+```
+agents/service.py (AgentService.run_stream)
+   │  async for update in graph.astream(..., stream_mode="updates"):
+   │      agent node update with tool_calls  -> yield "tool_started" per call
+   │      tools node update                  -> yield "tool_completed" per result
+   │  (after the loop) yield "answer_delta" with the complete final answer,
+   │  then "completed"; persist the final assistant message
+```
+
+**Never streams chain-of-thought**: only four event types exist
+(`tool_started`, `tool_completed`, `answer_delta`, `completed`) and none
+of them carry an intermediate `AIMessage`'s free-text content — only the
+structured fact that a named tool was called and whether it succeeded.
+The final answer is delivered as one complete `answer_delta`, not
+token-by-token — see [ADR 008](decisions/008-agent-architecture.md),
+"Streaming," for why (tool-call decisions need complete structured
+output, so the agent's internal LLM calls never themselves stream).
+
+**Mid-stream failure**: identical reasoning to the RAG/chat streaming
+endpoints — `api/v1/agents.py` catches `LLMError` and `AgentTimeoutError`
+to emit a terminal SSE error event instead of propagating (headers/status
+are already committed once streaming starts).
+
 ## Future data flows
 
-Once LangGraph agents, tool calling, MCP, and multi-agent workflows are
-implemented, this document will describe their request flows. None of
-that exists yet; adding it here ahead of the code would misrepresent the
+Once MCP, A2A, and multi-agent workflows are implemented, this document
+will describe their request flows. None of that exists yet; adding it
+here ahead of the code would misrepresent the
 current system.

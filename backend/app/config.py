@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     rag_similarity_threshold: float = 0.3
     rag_max_context_chars: int = 8000
 
+    # Agents (Milestone 6). Conservative development defaults, not
+    # production-tuned claims — see ADR 008. agent_max_steps bounds the
+    # number of agent/LLM turns in one run (each tool-call round trip is
+    # one step); agent_max_tool_calls bounds total tool invocations across
+    # the whole run, independent of step count (a single step can request
+    # more than one tool call); agent_timeout_seconds is a wall-clock
+    # backstop covering the entire run, not any single LLM/tool call.
+    agent_max_steps: int = 8
+    agent_max_tool_calls: int = 10
+    agent_timeout_seconds: float = 60.0
+
 
 @lru_cache
 def get_settings() -> Settings:

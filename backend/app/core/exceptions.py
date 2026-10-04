@@ -9,6 +9,7 @@ from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.agents.exceptions import AgentTimeoutError
 from app.documents.exceptions import DocumentValidationError
 from app.embeddings.exceptions import (
     DocumentNotReadyError,
@@ -152,6 +153,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             content=_error_payload(request, code="llm_timeout", message=str(exc)),
+        )
+
+    @app.exception_handler(AgentTimeoutError)
+    async def handle_agent_timeout_error(request: Request, exc: AgentTimeoutError) -> JSONResponse:
+        logger.warning("agent_timeout", message=str(exc))
+        return JSONResponse(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            content=_error_payload(request, code="agent_timeout", message=str(exc)),
         )
 
     @app.exception_handler(LLMAuthenticationError)

@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from app.llm.schemas import ChatMessage, CompletionResponse, StreamChunk
+from app.llm.schemas import ChatMessage, CompletionResponse, StreamChunk, ToolSpec
 
 
 class LLMProvider(ABC):
@@ -28,8 +28,14 @@ class LLMProvider(ABC):
         temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, object] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> CompletionResponse:
-        """Returns a single, normalized completion. Must raise only LLMError subclasses."""
+        """Returns a single, normalized completion. Must raise only LLMError
+        subclasses. `tools`, when given, lets the model request a tool call
+        instead of (or alongside) text content — see `CompletionResponse.tool_calls`.
+        Not supported on `stream_complete`: tool-call decisions need the
+        complete structured output, not token deltas (see ADR 008).
+        """
         raise NotImplementedError
 
     @abstractmethod

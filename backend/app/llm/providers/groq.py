@@ -24,7 +24,15 @@ from app.llm.exceptions import (
     LLMRateLimitError,
     LLMTimeoutError,
 )
-from app.llm.schemas import ChatMessage, CompletionResponse, StreamChunk, TokenUsage
+from app.llm.schemas import (
+    ChatMessage,
+    ChatRole,
+    CompletionResponse,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
+    ToolSpec,
+)
 
 
 class GroqProvider(LLMProvider):
@@ -65,6 +73,7 @@ class GroqProvider(LLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, object] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> CompletionResponse:
         client = self._get_client()
         kwargs = _build_create_kwargs(
@@ -73,6 +82,7 @@ class GroqProvider(LLMProvider):
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            tools=tools,
         )
         try:
             response = await client.chat.completions.create(**kwargs)
@@ -115,15 +125,14 @@ def _build_create_kwargs(
     temperature: float | None,
     max_tokens: int | None,
     response_format: dict[str, object] | None = None,
+    tools: list[ToolSpec] | None = None,
     stream: bool | None = None,
     stream_options: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Omits unset parameters entirely, rather than sending explicit nulls."""
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": message.role.value, "content": message.content} for message in messages
-        ],
+        "messages": [_message_to_groq_dict(message) for message in messages],
     }
     if temperature is not None:
         kwargs["temperature"] = temperature
@@ -131,11 +140,40 @@ def _build_create_kwargs(
         kwargs["max_tokens"] = max_tokens
     if response_format is not None:
         kwargs["response_format"] = response_format
+    if tools is not None:
+        kwargs["tools"] = [_tool_spec_to_groq_dict(tool) for tool in tools]
     if stream is not None:
         kwargs["stream"] = stream
     if stream_options is not None:
         kwargs["stream_options"] = stream_options
     return kwargs
+
+
+def _message_to_groq_dict(message: ChatMessage) -> dict[str, Any]:
+    payload: dict[str, Any] = {"role": message.role.value, "content": message.content}
+    if message.role == ChatRole.ASSISTANT and message.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {"name": tool_call.name, "arguments": tool_call.arguments},
+            }
+            for tool_call in message.tool_calls
+        ]
+    if message.role == ChatRole.TOOL:
+        payload["tool_call_id"] = message.tool_call_id
+    return payload
+
+
+def _tool_spec_to_groq_dict(tool: ToolSpec) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        },
+    }
 
 
 def _usage_from(usage: Any) -> TokenUsage | None:
@@ -164,7 +202,18 @@ def _to_completion_response(response: Any, *, provider: str) -> CompletionRespon
         finish_reason=choice.finish_reason,
         usage=_usage_from(response.usage) or TokenUsage(),
         request_id=_request_id_from(response),
+        tool_calls=_tool_calls_from(choice.message),
     )
+
+
+def _tool_calls_from(message: Any) -> list[ToolCall] | None:
+    raw_tool_calls = getattr(message, "tool_calls", None)
+    if not raw_tool_calls:
+        return None
+    return [
+        ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
+        for tc in raw_tool_calls
+    ]
 
 
 def _to_stream_chunk(event: Any) -> StreamChunk:

@@ -25,7 +25,7 @@ from app.llm.exceptions import (
     LLMTimeoutError,
 )
 from app.llm.providers.groq import GroqProvider
-from app.llm.schemas import ChatMessage, CompletionResponse, ModelRole, StreamChunk
+from app.llm.schemas import ChatMessage, CompletionResponse, ModelRole, StreamChunk, ToolSpec
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +62,7 @@ class LLMGateway:
         temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, object] | None = None,
+        tools: list[ToolSpec] | None = None,
     ) -> CompletionResponse:
         model = self.resolve_model(model_role)
 
@@ -72,6 +73,7 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
+                tools=tools,
             )
 
         return await self._with_retries(
