@@ -90,6 +90,33 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 10
     agent_timeout_seconds: float = 60.0
 
+    # MCP (Milestone 7). The in-process MCP server's capabilities are
+    # exposed to the agent only through an explicit allowlist — a
+    # discovered tool is never trusted just because the server returned
+    # it. trusted_mcp_servers names approved server identities (this
+    # project runs exactly one, in-process); trusted_mcp_tools is the
+    # tool-name allowlist checked against every discovered tool before it
+    # is ever registered. See ADR 009.
+    mcp_client_timeout_seconds: float = 10.0
+    trusted_mcp_servers: list[str] = ["aegisai-internal"]
+    trusted_mcp_tools: list[str] = [
+        "search_knowledge_base",
+        "calculator",
+        "get_document_metadata",
+    ]
+
+    # A2A (Milestone 7). trusted_a2a_agents is a base-URL allowlist — the
+    # orchestrator may only fetch an Agent Card from, and submit a task
+    # to, a configured URL, never one supplied by a user or discovered at
+    # runtime. research_agent_name is checked against the fetched card's
+    # `name` as a second, independent trust signal before any capability
+    # on it is used. The Research Agent in this milestone happens to be
+    # served by this same application (see ADR 009) — the allowlist still
+    # enforces the real A2A trust boundary, not an implementation detail.
+    a2a_client_timeout_seconds: float = 15.0
+    trusted_a2a_agents: list[str] = ["http://localhost:8000"]
+    research_agent_name: str = "AegisAI Research Agent"
+
 
 @lru_cache
 def get_settings() -> Settings:

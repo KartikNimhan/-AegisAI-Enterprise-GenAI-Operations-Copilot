@@ -29,8 +29,18 @@ single, LangGraph-orchestrated agent with controlled tool calling
 lookup), an explicit tool registry with no path to arbitrary code
 execution, configurable step/tool-call/timeout safety limits, and both
 plain and streaming agent endpoints that never expose chain-of-thought.
-MCP, A2A, multi-agent orchestration, and memory beyond plain conversation
-history are **not** implemented yet — see [Roadmap](#roadmap) below.
+**Milestone 7** adds MCP and A2A interoperability: an MCP server
+re-exposing the same three internal tools over a standardized tool
+boundary (discovered, not hardcoded, by the agent's MCP client), one
+small remote Research Agent reached through a real A2A boundary (an
+Agent Card, a task lifecycle, an explicit trusted-agent allowlist — never
+called directly), and the M6 agent extended to use internal, MCP, and
+A2A capabilities side by side through the same `ToolRegistry`. See
+[ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md) for
+the full reasoning, including why this is one MCP server and one remote
+agent, not a multi-agent platform. Multi-agent orchestration beyond this
+single Research Agent, and memory beyond plain conversation history, are
+**not** implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -131,6 +141,32 @@ history are **not** implemented yet — see [Roadmap](#roadmap) below.
   streaming endpoint emits only safe, structured events
   (`tool_started`/`tool_completed`/`answer_delta`/`completed`) — never the
   model's intermediate reasoning.
+- **MCP interoperability** (`backend/app/mcp/`) — an MCP server
+  (`mcp==2.3.0`) re-exposing the same three internal tools plus a
+  `document://{document_id}` resource over the Model Context Protocol
+  (thin adapters, not a second implementation). The agent's MCP client
+  *discovers* tools from the server (never hardcoded), validates each
+  against an explicit server/tool allowlist
+  (`TRUSTED_MCP_SERVERS`/`TRUSTED_MCP_TOOLS`), and wraps each approved one
+  as the same `ToolDefinition` an internal tool uses — the graph needed no
+  changes to support MCP. An MCP failure degrades to "no MCP tools,"
+  never a broken agent. `scripts/mcp_stdio_server.py` runs the same
+  server over the standard stdio transport for an external MCP client
+  (the MCP Inspector, an IDE). See
+  [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md).
+- **A2A interoperability** (`backend/app/a2a/`) — one small, specialized
+  remote **Research Agent** (`a2a-sdk==1.2.1`), reached only through a
+  real A2A protocol boundary: a spec-accurate Agent Card
+  (`GET /.well-known/agent-card.json`), a real task lifecycle
+  (`POST /api/v1/agents/research/tasks`, submitted → working →
+  completed/failed), and an explicit trusted-agent allowlist
+  (`TRUSTED_A2A_AGENTS`) checked before any call. The orchestrator never
+  calls the Research Agent's implementation directly — only through
+  `A2AClient`, registered into the same `ToolRegistry` as
+  `delegate_to_research_agent`, whose own argument schema has no
+  endpoint/URL field the model could redirect. One orchestrator, one
+  remote agent — not a multi-agent swarm. See
+  [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md).
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra, API key, or embedding model download
   required) and integration tests that skip gracefully when
@@ -143,8 +179,8 @@ history are **not** implemented yet — see [Roadmap](#roadmap) below.
 
 Python 3.12+ · uv · FastAPI · Pydantic v2 + pydantic-settings · SQLAlchemy
 2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pypdf ·
-python-docx · Sentence Transformers · LangGraph · pytest · Ruff · pyright ·
-Docker/Docker Compose · Streamlit
+python-docx · Sentence Transformers · LangGraph · MCP SDK · a2a-sdk ·
+httpx · pytest · Ruff · pyright · Docker/Docker Compose · Streamlit
 
 ## Architecture
 
@@ -207,10 +243,25 @@ backend/app/
     prompts.py       AEGIS_AGENT_SYSTEM_PROMPT
     exceptions.py    AgentError, AgentTimeoutError
     tools/           ToolRegistry/ToolDefinition + calculator, get_document_metadata,
-                     search_knowledge_base — the only path from a tool name to code
+                     search_knowledge_base, research_delegation (A2A, Milestone 7)
+                     — the only path from a tool name to code
   tools/          reserved for a possible future non-agent-specific tool need
                   (Milestone 6's own tool calling lives in agents/tools/ above)
-  mcp/            Model Context Protocol (reserved)
+  mcp/            Model Context Protocol — implemented (see ADR 009)
+    server.py       build_mcp_server: thin MCP adapters over the same
+                     ToolDefinition.executor the internal agent uses
+    client.py       discover_mcp_tool_definitions: discovery + allowlist +
+                     wraps each approved tool as a ToolDefinition
+    exceptions.py    typed MCPError hierarchy
+  a2a/            Agent2Agent — implemented (see ADR 009)
+    agent_card.py    build_research_agent_card (real a2a.types AgentCard)
+    research_agent.py ResearchAgentService: retrieve + synthesize (reuses
+                     RetrievalService/LLMGateway directly, not RAGService)
+    tasks.py         build_task/task_to_dict (real a2a.types Task/Artifact)
+    client.py        A2AClient: the only way the orchestrator reaches the
+                     Research Agent — trusted-agent allowlist, Card
+                     validation, task submission/parsing
+    exceptions.py    typed A2AError hierarchy
   memory/         agent memory beyond conversation history (reserved)
   evaluation/     evaluation harness (reserved)
   observability/  LLMOps observability (reserved)
@@ -232,10 +283,20 @@ LocalEmbeddingProvider -> sentence_transformers`; the RAG call chain is
 `api -> RAGService -> RetrievalService -> RetrievalStrategy ->
 EmbeddingService/RetrievalRepository`; the agent call chain is
 `api -> AgentService -> StateGraph -> ToolRegistry -> (calculator |
-DocumentRepository | RetrievalService)`, with every LLM call (plain or
-tool-calling) going through the same `LLMGateway` — `agents/` never
-imports a provider SDK or `sentence_transformers` directly, and the
-tool registry is the only path from a tool name to executable code.
+DocumentRepository | RetrievalService | mcp.client | a2a.client)`, with
+every LLM call (plain or tool-calling) going through the same
+`LLMGateway` — `agents/` never imports a provider SDK or
+`sentence_transformers` directly, and the tool registry is the only path
+from a tool name to executable code, whether that tool is internal,
+MCP-discovered, or the A2A delegation tool. The MCP call chain is
+`agents/tools/registry.py -> mcp.client.discover_mcp_tool_definitions ->
+mcp.client.Client -> mcp.server.build_mcp_server -> (the same
+ToolDefinition.executor an internal tool uses)` — never a second
+implementation of a tool's logic. The A2A call chain is
+`agents/tools/research_delegation.py -> a2a.client.A2AClient -> HTTP ->
+api/v1/research_agent.py -> a2a.research_agent.ResearchAgentService ->
+RetrievalService/LLMGateway` — the orchestrator never imports
+`ResearchAgentService` directly, only `A2AClient`.
 Nothing above `providers/groq.py` ever imports `groq`; nothing outside
 `documents/extractors/` imports `pypdf`/`docx`; nothing outside
 `embeddings/providers/local.py` imports `sentence_transformers`; nothing
@@ -342,6 +403,26 @@ The response includes the final answer, a per-tool usage summary, and any
 knowledge-base sources consulted — never raw graph state or a tool's raw
 arguments/result payload.
 
+Ask the agent something that benefits from the Research Agent (it decides
+whether to call `delegate_to_research_agent`, an MCP tool, or an internal
+one):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/agents/run \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Research what our documents say about the refund policy."}'
+```
+
+Inspect the Research Agent's own A2A boundary directly:
+
+```bash
+curl http://localhost:8000/.well-known/agent-card.json
+
+curl -X POST http://localhost:8000/api/v1/agents/research/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is our refund policy?"}'
+```
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
 every endpoint — chat, grounded-RAG, and agent requests respond with a
 `503 llm_unavailable` instead (and persist nothing, per the atomic-turn
@@ -380,6 +461,22 @@ test, the full RAG pipeline test, and the Recall@K evaluation):
 RUN_EMBEDDING_INTEGRATION=1 uv run pytest -m embedding_integration -v
 ```
 
+Run the opt-in real MCP stdio transport test explicitly with (spawns
+`scripts/mcp_stdio_server.py` as a real subprocess against live Postgres):
+
+```bash
+RUN_MCP_STDIO_INTEGRATION=1 uv run pytest -m mcp_integration -v
+```
+
+Run the opt-in real A2A HTTP transport tests explicitly with (a real
+`uvicorn` server on a real socket; add `GROQ_API_KEY` for the tier that
+also makes a real Groq call through the full A2A stack):
+
+```bash
+RUN_A2A_LIVE_INTEGRATION=1 uv run pytest -m a2a_integration -v
+RUN_A2A_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... uv run pytest -m a2a_integration -v
+```
+
 Or `make check` (lint + typecheck + test). See the [Makefile](Makefile) for
 all available targets (`run`, `docker-up`, `migrate`, ...).
 
@@ -388,11 +485,14 @@ all available targets (`run`, `docker-up`, `migrate`, ...).
 Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
 (conversational chat + persistence), Milestone 3 (document ingestion),
 Milestone 4 (embeddings & vector storage), Milestone 5 (retrieval-
-augmented generation), and Milestone 6 (single-agent LangGraph
-orchestration with controlled tool calling) are done. Remaining, in rough
-order, each as its own milestone: MCP → multi-agent workflows (A2A) →
-memory beyond conversation history → evaluation → security/RBAC →
-observability/LLMOps → async workers → Kubernetes → multimodal/voice.
+augmented generation), Milestone 6 (single-agent LangGraph orchestration
+with controlled tool calling), and Milestone 7 (MCP + A2A
+interoperability: an MCP server/client for the same internal tools, and
+one remote Research Agent reached through a real A2A boundary) are done.
+Remaining, in rough order, each as its own milestone: multi-agent
+workflows beyond this single Research Agent → memory beyond conversation
+history → evaluation → security/RBAC → observability/LLMOps → async
+workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

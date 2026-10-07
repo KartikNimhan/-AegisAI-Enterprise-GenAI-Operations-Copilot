@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app.api.router import api_router
 from app.api.v1 import health
+from app.api.v1.research_agent import well_known_router
 from app.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
@@ -34,8 +35,11 @@ def create_app() -> FastAPI:
     application.add_middleware(CorrelationIdMiddleware)
     register_exception_handlers(application)
 
-    # Unversioned: liveness/readiness probes are conventionally not versioned.
+    # Unversioned: liveness/readiness probes, and the A2A well-known Agent
+    # Card path (a fixed protocol convention, not an AegisAI API path),
+    # are conventionally not versioned.
     application.include_router(health.router)
+    application.include_router(well_known_router)
     # Versioned business routes (empty for now; see app.api.router docstring).
     application.include_router(api_router, prefix=settings.api_v1_prefix)
 

@@ -4,8 +4,9 @@ not by convention.
 
 Most of the depth here (no `eval`/`exec`, AST-only arithmetic, bounded
 operand/exponent magnitudes) lives in test_calculator.py; this file
-verifies the registry-level guarantee: only the three registered tools
-exist at all, and none of them expose a dangerous capability.
+verifies the registry-level guarantee: only the explicitly registered
+tools exist at all (internal, MCP-discovered, and the A2A delegation
+tool), and none of them expose a dangerous capability.
 """
 
 from __future__ import annotations
@@ -22,10 +23,15 @@ from ..rag.doubles import FakeRetrievalStrategy
 from ..services.document_doubles import FakeDocumentRepository
 
 
-def _make_registry():
+async def _make_registry():
     documents = FakeDocumentRepository()
-    retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=_settings())
-    return build_tool_registry(documents=documents, retrieval=retrieval)  # type: ignore[arg-type]
+    settings = _settings()
+    retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=settings)
+    return await build_tool_registry(
+        documents=documents,  # type: ignore[arg-type]
+        retrieval=retrieval,
+        settings=settings,
+    )
 
 
 def _settings():
@@ -34,15 +40,32 @@ def _settings():
     return Settings(rag_top_k=5, rag_max_results=20, rag_similarity_threshold=0.3)
 
 
-def test_exactly_three_tools_are_registered() -> None:
-    registry = _make_registry()
+async def test_internal_mcp_and_a2a_tools_are_registered() -> None:
+    registry = await _make_registry()
     names = {tool.name for tool in registry.list_tools()}
-    assert names == {"calculator", "search_knowledge_base", "get_document_metadata"}
+    assert names == {
+        "calculator",
+        "search_knowledge_base",
+        "get_document_metadata",
+        "delegate_to_research_agent",
+        "mcp_calculator",
+        "mcp_search_knowledge_base",
+        "mcp_get_document_metadata",
+    }
 
 
-def test_no_tool_name_suggests_arbitrary_execution() -> None:
-    registry = _make_registry()
-    forbidden_substrings = ("exec", "eval", "shell", "sql", "python", "subprocess", "http", "file")
+async def test_no_tool_name_suggests_arbitrary_execution() -> None:
+    registry = await _make_registry()
+    forbidden_substrings = (
+        "exec",
+        "eval",
+        "shell",
+        "sql",
+        "python",
+        "subprocess",
+        "http",
+        "file",
+    )
     for tool in registry.list_tools():
         lowered = tool.name.lower()
         for forbidden in forbidden_substrings:
@@ -79,7 +102,7 @@ async def test_calling_an_unregistered_tool_name_is_impossible() -> None:
     exercising the registry with names that would be dangerous if the
     lookup were ever implemented as `getattr`/`globals()`/`eval` instead
     of a plain dict."""
-    registry = _make_registry()
+    registry = await _make_registry()
 
     for dangerous_name in ("eval", "exec", "os.system", "subprocess.run", "__import__"):
         result = await registry.execute(dangerous_name, "{}")
@@ -87,10 +110,10 @@ async def test_calling_an_unregistered_tool_name_is_impossible() -> None:
         assert result.error_code == "not_found"
 
 
-def test_calculator_tool_is_the_shared_global_instance() -> None:
+async def test_calculator_tool_is_the_shared_global_instance() -> None:
     """The registry registers the same `CALCULATOR_TOOL` object everywhere
     — not a per-request reconstruction that could diverge in behavior."""
-    registry = _make_registry()
+    registry = await _make_registry()
     assert registry.get("calculator") is CALCULATOR_TOOL
 
 

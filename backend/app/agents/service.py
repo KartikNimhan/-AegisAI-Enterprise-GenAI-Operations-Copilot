@@ -38,6 +38,7 @@ from app.agents.schemas import (
     AgentStreamEvent,
     ToolUsageSummary,
 )
+from app.agents.tools.base import ToolRegistry
 from app.agents.tools.registry import build_tool_registry
 from app.config import Settings, get_settings
 from app.core.exceptions import NotFoundError
@@ -65,14 +66,12 @@ class AgentService:
         gateway: LLMGateway,
         conversations: ConversationRepository,
         messages: MessageRepository,
-        documents: DocumentRepository,
-        retrieval: RetrievalService,
+        tool_registry: ToolRegistry,
     ) -> None:
         self._session = session
         self._settings = settings
         self._conversations = conversations
         self._messages = messages
-        tool_registry = build_tool_registry(documents=documents, retrieval=retrieval)
         self._graph = build_agent_graph(
             gateway=gateway, tool_registry=tool_registry, settings=settings
         )
@@ -391,18 +390,21 @@ def _extract_sources(messages: list[BaseMessage]) -> list[AgentSource]:
     return sources
 
 
-def get_agent_service(
+async def get_agent_service(
     session: DBSessionDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> AgentService:
     settings = get_settings()
+    documents = DocumentRepository(session)
+    tool_registry = await build_tool_registry(
+        documents=documents, retrieval=retrieval, settings=settings
+    )
     return AgentService(
         session=session,
         settings=settings,
         gateway=gateway,
         conversations=ConversationRepository(session),
         messages=MessageRepository(session),
-        documents=DocumentRepository(session),
-        retrieval=retrieval,
+        tool_registry=tool_registry,
     )

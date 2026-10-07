@@ -19,6 +19,7 @@ from app.agents.schemas import (
     STATUS_MAX_TOOL_CALLS_EXCEEDED,
 )
 from app.agents.service import AgentService
+from app.agents.tools.registry import build_tool_registry
 from app.config import Settings
 from app.core.exceptions import NotFoundError
 from app.llm.exceptions import LLMTimeoutError
@@ -49,7 +50,7 @@ def make_settings(**overrides: object) -> Settings:
     return Settings(**defaults)  # type: ignore[arg-type]
 
 
-def make_service(
+async def make_service(
     *, gateway: ScriptedAgentGateway, settings: Settings | None = None
 ) -> tuple[AgentService, FakeConversationRepository, FakeMessageRepository]:
     resolved_settings = settings or make_settings()
@@ -59,14 +60,18 @@ def make_service(
     retrieval = RetrievalService(
         strategy=FakeRetrievalStrategy(results=[]), settings=resolved_settings
     )
+    tool_registry = await build_tool_registry(
+        documents=documents,  # type: ignore[arg-type]
+        retrieval=retrieval,
+        settings=resolved_settings,
+    )
     service = AgentService(
         session=FakeSession(),  # type: ignore[arg-type]
         settings=resolved_settings,
         gateway=gateway,
         conversations=conversations,  # type: ignore[arg-type]
         messages=messages,  # type: ignore[arg-type]
-        documents=documents,  # type: ignore[arg-type]
-        retrieval=retrieval,
+        tool_registry=tool_registry,
     )
     return service, conversations, messages
 
@@ -76,7 +81,7 @@ def make_service(
 
 async def test_direct_answer_without_any_tool_call() -> None:
     gateway = ScriptedAgentGateway(effects=[make_final_completion("4")])
-    service, _conversations, messages = make_service(gateway=gateway)
+    service, _conversations, messages = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="What is 2 + 2 conceptually?")
 
@@ -98,7 +103,7 @@ async def test_single_tool_call_then_final_answer() -> None:
             make_final_completion("The result is 45."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="What is 250 * 0.18?")
 
@@ -122,7 +127,7 @@ async def test_multiple_sequential_tool_calls() -> None:
             make_final_completion("Done."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="Compute two things")
 
@@ -143,7 +148,7 @@ async def test_multiple_tool_calls_in_a_single_step() -> None:
             make_final_completion("Done."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="Compute two things at once")
 
@@ -162,7 +167,7 @@ async def test_tool_failure_is_surfaced_to_the_model_and_run_still_completes() -
             make_final_completion("I couldn't compute that."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="What is 1/0?")
 
@@ -184,7 +189,7 @@ async def test_invalid_tool_arguments_produce_a_controlled_error_not_a_crash() -
             make_final_completion("Something went wrong with that calculation."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="question")
 
@@ -199,7 +204,7 @@ async def test_unknown_tool_name_produces_a_controlled_error() -> None:
             make_final_completion("I don't have that capability."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="question")
 
@@ -219,7 +224,7 @@ async def test_maximum_steps_protection_stops_an_infinite_tool_loop() -> None:
         for _ in range(10)
     ]
     gateway = ScriptedAgentGateway(effects=effects)
-    service, *_rest = make_service(gateway=gateway, settings=make_settings(agent_max_steps=3))
+    service, *_rest = await make_service(gateway=gateway, settings=make_settings(agent_max_steps=3))
 
     result = await service.run(conversation_id=None, message="loop forever")
 
@@ -238,7 +243,9 @@ async def test_maximum_tool_calls_protection() -> None:
             )
         ]
     )
-    service, *_rest = make_service(gateway=gateway, settings=make_settings(agent_max_tool_calls=3))
+    service, *_rest = await make_service(
+        gateway=gateway, settings=make_settings(agent_max_tool_calls=3)
+    )
 
     result = await service.run(conversation_id=None, message="call many tools at once")
 
@@ -258,7 +265,7 @@ async def test_timeout_raises_agent_timeout_error() -> None:
             return await super().chat_completion(**kwargs)  # type: ignore[arg-type]
 
     gateway = _SlowGateway(effects=[make_final_completion("too slow")])
-    service, *_rest = make_service(
+    service, *_rest = await make_service(
         gateway=gateway, settings=make_settings(agent_timeout_seconds=0.01)
     )
 
@@ -271,7 +278,7 @@ async def test_timeout_raises_agent_timeout_error() -> None:
 
 async def test_unknown_conversation_id_raises_not_found() -> None:
     gateway = ScriptedAgentGateway(effects=[make_final_completion("x")])
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     with pytest.raises(NotFoundError):
         await service.run(conversation_id=uuid.uuid4(), message="question")
@@ -284,7 +291,7 @@ async def test_persists_only_user_and_final_assistant_message_not_tool_traffic()
             make_final_completion("It's 2."),
         ]
     )
-    service, _conversations, messages = make_service(gateway=gateway)
+    service, _conversations, messages = await make_service(gateway=gateway)
 
     await service.run(conversation_id=None, message="what is 1+1")
 
@@ -310,7 +317,7 @@ async def test_malicious_tool_output_is_treated_as_data_not_instructions() -> No
             make_final_completion("I can't share that information."),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     result = await service.run(conversation_id=None, message="question")
 
@@ -331,7 +338,7 @@ async def test_tool_message_role_is_used_for_tool_results_not_system() -> None:
             make_final_completion("91347"),
         ]
     )
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     await service.run(conversation_id=None, message="question")
 
@@ -349,7 +356,7 @@ async def test_tool_message_role_is_used_for_tool_results_not_system() -> None:
 
 async def test_llm_failure_propagates() -> None:
     gateway = ScriptedAgentGateway(effects=[LLMTimeoutError("timed out", provider="groq")])
-    service, *_rest = make_service(gateway=gateway)
+    service, *_rest = await make_service(gateway=gateway)
 
     with pytest.raises(LLMTimeoutError):
         await service.run(conversation_id=None, message="question")

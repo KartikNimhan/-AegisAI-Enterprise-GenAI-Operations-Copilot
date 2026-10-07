@@ -35,9 +35,11 @@ from app.agents.schemas import (
     AgentState,
 )
 from app.agents.tools.base import ToolRegistry
+from app.agents.tools.research_delegation import RESEARCH_AGENT_TOOL_NAME
 from app.config import Settings
 from app.llm.gateway import LLMGateway
 from app.llm.schemas import ModelRole, ToolSpec
+from app.mcp.client import MCP_TOOL_NAME_PREFIX
 
 logger = structlog.get_logger(__name__)
 
@@ -132,6 +134,9 @@ def _make_tool_node(tool_registry: ToolRegistry):
 
         for tool_call in last_message.tool_calls:
             name = tool_call["name"]
+            capability = _classify_capability(name)
+            logger.info("agent.capability_selected", tool_name=name, capability=capability)
+
             start = time.perf_counter()
             result = await tool_registry.execute(name, json.dumps(tool_call["args"]))
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -142,6 +147,7 @@ def _make_tool_node(tool_registry: ToolRegistry):
             logger.info(
                 "agent.tool_call",
                 tool_name=name,
+                capability=capability,
                 success=result.success,
                 error_code=result.error_code,
                 duration_ms=duration_ms,
@@ -157,6 +163,18 @@ def _make_tool_node(tool_registry: ToolRegistry):
         }
 
     return tool_node
+
+
+def _classify_capability(tool_name: str) -> str:
+    """Labels a tool call for observability only — `ToolRegistry.execute`
+    itself treats every registered name identically (see its own
+    docstring); this distinction never affects dispatch, only what gets
+    logged under `agent.capability_selected`/`agent.tool_call`."""
+    if tool_name == RESEARCH_AGENT_TOOL_NAME:
+        return "a2a"
+    if tool_name.startswith(MCP_TOOL_NAME_PREFIX):
+        return "mcp"
+    return "internal"
 
 
 def _make_stop_node(status: str, response_text: str):

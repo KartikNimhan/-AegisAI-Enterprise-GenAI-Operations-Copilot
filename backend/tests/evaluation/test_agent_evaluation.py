@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from app.agents.service import AgentService
+from app.agents.tools.registry import build_tool_registry
 from app.config import Settings
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
@@ -38,7 +39,7 @@ def _make_settings(scenario: AgentScenario) -> Settings:
     )
 
 
-def _make_service(scenario: AgentScenario) -> tuple[AgentService, ScriptedAgentGateway]:
+async def _make_service(scenario: AgentScenario) -> tuple[AgentService, ScriptedAgentGateway]:
     settings = _make_settings(scenario)
     results = (
         scenario.retrieval_results if scenario.retrieval_results is not None else [make_result()]
@@ -62,14 +63,18 @@ def _make_service(scenario: AgentScenario) -> tuple[AgentService, ScriptedAgentG
             created_at=now,
             updated_at=now,
         )
+    tool_registry = await build_tool_registry(
+        documents=documents,  # type: ignore[arg-type]
+        retrieval=retrieval,
+        settings=settings,
+    )
     service = AgentService(
         session=FakeSession(),  # type: ignore[arg-type]
         settings=settings,
         gateway=gateway,
         conversations=FakeConversationRepository(),  # type: ignore[arg-type]
         messages=FakeMessageRepository(),  # type: ignore[arg-type]
-        documents=documents,  # type: ignore[arg-type]
-        retrieval=retrieval,
+        tool_registry=tool_registry,
     )
     return service, gateway
 
@@ -98,7 +103,7 @@ async def test_agent_evaluation_fixture() -> None:
     results: list[tuple[str, bool, str]] = []
 
     for scenario in SCENARIOS:
-        service, gateway = _make_service(scenario)
+        service, gateway = await _make_service(scenario)
         run_result = await service.run(conversation_id=None, message=scenario.message)
 
         failures: list[str] = []

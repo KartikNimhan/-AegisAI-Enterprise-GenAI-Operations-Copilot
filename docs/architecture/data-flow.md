@@ -545,9 +545,90 @@ endpoints — `api/v1/agents.py` catches `LLMError` and `AgentTimeoutError`
 to emit a terminal SSE error event instead of propagating (headers/status
 are already committed once streaming starts).
 
+## Agent calling an MCP tool (`mcp_calculator` / `mcp_get_document_metadata` / `mcp_search_knowledge_base`)
+
+```
+agents/graph.py (tools node)
+   │  tool_registry.execute("mcp_calculator", args_json)
+   ▼
+mcp/client.py (_make_mcp_executor's executor, registered at
+               build_tool_registry time)
+   │  1. args.model_dump() -> flat kwargs (the dynamically-built
+   │     Pydantic model from the tool's discovered JSON schema)
+   │  2. async with Client(server) as client:            (in-process
+   │        result = await wait_for(client.call_tool(...), timeout)   transport)
+   ▼
+mcp/server.py (the @server.tool-decorated adapter)
+   │  reconstructs the real args_schema (e.g. CalculatorArgs) from the
+   │  flat kwargs, calls the SAME executor the internal `calculator`
+   │  tool uses — no second implementation
+   ▼
+mcp/client.py
+   │  parse the MCP CallToolResult's text content as JSON -> ToolResult
+   │  (connection/timeout/execution failures -> distinct error_code,
+   │  never a raw exception — see ADR 009, "MCP error categories")
+   ▼
+agents/graph.py
+   │  ToolMessage(content=result.to_json()) appended to state; the
+   │  model sees a normal tool result, with no indication it came via
+   │  MCP rather than an internal call
+```
+
+**Discovery** (once per `build_tool_registry` call, not per tool call):
+`discover_mcp_tool_definitions` lists the server's tools, drops any not
+in `TRUSTED_MCP_TOOLS`, and turns each approved one's JSON schema into a
+dynamically-built Pydantic model before registering it — never a
+hardcoded assumption about what the server will advertise.
+
+## Agent delegating to the Research Agent (`delegate_to_research_agent`)
+
+```
+agents/graph.py (tools node)
+   │  tool_registry.execute("delegate_to_research_agent", {"question": "..."})
+   ▼
+agents/tools/research_delegation.py
+   │  A2AClient.submit_research_task(trusted base_url, question=...)
+   ▼
+a2a/client.py (A2AClient)
+   │  1. _ensure_trusted(base_url)            — TRUSTED_A2A_AGENTS allowlist
+   │  2. fetch_agent_card(base_url)           — GET /.well-known/agent-card.json
+   │     validate name + research_question skill + supportedInterfaces
+   │  3. POST the card's own task URL: {"question": "..."}
+   ▼                                           (real HTTP, A2A_CLIENT_TIMEOUT_SECONDS)
+api/v1/research_agent.py (submit_research_task)
+   │  thin: calls the service, wraps the result as a Task, always 200
+   ▼
+a2a/research_agent.py (ResearchAgentService.research)
+   │  RetrievalService.retrieve(question) -> no results? -> fixed
+   │  NO_EVIDENCE_RESPONSE, no LLM call; otherwise ContextAssembler +
+   │  LLMGateway.chat_completion with a dedicated research system prompt
+   ▼
+a2a/tasks.py (build_task / task_to_dict)
+   │  real a2a.types.Task — TASK_STATE_COMPLETED + a result Artifact, or
+   │  TASK_STATE_FAILED + a status message, never a fabricated success
+   ▼
+a2a/client.py
+   │  parse the Task JSON back into a ResearchResult (never trusts the
+   │  shape blindly — a malformed/empty response is a task failure, not
+   │  a crash); non-"completed" -> A2ATaskFailedError
+   ▼
+agents/tools/research_delegation.py
+   │  A2A*Error subtypes -> ToolResult(success=False, error_code=...)
+   ▼
+agents/graph.py
+   │  ToolMessage appended to state — the model sees the Research
+   │  Agent's answer and sources as ordinary tool-result data, never as
+   │  instructions (the same untrusted-data boundary every tool result
+   │  gets)
+```
+
+**The orchestrator never imports `ResearchAgentService`** — every path
+from the agent to the Research Agent's logic goes through `A2AClient`
+and a real HTTP call, even though both happen to run in the same process
+in this deployment.
+
 ## Future data flows
 
-Once MCP, A2A, and multi-agent workflows are implemented, this document
-will describe their request flows. None of that exists yet; adding it
-here ahead of the code would misrepresent the
-current system.
+Multi-agent workflows beyond this single Research Agent are not
+implemented yet; adding their request flows here ahead of the code would
+misrepresent the current system.

@@ -22,6 +22,8 @@ dependencies = [
     "sentence-transformers>=3.0",
     "pgvector>=0.3",
     "langgraph>=1.2.12",
+    "mcp>=2.3.0",
+    "a2a-sdk>=1.2.1",
 ]
 
 [dependency-groups]
@@ -73,4 +75,6 @@ markers = [
     "integration: requires live Postgres and Redis (see docker-compose.yml)",
     "llm_integration: requires a real GROQ_API_KEY and makes live API calls",
     "embedding_integration: loads the real Sentence Transformers model and a live Postgres",
+    "mcp_integration: spawns a real MCP stdio subprocess and a live Postgres",
+    "a2a_integration: makes a real HTTP call to a running A2A Research Agent endpoint",
 ]

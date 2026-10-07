@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.schemas import STATUS_COMPLETED
 from app.agents.service import AgentService
+from app.agents.tools.registry import build_tool_registry
 from app.config import get_settings
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
@@ -50,14 +51,16 @@ async def test_real_model_selects_and_executes_the_calculator_tool(
     settings = get_settings()
     gateway = LLMGateway(settings)
     retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=settings)
+    tool_registry = await build_tool_registry(
+        documents=DocumentRepository(db_session), retrieval=retrieval, settings=settings
+    )
     service = AgentService(
         session=db_session,
         settings=settings,
         gateway=gateway,
         conversations=ConversationRepository(db_session),
         messages=MessageRepository(db_session),
-        documents=DocumentRepository(db_session),
-        retrieval=retrieval,
+        tool_registry=tool_registry,
     )
 
     result = await service.run(
@@ -77,14 +80,16 @@ async def test_real_model_answers_directly_without_a_tool_when_none_is_needed(
     settings = get_settings()
     gateway = LLMGateway(settings)
     retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=settings)
+    tool_registry = await build_tool_registry(
+        documents=DocumentRepository(db_session), retrieval=retrieval, settings=settings
+    )
     service = AgentService(
         session=db_session,
         settings=settings,
         gateway=gateway,
         conversations=ConversationRepository(db_session),
         messages=MessageRepository(db_session),
-        documents=DocumentRepository(db_session),
-        retrieval=retrieval,
+        tool_registry=tool_registry,
     )
 
     result = await service.run(

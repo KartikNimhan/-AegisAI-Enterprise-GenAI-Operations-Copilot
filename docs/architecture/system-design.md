@@ -45,9 +45,11 @@ orchestrated via Docker Compose in local development.
 | `storage/` | Provider-neutral file storage (`base.py`); `local.py` (`LocalFileStorage`) is the only implementation. Implemented in Milestone 3. |
 | `embeddings/` | Text embedding — a provider-neutral abstraction (`base.py`) over turning text into vectors, plus `service.py` (`EmbeddingService`, orchestration: batching, idempotency, persistence, and — new in Milestone 5 — `embed_query`). `providers/local.py` (`LocalEmbeddingProvider`, Sentence Transformers) is the only implementation and the only module allowed to import `sentence_transformers`. Implemented in Milestone 4. See [ADR 006](decisions/006-embedding-model.md). |
 | `rag/` | Retrieval-augmented generation: `service.py` (`RAGService`, the only layer combining retrieval with generation), `retrieval/` (`RetrievalService`, `RetrievalStrategy`/`VectorRetrievalStrategy`, `RetrievalRepository`), `context/` (`ContextAssembler`), `prompts/` (`AEGIS_RAG_SYSTEM_PROMPT`, `RAGPromptBuilder`). Implemented in Milestone 5. See [ADR 007](decisions/007-rag-pipeline.md). |
-| `agents/` | Single-agent LangGraph orchestration with controlled tool calling: `service.py` (`AgentService`), `graph.py` (the `StateGraph`), `schemas.py` (`AgentState` and result types), `messages.py` (LangChain-message ↔ `ChatMessage` boundary), `prompts.py` (`AEGIS_AGENT_SYSTEM_PROMPT`), `tools/` (`ToolRegistry`/`ToolDefinition` + the three registered tools: `calculator`, `get_document_metadata`, `search_knowledge_base`). Implemented in Milestone 6. See [ADR 008](decisions/008-agent-architecture.md). |
+| `agents/` | Single-agent LangGraph orchestration with controlled tool calling: `service.py` (`AgentService`), `graph.py` (the `StateGraph`), `schemas.py` (`AgentState` and result types), `messages.py` (LangChain-message ↔ `ChatMessage` boundary), `prompts.py` (`AEGIS_AGENT_SYSTEM_PROMPT`), `tools/` (`ToolRegistry`/`ToolDefinition` + internal tools `calculator`, `get_document_metadata`, `search_knowledge_base`, plus the Milestone 7 `research_delegation.py` A2A tool and MCP-discovered tools registered at build time). Implemented in Milestone 6, extended in Milestone 7. See [ADR 008](decisions/008-agent-architecture.md) and [ADR 009](decisions/009-mcp-a2a-architecture.md). |
+| `mcp/` | Model Context Protocol server + client: `server.py` (`build_mcp_server`, thin adapters over the same `ToolDefinition.executor` internal tools use, plus the `document://{document_id}` resource), `client.py` (`discover_mcp_tool_definitions`, discovery + allowlist + wraps each approved tool as a `ToolDefinition`), `exceptions.py`. Implemented in Milestone 7. See [ADR 009](decisions/009-mcp-a2a-architecture.md). |
+| `a2a/` | Agent2Agent: the Research Agent and the client that reaches it. `agent_card.py` (`build_research_agent_card`, real `a2a.types.AgentCard`), `research_agent.py` (`ResearchAgentService`, reuses `RetrievalService`/`LLMGateway` directly), `tasks.py` (`build_task`/`task_to_dict`, real `a2a.types.Task`/`Artifact`), `client.py` (`A2AClient`, the only way the orchestrator reaches the Research Agent — trusted-agent allowlist, Card validation, task submission/parsing), `exceptions.py`. Implemented in Milestone 7. See [ADR 009](decisions/009-mcp-a2a-architecture.md). |
 | `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
-| `tools/`, `mcp/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
+| `tools/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
 
 Dependency direction is one-way: `api` → `services`/`rag`/`agents` →
 `prompts`/`llm`/`documents`/`storage`/`embeddings`/`db`. `domain/` sits
@@ -307,13 +309,22 @@ and [data-flow.md](data-flow.md) for the request flow. In brief:
   `ToolRegistry.execute`; `should_continue` routes to `tools` (under both
   limits), a `max_steps`/`max_tool_calls` stop node, or `END` — every path
   terminates in a bounded number of steps.
-- **Three registered tools** (`app.agents.tools`): `calculator` (AST-based
+- **Three internal tools** (`app.agents.tools`): `calculator` (AST-based
   arithmetic — never `eval`/`exec` — with operand/exponent magnitude
   bounds against computational DoS), `get_document_metadata` (reuses
   `DocumentRepository.get`), `search_knowledge_base` (reuses
   `RetrievalService.retrieve` directly — agentic RAG, not a duplicate
-  retrieval path). The registry is an explicit, closed allowlist: an
-  unregistered tool name can never execute.
+  retrieval path). Milestone 7 adds **MCP-discovered tools** (the same
+  three capabilities, reached over the Model Context Protocol —
+  `mcp_calculator`, `mcp_get_document_metadata`,
+  `mcp_search_knowledge_base`) and one **A2A delegation tool**
+  (`delegate_to_research_agent`, reaching the remote Research Agent only
+  through `A2AClient`). `build_tool_registry` is `async` so MCP discovery
+  can run at registry-construction time; a broken/unavailable MCP server
+  degrades to "no MCP tools," never a broken agent. The registry is an
+  explicit, closed allowlist regardless of capability source: an
+  unregistered tool name can never execute. See
+  [ADR 009](decisions/009-mcp-a2a-architecture.md).
 - **Tool arguments are untrusted input**: every call goes through
   JSON-parsing, then `args_schema.model_validate` (Pydantic), before an
   executor ever runs; `ToolRegistry.execute` never raises — it always
@@ -340,6 +351,46 @@ and [data-flow.md](data-flow.md) for the request flow. In brief:
   a behavioral regression checklist, not a measurement of real-model
   accuracy; see the ADR.
 
+## MCP and A2A
+
+See [ADR 009](decisions/009-mcp-a2a-architecture.md) for the full
+rationale. In brief:
+
+- **MCP** standardizes the *tool* boundary. `app.mcp.server.build_mcp_server`
+  wraps the same three internal `ToolDefinition`s as MCP tools (no second
+  implementation) plus a `document://{document_id}` resource.
+  `app.mcp.client.discover_mcp_tool_definitions` discovers tools from the
+  server (never hardcoded), validates both the server identity
+  (`TRUSTED_MCP_SERVERS`) and each tool name (`TRUSTED_MCP_TOOLS`) against
+  an explicit allowlist, and wraps each approved tool as the same
+  `ToolDefinition` abstraction an internal tool uses. Transport is the
+  MCP SDK's in-process `Client(server)` mode for the agent's own calls
+  (this reference implementation runs the server and the agent in the
+  same process); `scripts/mcp_stdio_server.py` runs the identical server
+  over the standard stdio transport for an external MCP client.
+- **A2A** standardizes the *agent* boundary. One remote Research Agent
+  (`app.a2a.research_agent.ResearchAgentService`, reusing
+  `RetrievalService`/`LLMGateway` directly) is reached only through
+  `app.a2a.client.A2AClient` — the orchestrator never imports
+  `ResearchAgentService`. `A2AClient` fetches and validates the Research
+  Agent's Agent Card (`GET /.well-known/agent-card.json`, a real
+  `a2a.types.AgentCard`) against both a base-URL allowlist
+  (`TRUSTED_A2A_AGENTS`) and the card's own identity/skill, then submits a
+  task (`POST /api/v1/agents/research/tasks`) and parses the resulting
+  `Task` (real `a2a.types.Task`/`TaskState`) back into a structured
+  result — never trusting the response shape blindly. The task handling
+  is synchronous (no task store/polling) since this Research Agent's work
+  fits comfortably inside one HTTP request's timeout budget.
+- Both protocols converge on the same `ToolRegistry` the M6 agent already
+  had: MCP tools and the A2A delegation tool are registered exactly like
+  an internal tool, so `app/agents/graph.py`'s dispatch logic needed no
+  changes — only a `capability` label (`internal`/`mcp`/`a2a`) added to
+  its existing observability events.
+- **Trust is never derived from model output**: `TRUSTED_MCP_SERVERS`/
+  `TRUSTED_MCP_TOOLS`/`TRUSTED_A2A_AGENTS` are fixed at startup from
+  configuration; `delegate_to_research_agent`'s own argument schema has
+  no endpoint/URL field the LLM could populate to redirect the call.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -364,10 +415,16 @@ validated constant — see [ADR 007](decisions/007-rag-pipeline.md). Agent
 settings (`AGENT_MAX_STEPS`, `AGENT_MAX_TOOL_CALLS`,
 `AGENT_TIMEOUT_SECONDS`) likewise have working, explicitly-conservative
 defaults, not production-tuned claims — see
-[ADR 008](decisions/008-agent-architecture.md).
+[ADR 008](decisions/008-agent-architecture.md). MCP settings
+(`MCP_CLIENT_TIMEOUT_SECONDS`, `TRUSTED_MCP_SERVERS`,
+`TRUSTED_MCP_TOOLS`) and A2A settings (`A2A_CLIENT_TIMEOUT_SECONDS`,
+`TRUSTED_A2A_AGENTS`, `RESEARCH_AGENT_NAME`) likewise have working
+defaults that point at this project's own in-process MCP server and
+localhost Research Agent — never a user-supplied or runtime-discovered
+endpoint — see [ADR 009](decisions/009-mcp-a2a-architecture.md).
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
-request, conversation-retrieval, document-ingestion, embedding, RAG, and
-agent data flows.
+request, conversation-retrieval, document-ingestion, embedding, RAG,
+agent, MCP tool-call, and A2A task data flows.
