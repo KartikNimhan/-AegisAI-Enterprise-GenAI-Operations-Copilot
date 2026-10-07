@@ -41,14 +41,45 @@ logger = structlog.get_logger(__name__)
 class A2AClient:
     def __init__(self, *, settings: Settings) -> None:
         self._settings = settings
+        # Keyed by (base_url, card_path). Agent Cards are static for the
+        # lifetime of one `A2AClient` in this reference deployment (the
+        # three agents never change their advertised capabilities at
+        # runtime), so this avoids refetching the same Card on every
+        # retry of the same agent within one workflow (see ADR 010,
+        # "Agent Card Discovery": "do not fetch Agent Cards unnecessarily
+        # for every task"). Only a *successful, validated* Card is ever
+        # cached — a failure is never cached, so a transient fetch error
+        # doesn't poison every subsequent retry.
+        self._card_cache: dict[tuple[str, str], dict] = {}
 
     def _ensure_trusted(self, base_url: str) -> None:
         if base_url not in self._settings.trusted_a2a_agents:
             raise A2AUntrustedAgentError(f"{base_url!r} is not in trusted_a2a_agents")
 
     async def fetch_agent_card(self, base_url: str) -> dict:
+        return await self.fetch_agent_card_at(
+            base_url,
+            card_path=AGENT_CARD_WELL_KNOWN_PATH,
+            expected_name=self._settings.research_agent_name,
+            expected_skill_id=RESEARCH_SKILL_ID,
+        )
+
+    async def fetch_agent_card_at(
+        self, base_url: str, *, card_path: str, expected_name: str, expected_skill_id: str
+    ) -> dict:
+        """The generic form `fetch_agent_card` delegates to, and the one
+        Milestone 8's multi-agent orchestrator uses directly for the
+        Document/Analyst agents — their cards are served at their own
+        versioned path, not the well-known one (see ADR 010, "Agent
+        Card": only one well-known path can exist per origin, and all
+        three agents in this project share an origin)."""
         self._ensure_trusted(base_url)
-        url = f"{base_url}{AGENT_CARD_WELL_KNOWN_PATH}"
+        cache_key = (base_url, card_path)
+        cached = self._card_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        url = f"{base_url}{card_path}"
         try:
             async with httpx.AsyncClient(
                 timeout=self._settings.a2a_client_timeout_seconds
@@ -61,27 +92,50 @@ class A2AClient:
         except httpx.HTTPError as exc:
             raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
 
-        self._validate_card(card)
+        _validate_card(card, expected_name=expected_name, expected_skill_id=expected_skill_id)
         logger.info("a2a.agent_discovered", base_url=base_url, agent_name=card.get("name"))
+        self._card_cache[cache_key] = card
         return card
 
-    def _validate_card(self, card: dict) -> None:
-        if card.get("name") != self._settings.research_agent_name:
-            raise A2AInvalidCardError(
-                f"Agent card name {card.get('name')!r} does not match "
-                f"the expected {self._settings.research_agent_name!r}"
-            )
-        skill_ids = {skill.get("id") for skill in card.get("skills", [])}
-        if RESEARCH_SKILL_ID not in skill_ids:
-            raise A2AInvalidCardError(
-                f"Agent card does not advertise the {RESEARCH_SKILL_ID!r} skill"
-            )
-        if not card.get("supportedInterfaces"):
-            raise A2AInvalidCardError("Agent card has no supported interfaces")
-
     async def submit_research_task(self, base_url: str, *, question: str) -> ResearchResult:
+        task = await self.submit_task(
+            base_url,
+            card_path=AGENT_CARD_WELL_KNOWN_PATH,
+            expected_agent_name=self._settings.research_agent_name,
+            expected_skill_id=RESEARCH_SKILL_ID,
+            payload={"question": question},
+        )
+        result = parse_research_result(task)
+        if result.status != "completed":
+            logger.warning("a2a.task_failed", base_url=base_url, reason="task_failed")
+            raise A2ATaskFailedError(result.error or "The remote agent reported task failure")
+        return result
+
+    async def submit_task(
+        self,
+        base_url: str,
+        *,
+        card_path: str,
+        expected_agent_name: str,
+        expected_skill_id: str,
+        payload: dict,
+    ) -> dict:
+        """The generic task-submission path Milestone 8's orchestrator
+        uses for any trusted agent (Research, Document, Analyst):
+        fetches and validates that agent's own Card, then POSTs `payload`
+        to its advertised task URL — the URL is never hardcoded here,
+        only discovered from the Card (see ADR 009, "A2A agent
+        discovery"). Returns the raw parsed `Task` JSON; the caller
+        parses its own agent's artifact shape (`submit_research_task`
+        above does this for the Research Agent; Milestone 8's
+        agent-specific A2A adapters do it for Document/Analyst)."""
         self._ensure_trusted(base_url)
-        card = await self.fetch_agent_card(base_url)
+        card = await self.fetch_agent_card_at(
+            base_url,
+            card_path=card_path,
+            expected_name=expected_agent_name,
+            expected_skill_id=expected_skill_id,
+        )
         task_url = card["supportedInterfaces"][0]["url"]
         run_id = uuid.uuid4()
 
@@ -90,7 +144,7 @@ class A2AClient:
             async with httpx.AsyncClient(
                 timeout=self._settings.a2a_client_timeout_seconds
             ) as client:
-                response = await client.post(task_url, json={"question": question})
+                response = await client.post(task_url, json=payload)
                 response.raise_for_status()
                 task = response.json()
         except httpx.TimeoutException as exc:
@@ -100,16 +154,23 @@ class A2AClient:
             logger.warning("a2a.task_failed", run_id=str(run_id), reason="connection")
             raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
 
-        result = _task_to_research_result(task)
-        if result.status != "completed":
-            logger.warning("a2a.task_failed", run_id=str(run_id), reason="task_failed")
-            raise A2ATaskFailedError(result.error or "The remote agent reported task failure")
-
         logger.info("a2a.task_completed", run_id=str(run_id), base_url=base_url)
-        return result
+        return task
 
 
-def _task_to_research_result(task: dict) -> ResearchResult:
+def _validate_card(card: dict, *, expected_name: str, expected_skill_id: str) -> None:
+    if card.get("name") != expected_name:
+        raise A2AInvalidCardError(
+            f"Agent card name {card.get('name')!r} does not match the expected {expected_name!r}"
+        )
+    skill_ids = {skill.get("id") for skill in card.get("skills", [])}
+    if expected_skill_id not in skill_ids:
+        raise A2AInvalidCardError(f"Agent card does not advertise the {expected_skill_id!r} skill")
+    if not card.get("supportedInterfaces"):
+        raise A2AInvalidCardError("Agent card has no supported interfaces")
+
+
+def parse_research_result(task: dict) -> ResearchResult:
     """Parses the A2A `Task` JSON (as served by `app.a2a.tasks.task_to_dict`)
     back into a `ResearchResult` — never trusts the shape blindly; a
     malformed response (missing `status`, an artifact with no `data` part)
@@ -151,7 +212,10 @@ def _task_to_research_result(task: dict) -> ResearchResult:
                 for s in data.get("sources", [])
             ]
             return ResearchResult(
-                status="completed", answer=data.get("answer", ""), sources=sources
+                status="completed",
+                answer=data.get("answer", ""),
+                sources=sources,
+                token_usage=data.get("token_usage"),
             )
 
     return ResearchResult(

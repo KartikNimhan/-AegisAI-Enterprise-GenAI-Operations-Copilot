@@ -65,6 +65,7 @@ class ResearchAgentService:
         completion = await self._gateway.chat_completion(
             model_role=ModelRole.PRIMARY, messages=messages
         )
+        token_usage = completion.usage.model_dump()
 
         sources = [
             ResearchSource(
@@ -76,4 +77,9 @@ class ResearchAgentService:
             )
             for source in assembled.sources
         ]
-        return ResearchResult(status="completed", answer=completion.content, sources=sources)
+        return ResearchResult(
+            status="completed",
+            answer=completion.content,
+            sources=sources,
+            token_usage=token_usage,
+        )

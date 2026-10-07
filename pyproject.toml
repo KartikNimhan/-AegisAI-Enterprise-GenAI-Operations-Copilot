@@ -77,4 +77,5 @@ markers = [
     "embedding_integration: loads the real Sentence Transformers model and a live Postgres",
     "mcp_integration: spawns a real MCP stdio subprocess and a live Postgres",
     "a2a_integration: makes a real HTTP call to a running A2A Research Agent endpoint",
+    "multi_agent_integration: runs a full multi-agent workflow against a real HTTP server",
 ]

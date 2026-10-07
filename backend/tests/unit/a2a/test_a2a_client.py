@@ -22,7 +22,7 @@ from app.a2a.exceptions import (
     A2AUntrustedAgentError,
 )
 from app.a2a.schemas import ResearchResult, ResearchSource
-from app.a2a.tasks import build_task
+from app.a2a.tasks import build_task, task_to_dict
 from app.config import Settings
 
 _BASE_URL = "http://localhost:8000"
@@ -283,3 +283,57 @@ async def test_submit_research_task_wraps_the_agent_being_unavailable(
 
     with pytest.raises(A2AConnectionError):
         await client.submit_research_task(_BASE_URL, question="q")
+
+
+# -- Agent Card cache -----------------------------------------------------------------
+
+
+async def test_a_second_task_to_the_same_agent_does_not_refetch_the_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry (or a second call in the same workflow) must not refetch
+    an Agent Card already fetched and validated once by this client — see
+    ADR 010, "Agent Card Discovery"."""
+    settings = _settings()
+    card_payload = _card_response(settings)
+    task_payload = task_to_dict(
+        build_task(question="q", result=ResearchResult(status="completed", answer="ok"))
+    )
+    card_fetch_count = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/.well-known/agent-card.json"):
+            card_fetch_count["count"] += 1
+            return httpx.Response(200, json=card_payload)
+        return httpx.Response(200, json=task_payload)
+
+    _install_transport(monkeypatch, handler)
+    client = A2AClient(settings=settings)
+
+    await client.submit_research_task(_BASE_URL, question="first")
+    await client.submit_research_task(_BASE_URL, question="second")
+
+    assert card_fetch_count["count"] == 1
+
+
+async def test_a_failed_card_fetch_is_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient fetch failure must not poison every subsequent retry —
+    only a successful, validated Card is ever cached."""
+    settings = _settings()
+    card_payload = _card_response(settings)
+    attempt = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempt["count"] += 1
+        if attempt["count"] == 1:
+            raise httpx.ConnectError("simulated transient failure", request=request)
+        return httpx.Response(200, json=card_payload)
+
+    _install_transport(monkeypatch, handler)
+    client = A2AClient(settings=settings)
+
+    with pytest.raises(A2AConnectionError):
+        await client.fetch_agent_card(_BASE_URL)
+
+    card = await client.fetch_agent_card(_BASE_URL)
+    assert card["name"] == settings.research_agent_name

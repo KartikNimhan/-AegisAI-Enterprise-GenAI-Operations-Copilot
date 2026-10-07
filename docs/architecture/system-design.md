@@ -47,7 +47,8 @@ orchestrated via Docker Compose in local development.
 | `rag/` | Retrieval-augmented generation: `service.py` (`RAGService`, the only layer combining retrieval with generation), `retrieval/` (`RetrievalService`, `RetrievalStrategy`/`VectorRetrievalStrategy`, `RetrievalRepository`), `context/` (`ContextAssembler`), `prompts/` (`AEGIS_RAG_SYSTEM_PROMPT`, `RAGPromptBuilder`). Implemented in Milestone 5. See [ADR 007](decisions/007-rag-pipeline.md). |
 | `agents/` | Single-agent LangGraph orchestration with controlled tool calling: `service.py` (`AgentService`), `graph.py` (the `StateGraph`), `schemas.py` (`AgentState` and result types), `messages.py` (LangChain-message ↔ `ChatMessage` boundary), `prompts.py` (`AEGIS_AGENT_SYSTEM_PROMPT`), `tools/` (`ToolRegistry`/`ToolDefinition` + internal tools `calculator`, `get_document_metadata`, `search_knowledge_base`, plus the Milestone 7 `research_delegation.py` A2A tool and MCP-discovered tools registered at build time). Implemented in Milestone 6, extended in Milestone 7. See [ADR 008](decisions/008-agent-architecture.md) and [ADR 009](decisions/009-mcp-a2a-architecture.md). |
 | `mcp/` | Model Context Protocol server + client: `server.py` (`build_mcp_server`, thin adapters over the same `ToolDefinition.executor` internal tools use, plus the `document://{document_id}` resource), `client.py` (`discover_mcp_tool_definitions`, discovery + allowlist + wraps each approved tool as a `ToolDefinition`), `exceptions.py`. Implemented in Milestone 7. See [ADR 009](decisions/009-mcp-a2a-architecture.md). |
-| `a2a/` | Agent2Agent: the Research Agent and the client that reaches it. `agent_card.py` (`build_research_agent_card`, real `a2a.types.AgentCard`), `research_agent.py` (`ResearchAgentService`, reuses `RetrievalService`/`LLMGateway` directly), `tasks.py` (`build_task`/`task_to_dict`, real `a2a.types.Task`/`Artifact`), `client.py` (`A2AClient`, the only way the orchestrator reaches the Research Agent — trusted-agent allowlist, Card validation, task submission/parsing), `exceptions.py`. Implemented in Milestone 7. See [ADR 009](decisions/009-mcp-a2a-architecture.md). |
+| `a2a/` | Agent2Agent: the Research/Document/Analyst agents and the client that reaches them. `agent_card.py` (`build_research_agent_card`/`document_agent_card`/`analyst_agent_card`, real `a2a.types.AgentCard`), `research_agent.py`/`document_agent.py`/`analyst_agent.py` (each agent's own service — `ResearchAgentService`/`DocumentAgentService`/`AnalystAgentService` — reusing `RetrievalService`/`DocumentRepository`/`CALCULATOR_TOOL`/`LLMGateway` directly), `tasks.py` (`build_generic_task`/`build_task`/`task_to_dict`, real `a2a.types.Task`/`Artifact`), `client.py` (`A2AClient`, the only way any orchestrator reaches a specialist — trusted-agent allowlist, Card validation, `submit_task`/`submit_research_task`), `exceptions.py`. Research Agent implemented in Milestone 7; Document/Analyst Agents and the generalized `submit_task` in Milestone 8. See [ADR 009](decisions/009-mcp-a2a-architecture.md)/[ADR 010](decisions/010-multi-agent-architecture.md). |
+| `multi_agent/` | Multi-agent orchestration: `orchestrator.py` (`MultiAgentOrchestrator` — route, authorize, run tier-1 agents in parallel, run the Analyst sequentially, aggregate), `router.py` (deterministic regex/keyword routing policy), `capabilities.py` (the static agent/capability registry), `policies.py` (allowed workflow transitions, the retryable-exception allowlist), `models.py` (`AgentContext`/`AgentResult`/`WorkflowResult`), `adapters.py` (per-agent A2A adapters that never raise), `aggregation.py` (`ResultAggregator`), `exceptions.py`. Implemented in Milestone 8. See [ADR 010](decisions/010-multi-agent-architecture.md). |
 | `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
 | `tools/`, `memory/`, `evaluation/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
 
@@ -391,6 +392,51 @@ rationale. In brief:
   configuration; `delegate_to_research_agent`'s own argument schema has
   no endpoint/URL field the LLM could populate to redirect the call.
 
+## Multi-agent orchestration
+
+See [ADR 010](decisions/010-multi-agent-architecture.md) for the full
+rationale. In brief:
+
+- **`MultiAgentOrchestrator`** (`app.multi_agent.orchestrator`) routes a
+  request (`app.multi_agent.router.route` — deterministic regex/keyword,
+  no live model call) to up to three specialists — **Research** (reused
+  from Milestone 7), **Document** (new: safe metadata lookup via
+  `DocumentRepository`, no LLM call), **Analyst** (new: safe calculator +
+  evidence synthesis via `LLMGateway`, no external system access of its
+  own) — reached only through `A2AClient.submit_task` (the generalized
+  form of Milestone 7's `submit_research_task`), never by importing a
+  specialist's service class.
+- **Parallel + sequential**: independent specialists (Research, Document)
+  run concurrently via `asyncio.gather`; the Analyst — the one agent
+  capable of calculation/cross-specialist synthesis — always runs
+  sequentially afterward, consuming their answers as `evidence`.
+- **Context isolation**: `AgentContext` is the only thing a specialist
+  call receives — never the full conversation history or another agent's
+  internal reasoning, only the fields that specialist actually needs.
+- **Structured, never-raising results**: every specialist call normalizes
+  into `AgentResult` inside `app.multi_agent.adapters` — any A2A failure
+  or per-call timeout becomes a structured result, never an exception
+  that could crash the orchestrator or corrupt an unrelated parallel
+  call's result. `ResultAggregator` never fabricates a result for an
+  agent that didn't complete (`status: "partial"` when some did and some
+  didn't).
+- **Hard boundaries, not just conventions**: a static capability registry
+  (`app.multi_agent.capabilities.CAPABILITY_REGISTRY`) plus a workflow
+  transition policy (`app.multi_agent.policies.ALLOWED_TRANSITIONS`) make
+  `Analyst -> Research` (or any transition not explicitly listed)
+  structurally impossible, backed by numeric `MAX_AGENT_DEPTH`/
+  `MAX_AGENT_DELEGATIONS` ceilings checked before any call. Only
+  `metadata["retryable"]` results (a genuinely transient A2A connection/
+  timeout failure) are ever retried, up to `MULTI_AGENT_MAX_RETRIES` —
+  never a validation/authorization/task-content failure.
+- **Timeouts**: `MULTI_AGENT_AGENT_TIMEOUT_SECONDS` bounds one specialist
+  call (including its own retries); `MULTI_AGENT_TIMEOUT_SECONDS` is a
+  coarser whole-workflow backstop.
+- **No new endpoint for an arbitrary agent/URL**: `POST /api/v1/multi-
+  agent/run`'s request schema has exactly one field, `message` — there is
+  no way for a caller to redirect the orchestrator anywhere but the
+  already-trusted agents.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -422,9 +468,14 @@ defaults, not production-tuned claims — see
 defaults that point at this project's own in-process MCP server and
 localhost Research Agent — never a user-supplied or runtime-discovered
 endpoint — see [ADR 009](decisions/009-mcp-a2a-architecture.md).
+`DOCUMENT_AGENT_NAME`/`ANALYST_AGENT_NAME` and multi-agent settings
+(`MULTI_AGENT_TIMEOUT_SECONDS`, `MULTI_AGENT_AGENT_TIMEOUT_SECONDS`,
+`MULTI_AGENT_MAX_RETRIES`, `MAX_AGENT_DEPTH`, `MAX_AGENT_DELEGATIONS`)
+likewise have working, explicitly-conservative defaults — see
+[ADR 010](decisions/010-multi-agent-architecture.md).
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
 request, conversation-retrieval, document-ingestion, embedding, RAG,
-agent, MCP tool-call, and A2A task data flows.
+agent, MCP tool-call, A2A task, and multi-agent workflow data flows.

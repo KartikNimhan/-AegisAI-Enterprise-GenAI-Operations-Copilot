@@ -38,9 +38,20 @@ called directly), and the M6 agent extended to use internal, MCP, and
 A2A capabilities side by side through the same `ToolRegistry`. See
 [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md) for
 the full reasoning, including why this is one MCP server and one remote
-agent, not a multi-agent platform. Multi-agent orchestration beyond this
-single Research Agent, and memory beyond plain conversation history, are
-**not** implemented yet — see [Roadmap](#roadmap) below.
+agent, not a multi-agent platform. **Milestone 8** adds production-
+oriented multi-agent orchestration on top of that same A2A boundary: a
+`MultiAgentOrchestrator` that deterministically routes a request to up to
+three specialized agents (Research — reused from M7; Document; Analyst —
+both new), runs independent agents in parallel and a synthesis step
+sequentially after them, aggregates structured results without
+fabricating a failed agent's answer, and enforces explicit capability
+authorization, workflow transition policy, loop/delegation limits,
+per-agent and whole-workflow timeouts, and limited retries for transient
+failures only. See
+[ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md)
+for the full reasoning, including why this is exactly three agents, not
+an agent swarm. Memory beyond plain conversation history is **not**
+implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -167,6 +178,26 @@ single Research Agent, and memory beyond plain conversation history, are
   endpoint/URL field the model could redirect. One orchestrator, one
   remote agent — not a multi-agent swarm. See
   [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md).
+- **Multi-agent orchestration** (`backend/app/multi_agent/`) — a
+  `MultiAgentOrchestrator` that deterministically routes a request
+  (`router.py`, regex/keyword-based, no live model call) to up to three
+  specialized agents — **Research** (reused from M7), **Document** (new,
+  safe metadata lookup via `DocumentRepository`), **Analyst** (new, safe
+  calculator + evidence synthesis via `LLMGateway`, never reaching any
+  external system of its own) — reached only through `A2AClient`, never
+  by importing a specialist's implementation. Independent agents run in
+  parallel (`asyncio.gather`); the Analyst runs sequentially after them
+  when synthesis/calculation is needed. A static capability registry and
+  workflow-transition policy make an uncontrolled delegation network
+  structurally impossible (`Analyst -> Research` is not an allowed
+  transition at all); `MAX_AGENT_DEPTH`/`MAX_AGENT_DELEGATIONS` enforce
+  this numerically too. Every specialist call is normalized into a
+  structured `AgentResult` that never raises — a partial failure is
+  reported (`status: "partial"`), never fabricated — with limited retries
+  for transient A2A failures only, independent per-agent and whole-
+  workflow timeouts, and per-workflow correlation ids threaded through
+  every `multi_agent.*`/`a2a.*` observability event. See
+  [ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md).
 - Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
 - Unit tests (fast, no live infra, API key, or embedding model download
   required) and integration tests that skip gracefully when
@@ -245,6 +276,15 @@ backend/app/
     tools/           ToolRegistry/ToolDefinition + calculator, get_document_metadata,
                      search_knowledge_base, research_delegation (A2A, Milestone 7)
                      — the only path from a tool name to code
+  multi_agent/    multi-agent orchestration — implemented (see ADR 010)
+    orchestrator.py  MultiAgentOrchestrator: route -> authorize -> tier-1
+                     (parallel) -> Analyst (sequential) -> aggregate
+    router.py        route(): deterministic regex/keyword capability routing
+    capabilities.py  CAPABILITY_REGISTRY: agent -> capabilities/Card path
+    policies.py      ALLOWED_TRANSITIONS, retryable-exception allowlist
+    models.py        AgentContext, AgentResult, WorkflowResult
+    adapters.py      per-agent A2A adapters -> normalized AgentResult
+    aggregation.py   ResultAggregator: combine results, never fabricate
   tools/          reserved for a possible future non-agent-specific tool need
                   (Milestone 6's own tool calling lives in agents/tools/ above)
   mcp/            Model Context Protocol — implemented (see ADR 009)
@@ -253,14 +293,21 @@ backend/app/
     client.py       discover_mcp_tool_definitions: discovery + allowlist +
                      wraps each approved tool as a ToolDefinition
     exceptions.py    typed MCPError hierarchy
-  a2a/            Agent2Agent — implemented (see ADR 009)
-    agent_card.py    build_research_agent_card (real a2a.types AgentCard)
+  a2a/            Agent2Agent — implemented (see ADR 009/010)
+    agent_card.py    build_research_agent_card/document_agent_card/
+                     analyst_agent_card (real a2a.types AgentCard)
     research_agent.py ResearchAgentService: retrieve + synthesize (reuses
                      RetrievalService/LLMGateway directly, not RAGService)
-    tasks.py         build_task/task_to_dict (real a2a.types Task/Artifact)
-    client.py        A2AClient: the only way the orchestrator reaches the
-                     Research Agent — trusted-agent allowlist, Card
-                     validation, task submission/parsing
+    document_agent.py DocumentAgentService: safe metadata lookup, no LLM
+                     (Milestone 8)
+    analyst_agent.py AnalystAgentService: safe calculator + evidence
+                     synthesis (Milestone 8)
+    tasks.py         build_generic_task/build_task/task_to_dict (real
+                     a2a.types Task/Artifact)
+    client.py        A2AClient: the only way the orchestrator reaches any
+                     specialist — trusted-agent allowlist, Card
+                     validation, task submission/parsing (submit_task is
+                     the generic form Milestone 8 uses for all 3 agents)
     exceptions.py    typed A2AError hierarchy
   memory/         agent memory beyond conversation history (reserved)
   evaluation/     evaluation harness (reserved)
@@ -296,7 +343,15 @@ implementation of a tool's logic. The A2A call chain is
 `agents/tools/research_delegation.py -> a2a.client.A2AClient -> HTTP ->
 api/v1/research_agent.py -> a2a.research_agent.ResearchAgentService ->
 RetrievalService/LLMGateway` — the orchestrator never imports
-`ResearchAgentService` directly, only `A2AClient`.
+`ResearchAgentService` directly, only `A2AClient`. The multi-agent call
+chain is `api/v1/multi_agent.py -> multi_agent.orchestrator
+.MultiAgentOrchestrator -> multi_agent.router.route (deterministic) ->
+multi_agent.adapters.call_{research,document,analyst}_agent ->
+a2a.client.A2AClient.submit_task -> HTTP -> api/v1/{research,document,
+analyst}_agent.py -> each agent's own service -> multi_agent.aggregation
+.ResultAggregator` — `multi_agent/` never imports a specialist's service
+class directly, and contains no research/document/calculation logic of
+its own.
 Nothing above `providers/groq.py` ever imports `groq`; nothing outside
 `documents/extractors/` imports `pypdf`/`docx`; nothing outside
 `embeddings/providers/local.py` imports `sentence_transformers`; nothing
@@ -423,6 +478,19 @@ curl -X POST http://localhost:8000/api/v1/agents/research/tasks \
   -d '{"question": "What is our refund policy?"}'
 ```
 
+Ask the full multi-agent orchestrator a question — it decides which of
+the three specialized agents (if any) to delegate to:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/multi-agent/run \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Compare the travel reimbursement policy with document <uuid>."}'
+```
+
+The response includes the final answer, workflow/correlation ids, which
+agents were used (and their status — a partial failure is reported, never
+hidden), flattened sources, and aggregate token usage.
+
 Without `GROQ_API_KEY` set, the app still starts and `/docs` still lists
 every endpoint — chat, grounded-RAG, and agent requests respond with a
 `503 llm_unavailable` instead (and persist nothing, per the atomic-turn
@@ -477,6 +545,17 @@ RUN_A2A_LIVE_INTEGRATION=1 uv run pytest -m a2a_integration -v
 RUN_A2A_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... uv run pytest -m a2a_integration -v
 ```
 
+Run the opt-in real multi-agent workflow tests explicitly with (the same
+real-socket pattern, through the full Research + Document + Analyst
+orchestration; add `GROQ_API_KEY` for the tier that also makes a real
+Groq call):
+
+```bash
+RUN_MULTI_AGENT_LIVE_INTEGRATION=1 uv run pytest -m multi_agent_integration -v
+RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
+    uv run pytest -m multi_agent_integration -v
+```
+
 Or `make check` (lint + typecheck + test). See the [Makefile](Makefile) for
 all available targets (`run`, `docker-up`, `migrate`, ...).
 
@@ -486,11 +565,14 @@ Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
 (conversational chat + persistence), Milestone 3 (document ingestion),
 Milestone 4 (embeddings & vector storage), Milestone 5 (retrieval-
 augmented generation), Milestone 6 (single-agent LangGraph orchestration
-with controlled tool calling), and Milestone 7 (MCP + A2A
-interoperability: an MCP server/client for the same internal tools, and
-one remote Research Agent reached through a real A2A boundary) are done.
-Remaining, in rough order, each as its own milestone: multi-agent
-workflows beyond this single Research Agent → memory beyond conversation
+with controlled tool calling), Milestone 7 (MCP + A2A interoperability: an
+MCP server/client for the same internal tools, and one remote Research
+Agent reached through a real A2A boundary), and Milestone 8 (production-
+oriented multi-agent orchestration: a deterministic orchestrator routing
+to Research/Document/Analyst specialists through that same A2A boundary,
+with explicit capability authorization, loop/delegation limits, partial-
+failure-aware aggregation, retries, and timeouts) are done. Remaining, in
+rough order, each as its own milestone: memory beyond conversation
 history → evaluation → security/RBAC → observability/LLMOps → async
 workers → Kubernetes → multimodal/voice.
 

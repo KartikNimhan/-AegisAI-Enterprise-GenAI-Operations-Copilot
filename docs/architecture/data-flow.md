@@ -627,8 +627,71 @@ from the agent to the Research Agent's logic goes through `A2AClient`
 and a real HTTP call, even though both happen to run in the same process
 in this deployment.
 
+## `POST /api/v1/multi-agent/run` (non-streaming)
+
+```
+Client
+   │  POST /api/v1/multi-agent/run
+   │  {"message": "Compare the travel policy with document <uuid>."}
+   ▼
+api/v1/multi_agent.py (run_multi_agent_workflow)
+   │  thin: forwards to the orchestrator, wraps the result
+   ▼
+multi_agent/orchestrator.py (MultiAgentOrchestrator.run)
+   │  1. generate workflow_id + correlation_id
+   │  2. route(question) -> RoutingDecision (deterministic, no LLM call)
+   │  3. authorize: capability -> agent (CAPABILITY_REGISTRY) + workflow
+   │     transition check (ALLOWED_TRANSITIONS) + delegation/depth limits
+   ▼
+   ┌─────────────────────── tier 1 (parallel if >1) ───────────────────────┐
+   │  asyncio.gather(                                                     │
+   │    _call_with_retry("research", ctx),  _call_with_retry("document",  │
+   │  )                                                        ctx))       │
+   └────────────────────────────┬──────────────────────────────────────────┘
+                                 │  each call: adapters.call_*_agent
+                                 │    -> A2AClient.submit_task (fetch Card,
+                                 │       validate, POST to its task URL)
+                                 │    -> the real Research/Document A2A
+                                 │       endpoint (see the two flows above)
+                                 │    -> normalized into AgentResult
+                                 │       (never raises — A2A failure or a
+                                 │       per-call timeout becomes a
+                                 │       structured failed/timeout result)
+                                 ▼
+   if synthesis/calculation needed: tier 2 (sequential) — Analyst, with
+   evidence = [successful tier-1 answers], expressions = parsed from the
+   question
+                                 ▼
+multi_agent/aggregation.py (ResultAggregator.combine)
+   │  Analyst's answer, if it ran, IS the final synthesis; otherwise the
+   │  one successful specialist's answer is surfaced directly. A failure
+   │  is appended as an explicit note ("<agent> did not complete"), never
+   │  hidden — workflow status becomes "partial", not "completed".
+   ▼
+api/v1/multi_agent.py
+   │  flatten each agent's sources into one list (tagged by agent_name),
+   │  sum whatever token_usage each agent reported (empty dict if none did)
+   ▼
+Client receives: workflow_id, correlation_id, status, answer,
+agents_used (name/capability/status/duration/retry_count — no raw task
+JSON, no tool arguments), sources, token_usage, duration_ms
+```
+
+**No new persistence** — a multi-agent workflow is stateless, same as an
+A2A task; nothing is written to `conversations`/`messages`.
+
+**Error path**: `UnauthorizedCapabilityError`/`DelegationLimitExceededError`/
+`WorkflowDepthExceededError` (raised before any agent is called) and an
+overall-workflow `asyncio.TimeoutError` both become a `200` response with
+`status: "failed"`/`"timeout"` and an explanatory `answer` — never an
+HTTP error status, since the request itself was well-formed; only the
+agents it needed couldn't all be reached/authorized in time. The
+orchestrator never imports `ResearchAgentService`/`DocumentAgentService`/
+`AnalystAgentService` directly — every path to a specialist's logic goes
+through `A2AClient` and a real HTTP call to its own A2A endpoint.
+
 ## Future data flows
 
-Multi-agent workflows beyond this single Research Agent are not
-implemented yet; adding their request flows here ahead of the code would
-misrepresent the current system.
+A fourth specialized agent, or agent-to-agent delegation beyond the
+Analyst, is not implemented yet; adding its request flow here ahead of
+the code would misrepresent the current system.

@@ -116,6 +116,26 @@ class Settings(BaseSettings):
     a2a_client_timeout_seconds: float = 15.0
     trusted_a2a_agents: list[str] = ["http://localhost:8000"]
     research_agent_name: str = "AegisAI Research Agent"
+    document_agent_name: str = "AegisAI Document Agent"
+    analyst_agent_name: str = "AegisAI Analyst Agent"
+
+    # Multi-agent orchestration (Milestone 8). multi_agent_timeout_seconds
+    # bounds the whole workflow (checked at each tier boundary, not via
+    # hard mid-flight task cancellation — see ADR 010, "Cancellation");
+    # multi_agent_agent_timeout_seconds bounds a single specialist call
+    # (including its own retries). multi_agent_max_retries only ever
+    # retries a transient A2A failure (connection/timeout), never a
+    # validation/authorization/task failure. max_agent_depth and
+    # max_agent_delegations are defense-in-depth loop guards: this
+    # milestone's orchestrator never lets a specialist delegate further on
+    # its own, so depth is always 1 in practice today, but the limits are
+    # still enforced so a future agent-to-agent delegation can't silently
+    # become unbounded.
+    multi_agent_timeout_seconds: float = 45.0
+    multi_agent_agent_timeout_seconds: float = 20.0
+    multi_agent_max_retries: int = 1
+    max_agent_depth: int = 2
+    max_agent_delegations: int = 5
 
 
 @lru_cache

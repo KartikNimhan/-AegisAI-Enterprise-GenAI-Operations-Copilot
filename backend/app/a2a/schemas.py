@@ -30,3 +30,46 @@ class ResearchResult:
     answer: str
     sources: list[ResearchSource] = field(default_factory=list)
     error: str | None = None
+    # `None` when no LLM call was made (the no-evidence short-circuit),
+    # never a fabricated/estimated count — mirrors `TokenUsage`'s own
+    # "None means unknown/not applicable" convention (see app.llm.schemas).
+    token_usage: dict | None = None
+
+
+@dataclass(frozen=True)
+class DocumentReference:
+    """Safe document metadata only — never a filesystem path, checksum, or
+    raw content. Mirrors the same fields `get_document_metadata`/the
+    Milestone 3 document API already consider client-facing."""
+
+    document_id: uuid.UUID
+    filename: str
+    document_type: str
+    status: str
+    page_count: int | None
+    character_count: int | None
+
+
+@dataclass(frozen=True)
+class DocumentAgentResult:
+    status: str  # "completed" | "failed"
+    answer: str
+    documents: list[DocumentReference] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class CalculationResult:
+    expression: str
+    success: bool
+    result: float | int | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class AnalystAgentResult:
+    status: str  # "completed" | "failed"
+    answer: str
+    calculations: list[CalculationResult] = field(default_factory=list)
+    error: str | None = None
+    token_usage: dict | None = None
