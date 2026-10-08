@@ -8,15 +8,28 @@
 unversioned well-known Agent Card path is mounted separately, see
 `app.main`) in Milestone 7; `document_agent`/`analyst_agent` (the other
 two specialized A2A agents) and `multi_agent` (the orchestrator endpoint)
-in Milestone 8. Admin endpoints are reserved for an upcoming
-security/RBAC milestone and are intentionally not wired up here yet.
-Health/readiness live outside this router (see `app.api.v1.health`) since
-they are mounted at the root path, unversioned.
+in Milestone 8; `operations` (a read-only document-status summary) and
+`system` (a read-only status aggregation reusing `/health/ready`'s own
+checks) in Milestone 9, added for the Copilot UI's dashboard/status pages.
+Admin endpoints are reserved for an upcoming security/RBAC milestone and
+are intentionally not wired up here yet. Health/readiness live outside
+this router (see `app.api.v1.health`) since they are mounted at the root
+path, unversioned.
 """
 
 from fastapi import APIRouter
 
-from app.api.v1 import agents, analyst_agent, chat, conversations, document_agent, documents, rag
+from app.api.v1 import (
+    agents,
+    analyst_agent,
+    chat,
+    conversations,
+    document_agent,
+    documents,
+    operations,
+    rag,
+    system,
+)
 from app.api.v1 import multi_agent as multi_agent_module
 from app.api.v1 import research_agent as research_agent_module
 
@@ -30,3 +43,5 @@ api_router.include_router(research_agent_module.router)
 api_router.include_router(document_agent.router)
 api_router.include_router(analyst_agent.router)
 api_router.include_router(multi_agent_module.router)
+api_router.include_router(operations.router)
+api_router.include_router(system.router)

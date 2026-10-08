@@ -7,6 +7,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.enums.document_status import DocumentStatus
 from app.domain.models.document import Document
 
 
@@ -43,6 +44,16 @@ class DocumentRepository:
             .offset(offset)
         )
         return list(result.scalars().all()), total or 0
+
+    async def count_by_status(self) -> dict[DocumentStatus, int]:
+        """A single grouped COUNT query — used by the Milestone 9
+        operations summary endpoint. Only statuses with at least one row
+        are present in the result; the caller fills in zero for the rest
+        (see `app.api.v1.operations`)."""
+        result = await self._session.execute(
+            select(Document.status, func.count()).group_by(Document.status)
+        )
+        return dict(result.all())  # type: ignore[arg-type]
 
     async def delete(self, document_id: uuid.UUID) -> bool:
         document = await self._session.get(Document, document_id)

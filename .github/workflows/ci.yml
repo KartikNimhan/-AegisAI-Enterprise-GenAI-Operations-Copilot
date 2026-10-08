@@ -19,7 +19,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync
+      - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 
@@ -32,7 +32,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync
+      - run: uv sync --all-groups
       - run: uv run pyright
 
   test:
@@ -70,6 +70,21 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync
+      - run: uv sync --all-groups
       - run: cd backend && uv run alembic upgrade head
       - run: uv run pytest -v
+
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-groups
+      # No Postgres/Redis/Groq here — the frontend test suite mocks every
+      # backend call (see frontend/streamlit/tests), so it never needs a
+      # live backend.
+      - run: uv run --group frontend pytest frontend/streamlit/tests -v

@@ -50,7 +50,17 @@ per-agent and whole-workflow timeouts, and limited retries for transient
 failures only. See
 [ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md)
 for the full reasoning, including why this is exactly three agents, not
-an agent swarm. Memory beyond plain conversation history is **not**
+an agent swarm. **Milestone 9** builds the user-facing Copilot UI and an
+enterprise operations dashboard on top of that same M8 API — a Streamlit
+app (the existing frontend foundation, extended, not replaced) with a
+Copilot chat page, a Documents page, an Operations dashboard (real
+document-status counts only — no fabricated request/execution metrics),
+and a System Status page (live Postgres/Redis checks plus configuration
+facts, clearly distinguished). The frontend performs no orchestration of
+its own — every Copilot turn is one call to
+`POST /api/v1/multi-agent/run`. See
+[ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md) for
+the full reasoning. Memory beyond plain conversation history is **not**
 implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
@@ -203,8 +213,23 @@ implemented yet — see [Roadmap](#roadmap) below.
   required) and integration tests that skip gracefully when
   Postgres/Redis/`GROQ_API_KEY`/the real embedding model aren't available
   or opted into, via pytest.
-- Ruff (lint + format) and pyright (type checking), both run in CI.
-- A minimal Streamlit page that checks backend connectivity.
+- Ruff (lint + format) and pyright (type checking), both run in CI
+  (backend and frontend).
+- **Copilot UI** (`frontend/streamlit/`) — a Streamlit app with four
+  pages: **Copilot** (`app.py`, the main chat interface over
+  `POST /api/v1/multi-agent/run` — answer primary, sources/workflow
+  status secondary and collapsed, never chain-of-thought), **Documents**
+  (`pages/1_Documents.py`, upload/list/inspect/delete against the
+  existing Milestone 3 document API), **Operations**
+  (`pages/2_Operations.py`, real document-status counts from a new
+  read-only `GET /api/v1/operations/summary`; no fabricated request/
+  agent-execution metrics), and **System Status**
+  (`pages/3_System_Status.py`, live Postgres/Redis checks plus
+  configuration facts from a new read-only `GET /api/v1/system/status`,
+  clearly distinguished from each other). `services/api/` is the one
+  place every backend call is made, normalizing every failure into a
+  single `BackendError`. See
+  [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md).
 
 ## Stack
 
@@ -365,6 +390,37 @@ for the full picture and
 readiness-check, chat/streaming, conversation-retrieval,
 document-ingestion, embedding, RAG, and agent data flows.
 
+The frontend is a separate, thin client — not part of the backend's own
+module boundaries above:
+
+```
+frontend/streamlit/
+  app.py              the Copilot page — one call to
+                      POST /api/v1/multi-agent/run, no routing of its own
+  pages/
+    1_Documents.py     upload/list/inspect/delete (existing M3 API)
+    2_Operations.py    real document-status counts only
+    3_System_Status.py live Postgres/Redis checks + configuration facts
+  components/
+    response.py        renders a MultiAgentRunResult (answer primary)
+    errors.py           maps a BackendError to a safe, user-facing message
+  services/
+    state.py            the only client-side state: per-session chat history
+    api/
+      client.py          the one function that calls httpx; BackendError
+      copilot.py         POST /api/v1/multi-agent/run
+      documents.py        the existing document endpoints
+      operations.py       GET /api/v1/operations/summary (new, read-only)
+      system.py           GET /api/v1/system/status (new, read-only)
+      health.py           GET /health/ready (existing, unversioned)
+  tests/                 streamlit.testing.v1.AppTest-based, no real backend
+```
+
+See [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md)
+for the full frontend architecture, including why it performs no
+orchestration of its own and why the Operations dashboard omits request/
+agent-execution metrics.
+
 ## Quickstart
 
 ```bash
@@ -377,6 +433,17 @@ cd backend && uv run uvicorn app.main:app --reload
 
 Then visit http://localhost:8000/health, http://localhost:8000/health/ready,
 and http://localhost:8000/docs.
+
+To run the Copilot UI against that backend, in a second terminal:
+
+```bash
+cd frontend/streamlit && uv run --group frontend streamlit run app.py
+```
+
+Then visit http://localhost:8501 — the Copilot, Documents, Operations, and
+System Status pages are all in the sidebar. `AEGIS_BACKEND_URL` (default
+`http://localhost:8000`) and `AEGIS_BACKEND_TIMEOUT_SECONDS` (default
+`30.0`) point the frontend at a backend running on a different host/port.
 
 To run a real Groq request locally, set `GROQ_API_KEY` in `.env` (get one at
 https://console.groq.com/keys), then:
@@ -556,8 +623,17 @@ RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
     uv run pytest -m multi_agent_integration -v
 ```
 
-Or `make check` (lint + typecheck + test). See the [Makefile](Makefile) for
-all available targets (`run`, `docker-up`, `migrate`, ...).
+Run the frontend test suite (no real backend/network — every backend call
+is mocked; `--group frontend` is needed since `streamlit`/its test runner
+aren't in the default dependency set):
+
+```bash
+uv run --group frontend pytest frontend/streamlit/tests -v
+```
+
+Or `make check` (lint + typecheck + test + test-frontend). See the
+[Makefile](Makefile) for all available targets (`run`, `run-frontend`,
+`docker-up`, `migrate`, ...).
 
 ## Roadmap
 
@@ -571,10 +647,13 @@ Agent reached through a real A2A boundary), and Milestone 8 (production-
 oriented multi-agent orchestration: a deterministic orchestrator routing
 to Research/Document/Analyst specialists through that same A2A boundary,
 with explicit capability authorization, loop/delegation limits, partial-
-failure-aware aggregation, retries, and timeouts) are done. Remaining, in
-rough order, each as its own milestone: memory beyond conversation
-history → evaluation → security/RBAC → observability/LLMOps → async
-workers → Kubernetes → multimodal/voice.
+failure-aware aggregation, retries, and timeouts), and Milestone 9 (the
+Copilot UI/operations dashboard: a Streamlit frontend over the M8 API,
+with a Documents page, a real-data-only Operations dashboard, and a
+System Status page — no orchestration logic in the frontend) are done.
+Remaining, in rough order, each as its own milestone: memory beyond
+conversation history → evaluation → security/RBAC → observability/LLMOps
+→ async workers → Kubernetes → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

@@ -45,18 +45,18 @@ package = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["backend"]
+src = ["backend", "frontend/streamlit"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "N"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "services"]
+known-first-party = ["app", "services", "components"]
 
 [tool.pyright]
-include = ["backend/app", "backend/tests"]
+include = ["backend/app", "backend/tests", "frontend/streamlit"]
 exclude = ["**/__pycache__"]
-extraPaths = ["backend"]
+extraPaths = ["backend", "frontend/streamlit"]
 venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"

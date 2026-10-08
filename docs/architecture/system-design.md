@@ -437,6 +437,42 @@ rationale. In brief:
   no way for a caller to redirect the orchestrator anywhere but the
   already-trusted agents.
 
+## Copilot UI
+
+See [ADR 011](decisions/011-copilot-ui-architecture.md) for the full
+rationale. In brief:
+
+- **Streamlit, reused not replaced** (`frontend/streamlit/`) — the
+  existing Milestone 0 frontend foundation, extended with a real Copilot
+  page, a Documents page, an Operations dashboard, and a System Status
+  page. Server-rendered, so there is no browser-origin CORS concern for
+  this frontend/backend pairing (`services/api/client.py`'s `httpx`
+  calls run in the Streamlit server process, never as a browser
+  `fetch()`).
+- **No orchestration in the frontend**: `app.py` (the Copilot page) calls
+  exactly one endpoint, `POST /api/v1/multi-agent/run`, and renders
+  exactly what it returns — all routing/agent-selection/aggregation stays
+  in `app.multi_agent.orchestrator.MultiAgentOrchestrator` (Milestone 8).
+- **One HTTP boundary module** (`services/api/client.py::request_json`)
+  normalizes every failure (timeout, connection refusal, an HTTP error
+  status, a malformed body) into a single `BackendError` — no page
+  inspects a raw `httpx` exception or Python traceback.
+- **Real data only on the Operations dashboard**: `GET /api/v1/
+  operations/summary` (new, Milestone 9, a single grouped `COUNT(*) ...
+  GROUP BY status` query) is the only metric source. Request/agent-
+  execution counts are explicitly omitted — M8's orchestrator doesn't
+  persist workflow history, so there is no truthful figure yet; the
+  dashboard says so rather than inventing one.
+- **System Status distinguishes live checks from configuration facts**:
+  `GET /api/v1/system/status` (new) reuses `/health/ready`'s own
+  `check_database`/`check_redis` calls for the two live checks, and
+  separately reports `llm_configured`/`trusted_a2a_agents`/`mcp_server`
+  as configuration facts — never a live Groq/MCP/A2A probe, and never
+  presented as "healthy" just because the page loaded.
+- **Per-session, client-side-only chat history** (`services/state.py`,
+  `st.session_state`) — the only state this frontend keeps, since M8 is
+  itself stateless (no `conversation_id`, no server-side persistence).
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`
@@ -472,10 +508,16 @@ endpoint — see [ADR 009](decisions/009-mcp-a2a-architecture.md).
 (`MULTI_AGENT_TIMEOUT_SECONDS`, `MULTI_AGENT_AGENT_TIMEOUT_SECONDS`,
 `MULTI_AGENT_MAX_RETRIES`, `MAX_AGENT_DEPTH`, `MAX_AGENT_DELEGATIONS`)
 likewise have working, explicitly-conservative defaults — see
-[ADR 010](decisions/010-multi-agent-architecture.md).
+[ADR 010](decisions/010-multi-agent-architecture.md). The frontend reads
+two of its own environment variables directly (not via `app/config.py` —
+they configure the Streamlit process, not the backend):
+`AEGIS_BACKEND_URL` (default `http://localhost:8000`) and
+`AEGIS_BACKEND_TIMEOUT_SECONDS` (default `30.0`) — see
+[ADR 011](decisions/011-copilot-ui-architecture.md).
 
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming
 request, conversation-retrieval, document-ingestion, embedding, RAG,
-agent, MCP tool-call, A2A task, and multi-agent workflow data flows.
+agent, MCP tool-call, A2A task, multi-agent workflow, and Copilot UI data
+flows.

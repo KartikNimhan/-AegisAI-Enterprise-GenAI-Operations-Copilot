@@ -690,8 +690,74 @@ orchestrator never imports `ResearchAgentService`/`DocumentAgentService`/
 `AnalystAgentService` directly — every path to a specialist's logic goes
 through `A2AClient` and a real HTTP call to its own A2A endpoint.
 
+## Copilot UI: `app.py` -> `POST /api/v1/multi-agent/run`
+
+```
+Browser (Streamlit session)
+   │  user types a message into st.chat_input
+   ▼
+frontend/streamlit/app.py
+   │  append_turn(ChatTurn(role="user", ...)); render it immediately
+   ▼
+services/api/copilot.py (run_multi_agent_workflow)
+   │  request_json("POST", "/api/v1/multi-agent/run", json={"message": ...})
+   ▼
+services/api/client.py (request_json)
+   │  one httpx.Client call; any failure -> BackendError, never raised raw
+   ▼
+Backend: POST /api/v1/multi-agent/run           (see the flow above)
+   ▼
+services/api/copilot.py
+   │  parses the JSON body into AgentStatus/MultiAgentRunResult dataclasses
+   │  (field names read directly from app.api.schemas.multi_agent)
+   ▼
+components/response.py (render_response)
+   │  answer rendered first; sources/workflow status in collapsed
+   │  expanders; status-specific banner (completed/partial/failed/timeout);
+   │  never chain-of-thought, a correlation id outside the "Technical
+   │  details" line, or a fabricated source field
+   ▼
+services/state.py
+   │  append_turn(ChatTurn(role="assistant", result=...)) — kept only in
+   │  st.session_state for this browser session, never sent back to or
+   │  persisted by the backend
+```
+
+**On a `BackendError`** (timeout/network/malformed response, or a
+structured backend error like `validation_error`): `components/
+errors.py::friendly_message` maps it to one safe, user-facing string;
+`app.py` shows it via `st.error` and still records the turn (with the
+error text, not a result) so it stays visible in history — the UI never
+crashes because the backend is unavailable.
+
+## Operations/System Status pages: `GET /api/v1/operations/summary`, `GET /api/v1/system/status`
+
+```
+pages/2_Operations.py                    pages/3_System_Status.py
+   │  get_operations_summary()               │  get_system_status()
+   ▼                                          ▼
+api/v1/operations.py                      api/v1/system.py
+   │  DocumentRepository                      │  check_database() / check_redis()
+   │    .count_by_status()                    │    (same functions /health/ready
+   │  (one grouped COUNT query)                │    already calls — not a second
+   ▼                                           │    implementation)
+documents_by_status: dict[str, int]            │  + Settings.groq_api_key is not
+total_documents: int                           │    None / trusted_a2a_agents /
+                                                │    mcp_server (configuration
+                                                │    facts, not live probes)
+                                                ▼
+                                           SystemStatusResponse
+```
+
+Both pages render an explicit empty/error state rather than a fabricated
+number: `total_documents == 0` -> "No operational history is available
+yet"; a `BackendError` -> the same safe error-message mapping the
+Copilot page uses, never a raw exception.
+
 ## Future data flows
 
 A fourth specialized agent, or agent-to-agent delegation beyond the
 Analyst, is not implemented yet; adding its request flow here ahead of
-the code would misrepresent the current system.
+the code would misrepresent the current system. A streaming Copilot
+endpoint (`POST /api/v1/multi-agent/run/stream`) is likewise not
+implemented — see ADR 011, "Limitations."

@@ -1,0 +1,11 @@
+"""Makes the frontend's own `services`/`components` packages importable
+regardless of pytest's rootdir (the repo root, not `frontend/streamlit`)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_FRONTEND_ROOT = Path(__file__).resolve().parents[1]
+if str(_FRONTEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_FRONTEND_ROOT))
