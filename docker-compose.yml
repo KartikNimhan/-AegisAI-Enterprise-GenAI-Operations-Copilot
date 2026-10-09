@@ -18,6 +18,14 @@ services:
       # data/uploads/ so uploads land in the same place as local (non-
       # Docker) runs and survive container recreation.
       DOCUMENT_STORAGE_DIR: /data/uploads
+      # Passed through from the host shell or a root-level .env file (which
+      # `docker compose` itself reads for ${...} substitution — a separate
+      # mechanism from the application's own `app.config.Settings`, which
+      # never reads a .env file from inside the container: no secret is
+      # ever baked into the image). Empty by default so the stack still
+      # starts without one — only chat/agent endpoints need it, same as
+      # running locally without Docker.
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     volumes:
       - ./data/uploads:/data/uploads
     depends_on:
@@ -25,6 +33,53 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "docker_healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  # A one-off migration runner, not started by `docker compose up` (no
+  # `restart` policy, and nothing depends on it) — the same backend image,
+  # just with its command overridden to run the existing Alembic
+  # migrations once and exit. Mirrors infra/kubernetes/migration-job.yaml;
+  # see docs/architecture/decisions/012-deployment-architecture.md,
+  # "Migration strategy," for why this is a separate step rather than
+  # something the API server (or every replica of it) runs implicitly on
+  # startup. Invoke with `make docker-migrate` or
+  # `docker compose run --rm migrate`.
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/streamlit/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      # The frontend reaches the backend through its internal Compose
+      # service name, never localhost/a user-editable address — see
+      # docs/architecture/decisions/011-copilot-ui-architecture.md,
+      # "Security boundaries."
+      AEGIS_BACKEND_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -57,6 +112,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # No named volume: Redis is currently only used for the readiness
+    # check (app.db.redis.check_redis) — no application data is stored in
+    # it yet, so it is correctly treated as ephemeral cache infrastructure,
+    # not a persistence requirement. Revisit if a future milestone starts
+    # storing real data in it.
 
 volumes:
   pgdata:

@@ -1,0 +1,49 @@
+# Runs the existing Alembic migrations once, using the same backend image
+# with its command overridden — mirrors docker-compose.yml's `migrate`
+# service. A Job (not an initContainer on the Deployment, and not
+# automated via a Helm hook — no Helm is used in this milestone): running
+# it as a separate, explicit step means schema migration happens exactly
+# once, before/after rolling out a new backend image, never once per
+# replica racing on an unsafe migration. See
+# docs/architecture/decisions/012-deployment-architecture.md, "Migration
+# strategy."
+#
+# Usage: apply this manifest (with the image tag updated to match the
+# version you're deploying) *before* rolling out the matching backend
+# Deployment update, then delete the completed Job
+# (`kubectl delete job aegisai-migrate`) before re-applying it for the
+# next release — Job names aren't automatically unique across runs.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aegisai-migrate
+  labels:
+    app.kubernetes.io/name: aegisai-backend
+    app.kubernetes.io/part-of: aegisai
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegisai-backend
+        app.kubernetes.io/part-of: aegisai
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: aegisai-backend:REPLACE_WITH_TAG
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: aegisai-backend-config
+            - secretRef:
+                name: aegisai-backend-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

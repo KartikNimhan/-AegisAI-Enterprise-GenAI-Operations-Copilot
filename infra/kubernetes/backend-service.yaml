@@ -1,0 +1,20 @@
+# ClusterIP only — the backend is never exposed outside the cluster
+# directly; the frontend (and the backend's own A2A self-calls) reach it
+# through this internal Service name. See
+# docs/architecture/decisions/012-deployment-architecture.md, "Network
+# security."
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegisai-backend
+  labels:
+    app.kubernetes.io/name: aegisai-backend
+    app.kubernetes.io/part-of: aegisai
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: aegisai-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

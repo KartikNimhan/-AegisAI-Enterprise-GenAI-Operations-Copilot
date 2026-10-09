@@ -515,6 +515,49 @@ they configure the Streamlit process, not the backend):
 `AEGIS_BACKEND_TIMEOUT_SECONDS` (default `30.0`) — see
 [ADR 011](decisions/011-copilot-ui-architecture.md).
 
+## Deployment topology
+
+See [ADR 012](decisions/012-deployment-architecture.md) for the full
+rationale. In brief:
+
+```
+                    ┌─────────────────────┐
+                    │  aegisai-frontend    │  (Deployment, replicas: 2)
+                    │  Streamlit, stateless │
+                    └──────────┬───────────┘
+                               │ AEGIS_BACKEND_URL
+                               ▼
+                    ┌─────────────────────┐
+                    │  aegisai-backend     │  (Deployment, replicas: 1 —
+                    │  FastAPI             │   see its own manifest comment
+                    └──────┬────────┬──────┘   on why, re: local file storage)
+                           │        │
+                 DATABASE_URL    REDIS_URL
+                           │        │
+                           ▼        ▼
+                  ┌────────────┐ ┌────────┐
+                  │ Postgres   │ │ Redis  │   dev/staging only — see
+                  │ +pgvector  │ │        │   ADR 012, "Cloud assumptions"
+                  │ (PVC)      │ │ (no PVC│   for the managed-service
+                  └────────────┘ │ — see  │   alternative
+                                 │ ADR 012)│
+                                 └────────┘
+```
+
+One Deployment each for backend/frontend — matching the modular-monolith
+architecture ([ADR 001](decisions/001-modular-monolith.md)), not split
+into per-module microservices. Both images are multi-stage (`builder`
+resolves dependencies with `uv`, the project's existing mechanism;
+`runtime` ships only the resolved virtualenv + application code, runs as
+a non-root user). Migrations (Alembic, unchanged) run as a separate,
+explicit one-off step (`docker compose run --rm migrate` / a Kubernetes
+`Job`) — never implicitly on API-server startup, never once per replica.
+`infra/kubernetes/` provides plain `kubectl apply`-able manifests (no
+Helm/operator); `docker-compose.yml` is the local-development equivalent.
+No cloud provider has been chosen for this project — the Postgres/Redis
+Kubernetes manifests are explicitly dev/staging-only, pointing at a
+managed database/cache service as the production alternative.
+
 ## Data flow
 
 See [data-flow.md](data-flow.md) for the readiness-check, chat/streaming

@@ -88,3 +88,46 @@ jobs:
       # backend call (see frontend/streamlit/tests), so it never needs a
       # live backend.
       - run: uv run --group frontend pytest frontend/streamlit/tests -v
+
+  docker-build:
+    # Builds both images to prove the Dockerfiles are actually buildable
+    # — a real, independent check this project's own local dev environment
+    # could not perform (see
+    # docs/architecture/decisions/012-deployment-architecture.md, "CI/CD").
+    # Never pushes anywhere — no registry is configured for this project.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: aegisai-backend:ci
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/streamlit/Dockerfile
+          push: false
+          tags: aegisai-frontend:ci
+      - name: Validate docker-compose.yml
+        run: docker compose config
+
+  k8s-manifests:
+    # Client-side structural validation only — no cluster is available in
+    # CI either; see infra/kubernetes/validate_manifests.py's own
+    # docstring for why this, and not kubeconform/kubeval/a live
+    # `kubectl apply --dry-run`, is what runs here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-groups
+      - run: uv run python infra/kubernetes/validate_manifests.py

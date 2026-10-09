@@ -1,0 +1,79 @@
+# DEVELOPMENT/STAGING ONLY.
+#
+# This self-hosts PostgreSQL+pgvector inside the cluster, matching
+# docker-compose.yml's local setup (same `pgvector/pgvector:pg16` image —
+# do not upgrade this without checking it against
+# backend/alembic/versions/0001_enable_pgvector.py and the rest of the
+# migration history first). For a real production deployment, this
+# project has made no cloud-provider choice (see
+# docs/architecture/decisions/012-deployment-architecture.md, "Cloud
+# assumptions") — a managed Postgres service with pgvector support (e.g.
+# Amazon RDS for PostgreSQL, Cloud SQL, Azure Database for PostgreSQL, or
+# a managed vector-DB-as-a-service) should normally be used instead, with
+# `backend-secret`'s `DATABASE_URL` pointed at it. Do not deploy this
+# StatefulSet into a production cluster without that conscious decision.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aegisai-postgres
+  labels:
+    app.kubernetes.io/name: aegisai-postgres
+    app.kubernetes.io/part-of: aegisai
+spec:
+  serviceName: aegisai-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegisai-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegisai-postgres
+        app.kubernetes.io/part-of: aegisai
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "aegis"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aegisai-postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              value: "aegis"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aegis", "-d", "aegis"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aegis", "-d", "aegis"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            # Initial, conservative defaults — not benchmark-derived.
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            # Initial, conservative default — resize as real usage dictates.
+            storage: 10Gi

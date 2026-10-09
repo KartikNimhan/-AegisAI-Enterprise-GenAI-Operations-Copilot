@@ -1,0 +1,26 @@
+# Persists uploaded documents (DOCUMENT_STORAGE_DIR) across Pod
+# restarts/rescheduling. ReadWriteOnce, not ReadWriteMany: the existing
+# `app.storage.local.LocalFileStorage` implementation writes to a plain
+# local filesystem path, which does not reliably share files across
+# multiple Pods without a ReadWriteMany-capable StorageClass (NFS/EFS/
+# Filestore) — not assumed to exist in a generic cluster. This is exactly
+# why backend-deployment.yaml defaults to `replicas: 1` — see that file's
+# own comment, and
+# docs/architecture/decisions/012-deployment-architecture.md, "Persistence,"
+# for the full reasoning. A future object-storage-backed `DocumentStorage`
+# implementation would remove this constraint.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aegisai-backend-uploads
+  labels:
+    app.kubernetes.io/name: aegisai-backend
+    app.kubernetes.io/part-of: aegisai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # An initial, conservative default — not a measured capacity
+      # figure. Resize as real usage dictates.
+      storage: 5Gi

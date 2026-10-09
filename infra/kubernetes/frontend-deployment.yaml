@@ -1,0 +1,87 @@
+# Frontend (Streamlit) Deployment — stateless except for per-session
+# `st.session_state` (lost on Pod restart, by design; see
+# docs/architecture/decisions/011-copilot-ui-architecture.md, "State
+# management"), so this one can scale horizontally without the
+# backend's uploads-volume constraint.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegisai-frontend
+  labels:
+    app.kubernetes.io/name: aegisai-frontend
+    app.kubernetes.io/part-of: aegisai
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegisai-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegisai-frontend
+        app.kubernetes.io/part-of: aegisai
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          # Replace with your registry/tag — see
+          # docs/architecture/decisions/012-deployment-architecture.md,
+          # "Image tagging."
+          image: aegisai-frontend:REPLACE_WITH_TAG
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8501
+          envFrom:
+            - configMapRef:
+                name: aegisai-frontend-config
+          # Streamlit's own real, built-in health endpoint — see
+          # frontend/streamlit/healthcheck.py's docstring. Used for both
+          # liveness and readiness: unlike the backend, the frontend has
+          # no external dependency of its own whose outage should take it
+          # out of rotation independently of whether the process itself
+          # is alive — a degraded backend is surfaced in-page (see
+          # components/errors.py), not by failing the frontend's own
+          # readiness probe.
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            # Initial, conservative defaults — not benchmark-derived.
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+            # readOnlyRootFilesystem left false: Streamlit writes its own
+            # cache/config under $HOME (/home/app, see the frontend
+            # Dockerfile) even in headless mode — not forced read-only
+            # just to tick the box (see backend-deployment.yaml's own
+            # comment for the same reasoning).

@@ -1,0 +1,17 @@
+# Non-secret frontend configuration — the frontend has no credentials of
+# its own at all (it never talks to Postgres/Redis/Groq directly, only to
+# the backend Service — see
+# docs/architecture/decisions/011-copilot-ui-architecture.md), so there is
+# no frontend-secret.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegisai-frontend-config
+  labels:
+    app.kubernetes.io/name: aegisai-frontend
+    app.kubernetes.io/part-of: aegisai
+data:
+  # The internal Service name/port, never a user-editable or external
+  # address — see backend-service.yaml.
+  AEGIS_BACKEND_URL: "http://aegisai-backend:8000"
+  AEGIS_BACKEND_TIMEOUT_SECONDS: "30.0"

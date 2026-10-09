@@ -1,0 +1,59 @@
+# DEVELOPMENT/STAGING ONLY — see postgres-statefulset.yaml's own header
+# comment for the same "no cloud-provider choice made yet, use a managed
+# service for real production" caveat (e.g. ElastiCache, Memorystore,
+# Azure Cache for Redis).
+#
+# A plain Deployment, not a StatefulSet, and no PersistentVolumeClaim:
+# Redis is currently only used for the readiness check
+# (app.db.redis.check_redis) — no application data is stored in it yet,
+# so it is correctly treated as ephemeral cache infrastructure. Revisit
+# (StatefulSet + PVC, or AOF/RDB persistence config) if a future
+# milestone starts storing real data in it — see
+# docs/architecture/decisions/012-deployment-architecture.md,
+# "Persistence."
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegisai-redis
+  labels:
+    app.kubernetes.io/name: aegisai-redis
+    app.kubernetes.io/part-of: aegisai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegisai-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegisai-redis
+        app.kubernetes.io/part-of: aegisai
+    spec:
+      containers:
+        - name: redis
+          # Pinned, not `:latest` — matches docker-compose.yml.
+          image: redis:7-alpine
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

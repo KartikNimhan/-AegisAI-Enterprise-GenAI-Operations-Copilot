@@ -754,6 +754,14 @@ number: `total_documents == 0` -> "No operational history is available
 yet"; a `BackendError` -> the same safe error-message mapping the
 Copilot page uses, never a raw exception.
 
+## Deployment topology
+
+Not a request-level data flow — see
+[system-design.md](system-design.md), "Deployment topology," and
+[ADR 012](decisions/012-deployment-architecture.md) for how requests
+reach these processes in a containerized/Kubernetes deployment (which
+Service each request crosses, what's internal-only vs. exposed).
+
 ## Future data flows
 
 A fourth specialized agent, or agent-to-agent delegation beyond the

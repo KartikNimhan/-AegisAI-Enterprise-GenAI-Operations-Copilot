@@ -1,0 +1,34 @@
+# Non-secret backend configuration. Everything here is safe to view/commit
+# — no credentials, no API keys. See backend-secret.example.yaml for what
+# is NOT here.
+#
+# REDIS_URL has no embedded credential in this project's default
+# configuration (no Redis auth is configured anywhere in app/db/redis.py),
+# so it is treated as non-secret config, not a Secret value. DATABASE_URL
+# embeds the Postgres password (`postgresql+asyncpg://user:PASSWORD@host/
+# db`) and is deliberately NOT here — see backend-secret.example.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegisai-backend-config
+  labels:
+    app.kubernetes.io/name: aegisai-backend
+    app.kubernetes.io/part-of: aegisai
+data:
+  APP_NAME: "AegisAI"
+  ENVIRONMENT: "kubernetes"
+  DEBUG: "false"
+  LOG_LEVEL: "INFO"
+  API_V1_PREFIX: "/api/v1"
+  REDIS_URL: "redis://aegisai-redis:6379/0"
+  # Matches the PVC mounted in backend-deployment.yaml — see that file's
+  # own comment on why DOCUMENT_STORAGE_DIR / replicas=1 are linked today.
+  DOCUMENT_STORAGE_DIR: "/data/uploads"
+  # MCP (Milestone 7) — the MCP server/client are both in-process; no
+  # external MCP endpoint is ever configured here.
+  TRUSTED_MCP_SERVERS: '["aegisai-internal"]'
+  TRUSTED_MCP_TOOLS: '["search_knowledge_base","calculator","get_document_metadata"]'
+  # A2A (Milestone 7/8) — the trusted agent is this same backend Service,
+  # reached through the cluster-internal Service DNS name, never an
+  # external/user-supplied endpoint.
+  TRUSTED_A2A_AGENTS: '["http://aegisai-backend:8000"]'

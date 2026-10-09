@@ -60,8 +60,20 @@ facts, clearly distinguished). The frontend performs no orchestration of
 its own — every Copilot turn is one call to
 `POST /api/v1/multi-agent/run`. See
 [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md) for
-the full reasoning. Memory beyond plain conversation history is **not**
-implemented yet — see [Roadmap](#roadmap) below.
+the full reasoning. **Milestone 10** containerizes that existing system
+(no application redesign): a production-oriented multi-stage Docker image
+for both the backend and the frontend, an extended `docker-compose.yml`
+(now including the frontend, a one-off migration service, and real
+healthchecks), and a Kubernetes deployment foundation
+(`infra/kubernetes/`) — Deployments/Services/ConfigMaps for both
+components, Secret *templates* (never a real credential committed), a
+migration Job, and clearly-labeled dev/staging-only Postgres/Redis
+manifests, since this project has not made a cloud-provider decision. See
+[ADR 012](docs/architecture/decisions/012-deployment-architecture.md) for
+the full reasoning, including exactly what was and wasn't validated given
+this environment's own Docker/Kubernetes limitations. Memory beyond plain
+conversation history is **not** implemented yet — see
+[Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -208,7 +220,22 @@ implemented yet — see [Roadmap](#roadmap) below.
   workflow timeouts, and per-workflow correlation ids threaded through
   every `multi_agent.*`/`a2a.*` observability event. See
   [ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md).
-- Docker + Docker Compose (backend, PostgreSQL with pgvector, Redis).
+- **Docker + Docker Compose** — multi-stage, non-root production images
+  for both the backend (root `Dockerfile`) and the frontend
+  (`frontend/streamlit/Dockerfile`), orchestrated by `docker-compose.yml`
+  alongside PostgreSQL+pgvector and Redis, with real healthchecks (not
+  just `depends_on`) and a one-off `migrate` service for running the
+  existing Alembic migrations. See
+  [ADR 012](docs/architecture/decisions/012-deployment-architecture.md).
+- **Kubernetes deployment foundation** (`infra/kubernetes/`) — plain
+  `kubectl apply`-able manifests (no Helm/operator): Deployments/Services/
+  ConfigMaps for the backend and frontend, Secret *templates* (a real
+  Secret is never committed), a migration Job, and clearly dev/staging-
+  labeled Postgres/Redis manifests for clusters without a managed
+  database/cache. Hardened security context (non-root, no privilege
+  escalation, dropped capabilities) on every container. See
+  [infra/kubernetes/README.md](infra/kubernetes/README.md) and
+  [ADR 012](docs/architecture/decisions/012-deployment-architecture.md).
 - Unit tests (fast, no live infra, API key, or embedding model download
   required) and integration tests that skip gracefully when
   Postgres/Redis/`GROQ_API_KEY`/the real embedding model aren't available
@@ -445,6 +472,25 @@ System Status pages are all in the sidebar. `AEGIS_BACKEND_URL` (default
 `http://localhost:8000`) and `AEGIS_BACKEND_TIMEOUT_SECONDS` (default
 `30.0`) point the frontend at a backend running on a different host/port.
 
+### Run the whole stack in containers
+
+Alternatively, run everything — backend, frontend, Postgres, Redis —
+in Docker:
+
+```bash
+cp .env.example .env            # optionally set GROQ_API_KEY
+make docker-up                  # builds + starts backend, frontend, postgres, redis
+make docker-migrate             # runs the existing Alembic migrations once
+```
+
+Then visit http://localhost:8000/docs (backend) and
+http://localhost:8501 (Copilot UI). `make docker-logs` tails every
+service's logs; `make docker-down` stops the stack. See
+[ADR 012](docs/architecture/decisions/012-deployment-architecture.md)
+for the full container/Kubernetes architecture, and
+[infra/kubernetes/README.md](infra/kubernetes/README.md) for deploying
+to a Kubernetes cluster.
+
 To run a real Groq request locally, set `GROQ_API_KEY` in `.env` (get one at
 https://console.groq.com/keys), then:
 
@@ -631,9 +677,20 @@ aren't in the default dependency set):
 uv run --group frontend pytest frontend/streamlit/tests -v
 ```
 
+Validate the deployment configuration itself (no Docker daemon or
+Kubernetes cluster required for either of these — see
+[ADR 012](docs/architecture/decisions/012-deployment-architecture.md),
+"Testing"):
+
+```bash
+docker compose config               # or: make docker-config
+uv run python infra/kubernetes/validate_manifests.py   # or: make k8s-validate
+```
+
 Or `make check` (lint + typecheck + test + test-frontend). See the
 [Makefile](Makefile) for all available targets (`run`, `run-frontend`,
-`docker-up`, `migrate`, ...).
+`docker-build`, `docker-up`, `docker-down`, `docker-migrate`,
+`docker-shell`, `k8s-validate`, `migrate`, ...).
 
 ## Roadmap
 
@@ -650,10 +707,15 @@ with explicit capability authorization, loop/delegation limits, partial-
 failure-aware aggregation, retries, and timeouts), and Milestone 9 (the
 Copilot UI/operations dashboard: a Streamlit frontend over the M8 API,
 with a Documents page, a real-data-only Operations dashboard, and a
-System Status page — no orchestration logic in the frontend) are done.
-Remaining, in rough order, each as its own milestone: memory beyond
-conversation history → evaluation → security/RBAC → observability/LLMOps
-→ async workers → Kubernetes → multimodal/voice.
+System Status page — no orchestration logic in the frontend), and
+Milestone 10 (a Docker/Kubernetes deployment foundation for that existing
+system: production-oriented multi-stage images for both the backend and
+frontend, an extended Compose stack with real healthchecks, and
+`kubectl apply`-able Kubernetes manifests with hardened security context
+and Secret templates — no application redesign) are done. Remaining, in
+rough order, each as its own milestone: memory beyond conversation
+history → evaluation → security/RBAC → observability/LLMOps → async
+workers → multimodal/voice.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

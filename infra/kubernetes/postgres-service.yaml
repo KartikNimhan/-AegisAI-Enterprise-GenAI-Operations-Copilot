@@ -1,0 +1,20 @@
+# Headless (clusterIP: None) — the standard pairing for a StatefulSet,
+# giving each Pod a stable DNS name. Never exposed outside the cluster —
+# see docs/architecture/decisions/012-deployment-architecture.md, "Network
+# security": only application-facing ports (backend, frontend) are ever
+# exposed beyond ClusterIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegisai-postgres
+  labels:
+    app.kubernetes.io/name: aegisai-postgres
+    app.kubernetes.io/part-of: aegisai
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: aegisai-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

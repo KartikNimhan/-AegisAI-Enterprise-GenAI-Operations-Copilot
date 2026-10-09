@@ -1,0 +1,49 @@
+# Keeps the build context small and prevents anything sensitive/local
+# from ever being sent to the Docker daemon, even though the backend/
+# frontend Dockerfiles only COPY specific paths explicitly — a second,
+# defense-in-depth layer, not the only one.
+
+# Version control
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Environment variables / secrets — never sent to the build context
+.env
+.env.*
+!.env.example
+
+# Testing & tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+htmlcov/
+.coverage
+coverage.xml
+
+# Local data (uploads, generated artifacts) — never baked into an image
+data/
+
+# Docs, CI, and anything else that doesn't belong in a build context
+docs/
+.github/
+infra/
+*.md
+LICENSE
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

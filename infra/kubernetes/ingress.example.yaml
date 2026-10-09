@@ -1,0 +1,39 @@
+# TEMPLATE ONLY — requires an ingress controller already installed in
+# your cluster (e.g. ingress-nginx, Traefik); none is installed by this
+# milestone, and this manifest does not assume one exists. `host` below
+# is an obvious placeholder, never a real/production domain — replace it
+# with your own before applying. Exposes only the frontend (the Copilot
+# UI) — the backend API remains ClusterIP-only/internal (see
+# backend-service.yaml); an authenticated internal user or a future
+# API-gateway milestone would front the backend directly if external API
+# access is ever needed.
+#
+# If you don't have an ingress controller, `kubectl port-forward
+# svc/aegisai-frontend 8501:8501` (or changing that Service's `type` to
+# `LoadBalancer` if your cluster/cloud provisions one) is simpler — see
+# frontend-service.yaml's own comment.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aegisai-frontend
+  labels:
+    app.kubernetes.io/name: aegisai-frontend
+    app.kubernetes.io/part-of: aegisai
+  annotations: {}
+    # Add your ingress controller's own annotations here if needed (e.g.
+    # nginx.ingress.kubernetes.io/... or traefik.ingress.kubernetes.io/...)
+    # — none are assumed/added here, since the specific controller is not
+    # known.
+spec:
+  ingressClassName: REPLACE_WITH_YOUR_INGRESS_CLASS
+  rules:
+    - host: REPLACE_WITH_YOUR_HOSTNAME.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aegisai-frontend
+                port:
+                  name: http

@@ -54,7 +54,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "N"]
 known-first-party = ["app", "services", "components"]
 
 [tool.pyright]
-include = ["backend/app", "backend/tests", "frontend/streamlit"]
+include = ["backend/app", "backend/tests", "backend/scripts", "frontend/streamlit", "infra/kubernetes"]
 exclude = ["**/__pycache__"]
 extraPaths = ["backend", "frontend/streamlit"]
 venvPath = "."
