@@ -21,6 +21,7 @@ Two session-handling modes are used deliberately:
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.session import get_session
+from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.domain.models.message import Message
 from app.llm.exceptions import LLMTimeoutError
@@ -42,6 +44,18 @@ from app.main import app
 from ..unit.services.doubles import ScriptedChatGateway
 
 pytestmark = pytest.mark.integration
+
+
+def _conversation_id_from_sse(body: str) -> uuid.UUID:
+    """Every SSE `data:` chunk (except the final `[DONE]` sentinel)
+    carries `conversation_id` — see app/api/v1/chat.py's streaming
+    endpoint and ChatCompletionStreamChunk's own docstring on why it's
+    repeated on every chunk, not just the first."""
+    for line in body.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            payload = json.loads(line.removeprefix("data: "))
+            return uuid.UUID(payload["conversation_id"])
+    raise AssertionError(f"no conversation_id found in SSE body: {body!r}")
 
 
 @pytest.fixture
@@ -193,11 +207,82 @@ async def test_streaming_chat_persists_accumulated_response(
         body = b"".join([chunk async for chunk in response.aiter_bytes()]).decode()
 
     assert "[DONE]" in body
+    conversation_id = _conversation_id_from_sse(body)
 
-    result = await db_session.execute(select(Message).order_by(Message.created_at))
+    # Scoped to the conversation THIS test created — not every row in the
+    # shared messages table. An earlier version of this test queried
+    # `select(Message)` with no filter at all, which silently assumed the
+    # table was otherwise empty; see
+    # test_streaming_chat_persistence_query_ignores_unrelated_messages
+    # below for the regression test proving this is now safe.
+    result = await db_session.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
+    )
     stored = result.scalars().all()
     assert [m.content for m in stored] == ["hi", "Hello"]
     assert stored[1].total_tokens == 5
+
+
+async def test_streaming_chat_persistence_query_ignores_unrelated_messages(
+    client_with_db: AsyncClient, override_gateway: Any, db_session: AsyncSession
+) -> None:
+    """Regression test for the exact bug the test above used to have:
+    an earlier version queried `select(Message)` with no WHERE clause,
+    so a message already sitting in the shared database from something
+    else entirely (a manual API call, a different test, a real
+    conversation) leaked into the assertion and broke it. Seeds one such
+    "unrelated, already-there" conversation/message — flushed into this
+    test's own isolated transaction, exactly as visible to it as an
+    already-committed row from elsewhere would be, and never actually
+    committed — before running the same streaming flow, and asserts the
+    conversation_id-scoped query is unaffected by it.
+    """
+    unrelated_conversation = Conversation(title="unrelated, pre-existing conversation")
+    db_session.add(unrelated_conversation)
+    await db_session.flush()
+    db_session.add(
+        Message(
+            conversation_id=unrelated_conversation.id,
+            role=MessageRole.USER,
+            content="Reply with exactly the word: OK",
+        )
+    )
+    await db_session.flush()
+
+    override_gateway(
+        ScriptedChatGateway(
+            stream_chunks=[
+                StreamChunk(delta="Hel"),
+                StreamChunk(
+                    delta="lo",
+                    finish_reason="stop",
+                    is_final=True,
+                    model="openai/gpt-oss-20b",
+                    usage=TokenUsage(input_tokens=3, output_tokens=2, total_tokens=5),
+                ),
+            ]
+        )
+    )
+
+    async with client_with_db.stream(
+        "POST",
+        "/api/v1/chat/completions/stream",
+        json={"message": "hi", "model_role": "fast"},
+    ) as response:
+        body = b"".join([chunk async for chunk in response.aiter_bytes()]).decode()
+
+    assert "[DONE]" in body
+    conversation_id = _conversation_id_from_sse(body)
+
+    result = await db_session.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
+    )
+    stored = result.scalars().all()
+    assert [m.content for m in stored] == ["hi", "Hello"]
 
 
 async def test_failed_turn_is_fully_rolled_back(db_session: AsyncSession) -> None:

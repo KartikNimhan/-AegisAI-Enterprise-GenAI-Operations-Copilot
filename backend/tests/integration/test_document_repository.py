@@ -70,18 +70,42 @@ async def test_get_by_checksum_returns_none_when_no_match(db_session: AsyncSessi
 
 
 async def test_list_returns_total_count_and_pagination(db_session: AsyncSession) -> None:
+    """Asserts correctness relative to whatever is already in the shared
+    `documents` table, never an absolute count — `list()`'s total is an
+    unfiltered `SELECT COUNT(*)` (see DocumentRepository.list), so an
+    earlier version of this test asserting `total == 3` silently assumed
+    the table was otherwise empty, which broke the moment any other
+    document existed. `created_at` uses a Python-side
+    `default=lambda: datetime.now(UTC)` evaluated per object (see
+    app/domain/models/document.py), not a single per-transaction
+    timestamp, but on coarse clock resolution multiple documents created
+    in the same test can still tie — ties break on `id.desc()`, a random
+    UUID order — so this deliberately does not assume these 3 documents
+    come back in creation order relative to each other, only that they
+    are among the most recent (ordered before any pre-existing document)
+    and that the total count increased by exactly 3.
+    """
     repo = DocumentRepository(db_session)
-    for _ in range(3):
-        repo.new(**make_document_kwargs())
+    _, total_before = await repo.list(limit=1, offset=0)
+
+    created_documents = [repo.new(**make_document_kwargs()) for _ in range(3)]
     await db_session.flush()
+    # `id`'s default is evaluated at flush time, not object construction
+    # — read it only after flush() has actually run.
+    created_ids = {document.id for document in created_documents}
 
     page_one, total = await repo.list(limit=2, offset=0)
     page_two, total_again = await repo.list(limit=2, offset=2)
 
-    assert total == 3
-    assert total_again == 3
+    assert total == total_before + 3
+    assert total_again == total_before + 3
     assert len(page_one) == 2
-    assert len(page_two) == 1
+    assert len(page_two) >= 1
+    # The 3 newly created documents are the most recent, so they occupy
+    # positions 0-2 ahead of anything pre-existing — but not necessarily
+    # in creation order relative to each other (see docstring above).
+    newest_three_ids = {d.id for d in page_one} | {page_two[0].id}
+    assert newest_three_ids == created_ids
 
 
 async def test_delete_removes_document(db_session: AsyncSession) -> None:
