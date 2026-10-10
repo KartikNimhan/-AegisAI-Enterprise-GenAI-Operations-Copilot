@@ -27,7 +27,7 @@ async def get_system_status(settings: SettingsDep) -> SystemStatusResponse:
     return SystemStatusResponse(
         database="ok" if database_ok else "unavailable",
         redis="ok" if redis_ok else "unavailable",
-        llm_configured=settings.groq_api_key is not None,
+        llm_configured=settings.has_groq_api_key,
         trusted_a2a_agents=settings.trusted_a2a_agents,
         mcp_server=MCP_SERVER_NAME,
     )

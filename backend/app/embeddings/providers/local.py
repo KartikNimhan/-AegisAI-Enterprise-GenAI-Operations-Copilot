@@ -74,6 +74,17 @@ class LocalEmbeddingProvider(EmbeddingProvider):
                         ) from exc
         return self._model
 
+    async def warm_up(self) -> None:
+        """Loads the model now instead of on the first real request.
+
+        First load downloads the model from Hugging Face (~90MB) and can
+        take well over a minute on a slow connection — far longer than the
+        A2A client's task-submission timeout. Called fire-and-forget from
+        the app's startup lifespan (see app.main) so that tax is paid once
+        at container boot, not on whichever request happens to be first.
+        """
+        await asyncio.to_thread(self._get_model)
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             raise EmptyInputError("No texts provided to embed")

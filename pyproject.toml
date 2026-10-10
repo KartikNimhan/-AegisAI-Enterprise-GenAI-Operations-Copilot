@@ -20,6 +20,17 @@ dependencies = [
     "python-docx>=1.1",
     "python-multipart>=0.0.9",
     "sentence-transformers>=3.0",
+    # Listed explicitly (not left as sentence-transformers' own transitive
+    # dependency) so [tool.uv.sources] below can actually route it to the
+    # CPU-only PyTorch index — verified empirically that uv silently
+    # ignores a `tool.uv.sources` entry for a package that only appears
+    # transitively. No version pin here: sentence-transformers' own
+    # `torch>=2.2` constraint (plus the index override) still drives
+    # resolution. See the CPU-only index block below and
+    # docs/architecture/decisions/006-embedding-model.md /
+    # app.config.Settings.embedding_device (default "cpu", unchanged) for
+    # why this project never needs the CUDA build.
+    "torch",
     "pgvector>=0.3",
     "langgraph>=1.2.12",
     "mcp>=2.3.0",
@@ -41,6 +52,25 @@ frontend = [
 
 [tool.uv]
 package = false
+
+# CPU-only PyTorch index — scoped to `torch` only (`explicit = true` means
+# this index is never consulted for any other package, so nothing else's
+# resolution/version is affected). Without this, PyPI's own default Linux
+# wheel for `torch` depends on a full CUDA/NVIDIA toolchain
+# (cuda-toolkit, nvidia-cudnn-cu13, nvidia-nccl-cu13, triton, ...) even
+# though this project only ever runs embeddings on CPU
+# (app.config.Settings.embedding_device defaults to "cpu" — see
+# app/embeddings/providers/local.py) — those packages were timing out
+# Docker image builds. Verified empirically against the installed
+# uv==0.11.2: the resulting Linux/Windows wheel resolves to
+# `torch==2.14.1+cpu` with no cuda-*/nvidia-*/triton dependency at all.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 100

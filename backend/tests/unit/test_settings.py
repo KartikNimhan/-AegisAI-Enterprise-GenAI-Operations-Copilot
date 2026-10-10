@@ -28,7 +28,12 @@ def isolated_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_settings_defaults(isolated_env: None) -> None:
-    settings = Settings()
+    # `_env_file=None` bypasses Settings' own `env_file=_REPO_ROOT / ".env"`
+    # source for this instance — this test must reflect the field defaults
+    # themselves, regardless of whether a real `.env` happens to exist at
+    # the repo root (e.g. one a contributor created by following the
+    # README's own "copy .env.example to .env" instructions).
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.app_name == "AegisAI"
     assert settings.api_v1_prefix == "/api/v1"
     assert settings.database_url.startswith("postgresql+asyncpg://")
@@ -39,6 +44,29 @@ def test_settings_defaults(isolated_env: None) -> None:
     assert settings.safety_llm_model == "openai/gpt-oss-safeguard-20b"
     assert settings.llm_timeout_seconds == 30.0
     assert settings.llm_max_retries == 2
+
+
+def test_has_groq_api_key_is_false_for_a_blank_string() -> None:
+    """Reproduces a real bug: `GROQ_API_KEY=""` (exactly what .env.example
+    ships with) parsed as `SecretStr('')`, not `None`. The old check
+    (`groq_api_key is not None`) is truthy for that — `SecretStr` doesn't
+    override `__bool__` — so `/api/v1/system/status` reported
+    `llm_configured: true` for a key that is actually unusable."""
+    settings = Settings(_env_file=None, groq_api_key=SecretStr(""))  # type: ignore[call-arg]
+
+    assert settings.has_groq_api_key is False
+
+
+def test_has_groq_api_key_is_true_for_a_real_key() -> None:
+    settings = Settings(_env_file=None, groq_api_key=SecretStr("sk-real-key"))  # type: ignore[call-arg]
+
+    assert settings.has_groq_api_key is True
+
+
+def test_has_groq_api_key_is_false_when_unset() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.has_groq_api_key is False
 
 
 def test_groq_api_key_is_not_exposed_in_repr_or_str(monkeypatch: pytest.MonkeyPatch) -> None:

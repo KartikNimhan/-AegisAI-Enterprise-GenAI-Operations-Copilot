@@ -18,6 +18,13 @@ _SHARED_PROCESSORS: list[structlog.types.Processor] = [
     structlog.stdlib.add_logger_name,
     structlog.processors.TimeStamper(fmt="iso"),
     structlog.processors.StackInfoRenderer(),
+    # Renders `exc_info=True`/`logger.exception(...)` into an actual
+    # `"exception"` traceback string before JSONRenderer serializes the
+    # event dict. Without this, exc_info=True was serialized as the literal
+    # JSON boolean `true` and the real traceback was silently dropped —
+    # every caught-and-logged exception showed up only as
+    # `"error_type": "internal"` with no way to diagnose it.
+    structlog.processors.format_exc_info,
 ]
 
 

@@ -28,7 +28,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://aegis:aegis@localhost:5433/aegis"
     redis_url: str = "redis://localhost:6380/0"
 
-    cors_origins: list[str] = ["http://localhost:8501"]
+    # http://localhost:8501 is the legacy Streamlit UI; :3000 is the React
+    # app's Docker-published port; :5173 is Vite's local dev server.
+    cors_origins: list[str] = [
+        "http://localhost:8501",
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
 
     # LLM Gateway (Groq). GROQ_API_KEY is deliberately optional so the app
     # starts and the test suite runs without one — calls through the
@@ -136,6 +142,16 @@ class Settings(BaseSettings):
     multi_agent_max_retries: int = 1
     max_agent_depth: int = 2
     max_agent_delegations: int = 5
+
+    @property
+    def has_groq_api_key(self) -> bool:
+        """True only for an actually-usable key. `groq_api_key is not None`
+        is not enough: a `.env` with `GROQ_API_KEY=""` (exactly what
+        .env.example ships with) parses as `SecretStr('')`, not `None` —
+        truthy as a plain `bool(...)` check since `SecretStr` doesn't
+        override `__bool__`, which previously made `/api/v1/system/status`
+        report `llm_configured: true` for a blank key."""
+        return bool(self.groq_api_key) and bool(self.groq_api_key.get_secret_value())
 
 
 @lru_cache

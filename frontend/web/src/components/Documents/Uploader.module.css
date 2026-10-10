@@ -1,0 +1,74 @@
+.container {
+  margin-bottom: var(--space-6);
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8);
+  border: 1.5px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: center;
+}
+
+.dropzone:hover,
+.dragOver {
+  border-color: var(--accent-500);
+  background: var(--accent-50);
+}
+
+.text {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.progressTrack {
+  position: relative;
+  margin-top: var(--space-3);
+  height: 24px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.progressFill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--accent-100);
+  transition: width 0.15s ease;
+}
+
+.progressLabel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  color: var(--danger-500);
+  font-size: var(--text-sm);
+}

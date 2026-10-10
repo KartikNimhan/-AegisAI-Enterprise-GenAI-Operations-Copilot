@@ -50,15 +50,10 @@ class GroqProvider(LLMProvider):
         pass, without one).
         """
         if self._client is None:
-            api_key = (
-                self._settings.groq_api_key.get_secret_value()
-                if self._settings.groq_api_key
-                else None
-            )
-            if not api_key:
+            if not self._settings.has_groq_api_key:
                 raise LLMAuthenticationError("GROQ_API_KEY is not configured", provider=self.name)
             self._client = groq.AsyncGroq(
-                api_key=api_key,
+                api_key=self._settings.groq_api_key.get_secret_value(),  # type: ignore[union-attr]
                 timeout=self._settings.llm_timeout_seconds,
                 # The LLM gateway owns retry policy; disable the SDK's own.
                 max_retries=0,

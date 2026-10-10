@@ -1,0 +1,27 @@
+.pill {
+  display: inline-block;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.neutral {
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+}
+
+.pending {
+  background: var(--accent-50);
+  color: var(--accent-600);
+}
+
+.ok {
+  background: var(--success-50);
+  color: var(--success-500);
+}
+
+.danger {
+  background: var(--danger-50);
+  color: var(--danger-500);
+}

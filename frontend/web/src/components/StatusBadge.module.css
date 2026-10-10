@@ -1,0 +1,50 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.healthy {
+  background: var(--success-50);
+  color: var(--success-500);
+}
+.healthy .dot {
+  background: var(--success-500);
+}
+
+.degraded {
+  background: var(--warning-50);
+  color: var(--warning-500);
+}
+.degraded .dot {
+  background: var(--warning-500);
+}
+
+.unavailable {
+  background: var(--danger-50);
+  color: var(--danger-500);
+}
+.unavailable .dot {
+  background: var(--danger-500);
+}
+
+.unknown {
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+.unknown .dot {
+  background: var(--text-muted);
+}

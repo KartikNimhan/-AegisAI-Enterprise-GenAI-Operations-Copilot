@@ -1,0 +1,98 @@
+.page {
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.loading {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.totalCard {
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.totalLabel {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.totalValue {
+  font-size: 40px;
+  font-weight: 700;
+}
+
+.breakdownCard {
+  padding: var(--space-6);
+}
+
+.sectionTitle {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0 0 var(--space-4);
+}
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.barRow {
+  display: grid;
+  grid-template-columns: 100px 1fr 40px;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.barLabel {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.barTrack {
+  height: 10px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  background: var(--accent-500);
+  border-radius: var(--radius-sm);
+}
+
+.barFill.failed {
+  background: var(--danger-500);
+}
+
+.barFill.processed {
+  background: var(--success-500);
+}
+
+.barFill.processing {
+  background: var(--warning-500);
+}
+
+.barValue {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-align: right;
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  margin: 0;
+}

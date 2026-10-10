@@ -59,6 +59,19 @@ COPY backend/scripts/docker_healthcheck.py ./docker_healthcheck.py
 # own transient state if ever required.
 RUN chown -R app:app /srv
 
+# `useradd --no-create-home` leaves `$HOME` unset/unwritable. That broke
+# the Research Agent in Docker specifically (never locally, where a real
+# user always has a writable home): sentence-transformers' lazy model
+# load (app.embeddings.providers.local) downloads to huggingface_hub's
+# cache under `$HOME/.cache`, which failed with `PermissionError: [Errno
+# 13] Permission denied: '/home/app'` on first use — every research
+# request failed with an opaque "research agent failed to complete the
+# task" until this was diagnosed via the exc_info logging fix (see
+# app.core.logging). Mirrors the same fix already applied to the
+# Streamlit frontend's Dockerfile for its own $HOME-needing cache dir.
+RUN mkdir -p /home/app && chown -R app:app /home/app
+ENV HOME=/home/app
+
 USER app
 
 EXPOSE 8000

@@ -59,17 +59,40 @@ services:
         condition: service_healthy
     profiles: ["tools"]
 
+  # React app (replaces the Streamlit UI as the default frontend — see
+  # frontend/web/). Unlike `AEGIS_BACKEND_URL` above, this URL is fetched
+  # by the user's own BROWSER, which sits outside the Compose network
+  # entirely — it must be the backend's host-published port
+  # (http://localhost:8000), never the internal `http://backend:8000`
+  # service name, which only resolves *between* containers. See
+  # frontend/web/src/config.ts's own docstring.
   frontend:
+    build:
+      context: frontend/web
+    ports:
+      - "3000:80"
+    environment:
+      API_BASE_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  # The original Streamlit UI — no longer started by `docker compose up`
+  # by default (profile-gated), kept available via
+  # `docker compose --profile legacy-ui up frontend-streamlit`.
+  frontend-streamlit:
     build:
       context: .
       dockerfile: frontend/streamlit/Dockerfile
     ports:
       - "8501:8501"
     environment:
-      # The frontend reaches the backend through its internal Compose
-      # service name, never localhost/a user-editable address — see
-      # docs/architecture/decisions/011-copilot-ui-architecture.md,
-      # "Security boundaries."
       AEGIS_BACKEND_URL: http://backend:8000
     depends_on:
       backend:
@@ -80,6 +103,7 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 5
+    profiles: ["legacy-ui"]
 
   postgres:
     image: pgvector/pgvector:pg16
