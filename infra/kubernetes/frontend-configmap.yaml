@@ -1,8 +1,17 @@
 # Non-secret frontend configuration — the frontend has no credentials of
-# its own at all (it never talks to Postgres/Redis/Groq directly, only to
-# the backend Service — see
-# docs/architecture/decisions/011-copilot-ui-architecture.md), so there is
-# no frontend-secret.yaml.
+# its own at all, so there is no frontend-secret.yaml.
+#
+# IMPORTANT — unlike the original Streamlit app (which called the backend
+# server-side, so the internal Service DNS name worked fine), this React
+# app's API calls happen in the end USER'S BROWSER, outside the cluster
+# entirely. `API_BASE_URL` must therefore be a URL that browser can
+# reach — never the internal `aegisai-backend` Service name, which only
+# resolves between Pods. This project has not yet decided how (or
+# whether) the backend gets exposed externally (see backend-service.yaml,
+# still ClusterIP-only — a network-security decision left to a future
+# milestone), so the placeholder below is NOT a working default: replace
+# it with your backend's real external URL once one exists, e.g. a
+# second Ingress host/path routed to the `aegisai-backend` Service.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,7 +20,4 @@ metadata:
     app.kubernetes.io/name: aegisai-frontend
     app.kubernetes.io/part-of: aegisai
 data:
-  # The internal Service name/port, never a user-editable or external
-  # address — see backend-service.yaml.
-  AEGIS_BACKEND_URL: "http://aegisai-backend:8000"
-  AEGIS_BACKEND_TIMEOUT_SECONDS: "30.0"
+  API_BASE_URL: "https://REPLACE_WITH_YOUR_BACKENDS_EXTERNAL_URL.example"

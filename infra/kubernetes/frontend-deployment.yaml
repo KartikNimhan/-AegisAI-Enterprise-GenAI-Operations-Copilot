@@ -1,8 +1,16 @@
-# Frontend (Streamlit) Deployment — stateless except for per-session
-# `st.session_state` (lost on Pod restart, by design; see
-# docs/architecture/decisions/011-copilot-ui-architecture.md, "State
-# management"), so this one can scale horizontally without the
-# backend's uploads-volume constraint.
+# Frontend (React + Vite, served by nginx) Deployment — stateless (no
+# server-side session state at all; unlike the original Streamlit app,
+# this one renders entirely in the browser), so it scales horizontally
+# without the backend's uploads-volume constraint.
+#
+# NOTE — browser reachability gap (see frontend-configmap.yaml's own
+# comment): this app's API calls happen in the end user's BROWSER, not
+# inside this Pod, so `API_BASE_URL` below must be a URL reachable from
+# outside the cluster. This project has not yet decided how the backend
+# itself gets exposed externally (see backend-service.yaml, ClusterIP-
+# only) — that's a network-security decision for a future milestone, not
+# made here. Until it is, this Deployment is not reachable end-to-end
+# from outside the cluster even once applied.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,26 +42,22 @@ spec:
         - name: frontend
           # Replace with your registry/tag — see
           # docs/architecture/decisions/012-deployment-architecture.md,
-          # "Image tagging."
+          # "Image tagging." Built from frontend/web/Dockerfile.
           image: aegisai-frontend:REPLACE_WITH_TAG
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8501
+              containerPort: 80
           envFrom:
             - configMapRef:
                 name: aegisai-frontend-config
-          # Streamlit's own real, built-in health endpoint — see
-          # frontend/streamlit/healthcheck.py's docstring. Used for both
-          # liveness and readiness: unlike the backend, the frontend has
-          # no external dependency of its own whose outage should take it
-          # out of rotation independently of whether the process itself
-          # is alive — a degraded backend is surfaced in-page (see
-          # components/errors.py), not by failing the frontend's own
-          # readiness probe.
+          # nginx serving the static build — a plain `/` request is
+          # sufficient (no app-specific health endpoint; see
+          # frontend/web/Dockerfile's own HEALTHCHECK, the same check
+          # used here).
           livenessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /
               port: http
             initialDelaySeconds: 5
             periodSeconds: 15
@@ -61,7 +65,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -71,17 +75,18 @@ spec:
             # Initial, conservative defaults — not benchmark-derived.
             requests:
               cpu: "100m"
-              memory: "256Mi"
+              memory: "128Mi"
             limits:
-              cpu: "500m"
-              memory: "512Mi"
+              cpu: "250m"
+              memory: "256Mi"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
-            # readOnlyRootFilesystem left false: Streamlit writes its own
-            # cache/config under $HOME (/home/app, see the frontend
-            # Dockerfile) even in headless mode — not forced read-only
-            # just to tick the box (see backend-deployment.yaml's own
-            # comment for the same reasoning).
+            # readOnlyRootFilesystem left false: stock nginx writes its
+            # pid file and proxy/client-body temp dirs under /var/run and
+            # /var/cache/nginx even when just serving static files — not
+            # forced read-only just to tick the box (see
+            # backend-deployment.yaml's own comment for the same
+            # reasoning).

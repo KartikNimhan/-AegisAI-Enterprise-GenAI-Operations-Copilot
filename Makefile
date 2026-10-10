@@ -1,4 +1,4 @@
-.PHONY: install run run-frontend test test-unit test-integration test-frontend lint format typecheck check migrate migrate-create docker-build docker-up docker-down docker-restart docker-logs docker-migrate docker-shell docker-shell-frontend docker-config k8s-validate
+.PHONY: install run run-frontend run-frontend-streamlit test test-unit test-integration test-frontend test-frontend-streamlit lint lint-frontend format typecheck check migrate migrate-create docker-build docker-up docker-down docker-restart docker-logs docker-migrate docker-shell docker-shell-frontend docker-shell-frontend-streamlit docker-config k8s-validate
 
 install:
 	uv sync --all-groups
@@ -6,7 +6,13 @@ install:
 run:
 	cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
+# The default UI (React + Vite dev server) — see frontend/web/.
 run-frontend:
+	cd frontend/web && npm run dev
+
+# The original Streamlit UI — no longer the default (see docker-compose.yml's
+# profile-gated `frontend-streamlit` service), kept runnable directly.
+run-frontend-streamlit:
 	cd frontend/streamlit && uv run --group frontend streamlit run app.py
 
 test:
@@ -18,11 +24,19 @@ test-unit:
 test-integration:
 	uv run pytest -m integration backend/tests/integration
 
+# The default UI's own test suite (vitest) plus lint and a production
+# build — the same four checks CI's frontend-react-test job runs.
 test-frontend:
+	cd frontend/web && npm run lint && npm run build && npm run test
+
+test-frontend-streamlit:
 	uv run --group frontend pytest frontend/streamlit/tests -v
 
 lint:
 	uv run ruff check .
+
+lint-frontend:
+	cd frontend/web && npm run lint
 
 format:
 	uv run ruff format .
@@ -30,7 +44,7 @@ format:
 typecheck:
 	uv run --all-groups pyright
 
-check: lint typecheck test test-frontend
+check: lint typecheck test test-frontend test-frontend-streamlit
 
 migrate:
 	cd backend && uv run alembic upgrade head
@@ -64,6 +78,9 @@ docker-shell:
 
 docker-shell-frontend:
 	docker compose exec frontend /bin/sh
+
+docker-shell-frontend-streamlit:
+	docker compose exec frontend-streamlit /bin/sh
 
 # Pure syntax/structure validation of docker-compose.yml — does not
 # require the Docker daemon to be running (docker compose config only

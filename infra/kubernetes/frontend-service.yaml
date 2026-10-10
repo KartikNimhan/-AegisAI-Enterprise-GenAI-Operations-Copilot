@@ -1,10 +1,11 @@
 # ClusterIP by default — the simplest option that's always available
 # regardless of cluster/cloud (see the brief: "if a simpler Service
 # exposure is sufficient, prefer that"). Reach it via `kubectl port-forward
-# svc/aegisai-frontend 8501:8501` for local/dev access, or apply
+# svc/aegisai-frontend 8080:80` for local/dev access, or apply
 # ingress.example.yaml (requires an ingress controller) / change `type` to
 # `LoadBalancer` if your cluster/cloud provisions one, for real external
-# access.
+# access. See frontend-configmap.yaml's own comment for why reaching the
+# frontend alone is not yet enough for the app to actually work end-to-end.
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,5 +19,5 @@ spec:
     app.kubernetes.io/name: aegisai-frontend
   ports:
     - name: http
-      port: 8501
+      port: 80
       targetPort: http

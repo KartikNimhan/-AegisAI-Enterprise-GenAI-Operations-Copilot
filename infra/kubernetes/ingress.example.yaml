@@ -4,12 +4,19 @@
 # is an obvious placeholder, never a real/production domain — replace it
 # with your own before applying. Exposes only the frontend (the Copilot
 # UI) — the backend API remains ClusterIP-only/internal (see
-# backend-service.yaml); an authenticated internal user or a future
-# API-gateway milestone would front the backend directly if external API
-# access is ever needed.
+# backend-service.yaml).
+#
+# UNLIKE the original Streamlit app, this is not sufficient on its own:
+# the React frontend's API calls happen in the browser, so the backend
+# must ALSO be reachable from outside the cluster (a second host/path
+# rule here, or its own Ingress, routed to the `aegisai-backend` Service)
+# before the app will actually work end-to-end — see
+# frontend-configmap.yaml's own comment. That decision (how, or whether,
+# to expose the backend externally) has not been made in this project
+# yet, so no such rule is added here.
 #
 # If you don't have an ingress controller, `kubectl port-forward
-# svc/aegisai-frontend 8501:8501` (or changing that Service's `type` to
+# svc/aegisai-frontend 8080:80` (or changing that Service's `type` to
 # `LoadBalancer` if your cluster/cloud provisions one) is simpler — see
 # frontend-service.yaml's own comment.
 apiVersion: networking.k8s.io/v1

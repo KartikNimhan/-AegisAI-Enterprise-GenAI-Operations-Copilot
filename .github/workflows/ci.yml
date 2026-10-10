@@ -74,7 +74,31 @@ jobs:
       - run: cd backend && uv run alembic upgrade head
       - run: uv run pytest -v
 
-  frontend-test:
+  # The default UI as of the React migration (see docker-compose.yml's
+  # `frontend` service and README) — npm install/lint/build/test for
+  # frontend/web/, the same four checks a contributor runs locally.
+  frontend-react-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run test
+
+  # The original Streamlit UI — no longer the default (see
+  # docker-compose.yml's profile-gated `frontend-streamlit` service), but
+  # its own test suite is kept running here since the app and its
+  # Dockerfile are still in the repo and still documented as usable.
+  frontend-streamlit-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,9 +114,9 @@ jobs:
       - run: uv run --group frontend pytest frontend/streamlit/tests -v
 
   docker-build:
-    # Builds both images to prove the Dockerfiles are actually buildable
-    # — a real, independent check this project's own local dev environment
-    # could not perform (see
+    # Builds all three images to prove the Dockerfiles are actually
+    # buildable — a real, independent check this project's own local dev
+    # environment could not perform (see
     # docs/architecture/decisions/012-deployment-architecture.md, "CI/CD").
     # Never pushes anywhere — no registry is configured for this project.
     runs-on: ubuntu-latest
@@ -106,13 +130,20 @@ jobs:
           file: Dockerfile
           push: false
           tags: aegisai-backend:ci
-      - name: Build frontend image
+      - name: Build React frontend image (default UI)
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend/web
+          file: frontend/web/Dockerfile
+          push: false
+          tags: aegisai-frontend:ci
+      - name: Build Streamlit frontend image (legacy UI)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: frontend/streamlit/Dockerfile
           push: false
-          tags: aegisai-frontend:ci
+          tags: aegisai-frontend-streamlit:ci
       - name: Validate docker-compose.yml
         run: docker compose config
 

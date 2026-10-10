@@ -2,10 +2,20 @@
 
 A deployment **foundation**, not a managed Helm chart/operator — plain
 `kubectl apply`-able YAML, matching the project's current scale (a
-modular monolith backend + one Streamlit frontend; see
+modular monolith backend + one React frontend; see
 [ADR 001](../../docs/architecture/decisions/001-modular-monolith.md) and
 [ADR 012](../../docs/architecture/decisions/012-deployment-architecture.md)).
 No Helm/ArgoCD/Flux/service mesh is introduced.
+
+**Known gap:** the frontend manifests below target the React app
+(`frontend/web/`, port 80), but the backend remains ClusterIP-only (see
+`backend-service.yaml`) — fine for the original Streamlit app, which
+called the backend server-side, but the React app's API calls happen in
+the browser and need a backend URL reachable from outside the cluster.
+That's a network-security decision this project hasn't made yet; see
+`frontend-configmap.yaml` and `ingress.example.yaml`'s own comments.
+Applying these manifests as-is will deploy a frontend that *starts*
+successfully but cannot actually reach the backend from a real browser.
 
 ## What's here
 
@@ -17,7 +27,7 @@ No Helm/ArgoCD/Flux/service mesh is introduced.
 | `backend-deployment.yaml` | The FastAPI backend (`replicas: 1` — see its own comment on why) |
 | `backend-service.yaml` | ClusterIP, internal only |
 | `frontend-configmap.yaml` | Non-secret frontend config |
-| `frontend-deployment.yaml` | The Streamlit Copilot UI |
+| `frontend-deployment.yaml` | The React Copilot UI (nginx-served static build) |
 | `frontend-service.yaml` | ClusterIP by default |
 | `migration-job.yaml` | Runs `alembic upgrade head` once, as a separate step |
 | `postgres-statefulset.yaml` + `postgres-service.yaml` + `postgres-secret.example.yaml` | **Dev/staging only** self-hosted Postgres+pgvector |
@@ -46,9 +56,11 @@ No Helm/ArgoCD/Flux/service mesh is introduced.
    then `kubectl delete job aegisai-migrate`.
 5. `kubectl apply -f backend-deployment.yaml -f backend-service.yaml`
 6. `kubectl apply -f frontend-configmap.yaml -f frontend-deployment.yaml -f frontend-service.yaml`
-7. Optional external access: `kubectl port-forward svc/aegisai-frontend 8501:8501`
+7. Optional external access: `kubectl port-forward svc/aegisai-frontend 8080:80`
    for local access, or edit and apply `ingress.example.yaml` if you have
-   an ingress controller.
+   an ingress controller. Either way, also set `API_BASE_URL` in
+   `frontend-configmap.yaml` to a URL your browser can actually reach —
+   see that file's own comment and the "Known gap" note above.
 
 Update `image:` in `backend-deployment.yaml`/`frontend-deployment.yaml`/
 `migration-job.yaml` to your own registry/tag first — see ADR 012,

@@ -1,7 +1,7 @@
 # AegisAI — Enterprise GenAI Operations Copilot
 
-AegisAI is a production-oriented, modular-monolith backend (plus a thin
-Streamlit UI) intended to progressively grow into an enterprise GenAI
+AegisAI is a production-oriented, modular-monolith backend (plus a React
+UI) intended to progressively grow into an enterprise GenAI
 operations platform: an LLM gateway with multi-model routing, RAG,
 embeddings/vector search, LangGraph agents, tool calling, MCP, multi-agent
 workflows (A2A), memory, evaluation, security/RBAC, observability/LLMOps,
@@ -51,29 +51,39 @@ failures only. See
 [ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md)
 for the full reasoning, including why this is exactly three agents, not
 an agent swarm. **Milestone 9** builds the user-facing Copilot UI and an
-enterprise operations dashboard on top of that same M8 API — a Streamlit
-app (the existing frontend foundation, extended, not replaced) with a
-Copilot chat page, a Documents page, an Operations dashboard (real
-document-status counts only — no fabricated request/execution metrics),
-and a System Status page (live Postgres/Redis checks plus configuration
-facts, clearly distinguished). The frontend performs no orchestration of
-its own — every Copilot turn is one call to
-`POST /api/v1/multi-agent/run`. See
+enterprise operations dashboard on top of that same M8 API — originally a
+Streamlit app, since migrated to a **React + TypeScript + Vite**
+single-page app (`frontend/web/`) with a Copilot chat page, a Documents
+page, an Operations dashboard (real document-status counts only — no
+fabricated request/execution metrics), and a System Status page (live
+Postgres/Redis checks plus configuration facts, clearly distinguished).
+The frontend performs no orchestration of its own — every Copilot turn is
+one call to `POST /api/v1/multi-agent/run`. The original Streamlit app
+(`frontend/streamlit/`) is still in the repo and still has its own test
+suite and Dockerfile, but is no longer the default UI — see
 [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md) for
-the full reasoning. **Milestone 10** containerizes that existing system
-(no application redesign): a production-oriented multi-stage Docker image
-for both the backend and the frontend, an extended `docker-compose.yml`
-(now including the frontend, a one-off migration service, and real
-healthchecks), and a Kubernetes deployment foundation
-(`infra/kubernetes/`) — Deployments/Services/ConfigMaps for both
-components, Secret *templates* (never a real credential committed), a
+the original reasoning and the [UI](#ui) section below for how to run
+either one. **Milestone 10** containerizes that existing system (no
+application redesign): a production-oriented multi-stage Docker image for
+the backend and for each frontend, an extended `docker-compose.yml` (the
+React frontend, the Streamlit frontend behind a `legacy-ui` profile, a
+one-off migration service, and real healthchecks), and a Kubernetes
+deployment foundation (`infra/kubernetes/`) — Deployments/Services/
+ConfigMaps, Secret *templates* (never a real credential committed), a
 migration Job, and clearly-labeled dev/staging-only Postgres/Redis
-manifests, since this project has not made a cloud-provider decision. See
+manifests, since this project has not made a cloud-provider decision.
+The Kubernetes frontend manifests target the React app/port 80, but the
+backend remains ClusterIP-only — fine for the original Streamlit app
+(which called the backend server-side) but not for the React app's
+browser-side API calls; see
+[`infra/kubernetes/README.md`](infra/kubernetes/README.md)'s "Known gap"
+note. See
 [ADR 012](docs/architecture/decisions/012-deployment-architecture.md) for
-the full reasoning, including exactly what was and wasn't validated given
-this environment's own Docker/Kubernetes limitations. Memory beyond plain
-conversation history is **not** implemented yet — see
-[Roadmap](#roadmap) below.
+the original reasoning, including exactly what was and wasn't validated
+given this environment's own Docker/Kubernetes limitations.
+`infra/terraform/` is an empty placeholder — no Terraform has been
+written; nothing there is deployable. Memory beyond plain conversation
+history is **not** implemented yet — see [Roadmap](#roadmap) below.
 
 ## What's implemented today
 
@@ -221,11 +231,12 @@ conversation history is **not** implemented yet — see
   every `multi_agent.*`/`a2a.*` observability event. See
   [ADR 010](docs/architecture/decisions/010-multi-agent-architecture.md).
 - **Docker + Docker Compose** — multi-stage, non-root production images
-  for both the backend (root `Dockerfile`) and the frontend
-  (`frontend/streamlit/Dockerfile`), orchestrated by `docker-compose.yml`
-  alongside PostgreSQL+pgvector and Redis, with real healthchecks (not
-  just `depends_on`) and a one-off `migrate` service for running the
-  existing Alembic migrations. See
+  for the backend (root `Dockerfile`) and for each frontend
+  (`frontend/web/Dockerfile`, the default; `frontend/streamlit/Dockerfile`,
+  behind a `legacy-ui` Compose profile), orchestrated by
+  `docker-compose.yml` alongside PostgreSQL+pgvector and Redis, with real
+  healthchecks (not just `depends_on`) and a one-off `migrate` service for
+  running the existing Alembic migrations. See
   [ADR 012](docs/architecture/decisions/012-deployment-architecture.md).
 - **Kubernetes deployment foundation** (`infra/kubernetes/`) — plain
   `kubectl apply`-able manifests (no Helm/operator): Deployments/Services/
@@ -242,28 +253,34 @@ conversation history is **not** implemented yet — see
   or opted into, via pytest.
 - Ruff (lint + format) and pyright (type checking), both run in CI
   (backend and frontend).
-- **Copilot UI** (`frontend/streamlit/`) — a Streamlit app with four
-  pages: **Copilot** (`app.py`, the main chat interface over
-  `POST /api/v1/multi-agent/run` — answer primary, sources/workflow
-  status secondary and collapsed, never chain-of-thought), **Documents**
-  (`pages/1_Documents.py`, upload/list/inspect/delete against the
-  existing Milestone 3 document API), **Operations**
-  (`pages/2_Operations.py`, real document-status counts from a new
-  read-only `GET /api/v1/operations/summary`; no fabricated request/
+- **Copilot UI** (`frontend/web/`, React + TypeScript + Vite) — a
+  single-page app with four pages: **Copilot** (`pages/CopilotPage.tsx`,
+  the main chat interface over `POST /api/v1/multi-agent/run` — answer
+  primary, sources/workflow status secondary and collapsed, never
+  chain-of-thought), **Documents** (`pages/DocumentsPage.tsx`, upload/
+  list/inspect/delete against the existing Milestone 3 document API),
+  **Operations** (`pages/OperationsPage.tsx`, real document-status counts
+  from `GET /api/v1/operations/summary`; no fabricated request/
   agent-execution metrics), and **System Status**
-  (`pages/3_System_Status.py`, live Postgres/Redis checks plus
-  configuration facts from a new read-only `GET /api/v1/system/status`,
-  clearly distinguished from each other). `services/api/` is the one
-  place every backend call is made, normalizing every failure into a
-  single `BackendError`. See
-  [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md).
+  (`pages/SystemStatusPage.tsx`, live Postgres/Redis checks plus
+  configuration facts from `GET /api/v1/system/status`, clearly
+  distinguished from each other). `src/api/` is the one place every
+  backend call is made, normalizing every failure into a single
+  `BackendError`. The original Streamlit app (`frontend/streamlit/`,
+  same four pages, same API contracts) is still in the repo, still
+  tested, and still buildable, but is no longer the default UI — see
+  [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md)
+  for the original design reasoning (still accurate for both UIs' shared
+  backend-contract boundary) and the [UI](#ui) section below for how to
+  run either one.
 
 ## Stack
 
 Python 3.12+ · uv · FastAPI · Pydantic v2 + pydantic-settings · SQLAlchemy
 2.x (async) · PostgreSQL + pgvector · Alembic · Redis · Groq SDK · pypdf ·
 python-docx · Sentence Transformers · LangGraph · MCP SDK · a2a-sdk ·
-httpx · pytest · Ruff · pyright · Docker/Docker Compose · Streamlit
+httpx · pytest · Ruff · pyright · Docker/Docker Compose · React ·
+TypeScript · Vite · Vitest · nginx · (legacy UI: Streamlit)
 
 ## Architecture
 
@@ -418,35 +435,48 @@ readiness-check, chat/streaming, conversation-retrieval,
 document-ingestion, embedding, RAG, and agent data flows.
 
 The frontend is a separate, thin client — not part of the backend's own
-module boundaries above:
+module boundaries above. **`frontend/web/`** (React + TypeScript + Vite)
+is the default UI:
 
 ```
-frontend/streamlit/
-  app.py              the Copilot page — one call to
-                      POST /api/v1/multi-agent/run, no routing of its own
-  pages/
-    1_Documents.py     upload/list/inspect/delete (existing M3 API)
-    2_Operations.py    real document-status counts only
-    3_System_Status.py live Postgres/Redis checks + configuration facts
-  components/
-    response.py        renders a MultiAgentRunResult (answer primary)
-    errors.py           maps a BackendError to a safe, user-facing message
-  services/
-    state.py            the only client-side state: per-session chat history
+frontend/web/
+  src/
+    App.tsx             route table (Copilot/Documents/Operations/System Status)
+    config.ts            resolves the API base URL (runtime config.js ->
+                          build-time VITE_API_BASE_URL -> localhost:8000)
+    components/
+      Shell/              Sidebar/Topbar/AppShell — the app's layout
+      Chat/               composer, message bubbles, workflow-details panel
+      Documents/          uploader (real upload progress), status pills
+    pages/
+      CopilotPage.tsx     one call to POST /api/v1/multi-agent/run, no
+                          orchestration of its own
+      DocumentsPage.tsx    upload/list/inspect/delete (existing M3 API)
+      OperationsPage.tsx    real document-status counts only
+      SystemStatusPage.tsx  live Postgres/Redis checks + configuration facts
     api/
-      client.py          the one function that calls httpx; BackendError
-      copilot.py         POST /api/v1/multi-agent/run
-      documents.py        the existing document endpoints
-      operations.py       GET /api/v1/operations/summary (new, read-only)
-      system.py           GET /api/v1/system/status (new, read-only)
-      health.py           GET /health/ready (existing, unversioned)
-  tests/                 streamlit.testing.v1.AppTest-based, no real backend
+      client.ts            the one function that calls fetch; BackendError
+      copilot.ts            POST /api/v1/multi-agent/run
+      documents.ts           the existing document endpoints
+      operations.ts          GET /api/v1/operations/summary
+      system.ts              GET /api/v1/system/status
+      health.ts               GET /health (liveness)
+  Dockerfile              multi-stage: npm build -> static nginx image
+  docker-entrypoint.sh    writes config.js from API_BASE_URL at container start
 ```
+
+Vitest + Testing Library tests live alongside the files they cover
+(`*.test.tsx`/`*.test.ts`), mocking `fetch` — no real backend required.
+
+**`frontend/streamlit/`** is the original Streamlit app — same four
+pages, same backend API contracts, still tested and buildable, but no
+longer the default (see the [UI](#ui) section below for how to run it).
 
 See [ADR 011](docs/architecture/decisions/011-copilot-ui-architecture.md)
-for the full frontend architecture, including why it performs no
-orchestration of its own and why the Operations dashboard omits request/
-agent-execution metrics.
+for the original frontend architecture reasoning (still accurate for
+both UIs' shared backend-contract boundary), including why the frontend
+performs no orchestration of its own and why the Operations dashboard
+omits request/agent-execution metrics.
 
 ## Quickstart
 
@@ -461,21 +491,33 @@ cd backend && uv run uvicorn app.main:app --reload
 Then visit http://localhost:8000/health, http://localhost:8000/health/ready,
 and http://localhost:8000/docs.
 
-To run the Copilot UI against that backend, in a second terminal:
+## UI
+
+**React (default).** In a second terminal, against the backend above:
+
+```bash
+cd frontend/web && npm install && npm run dev
+```
+
+Then visit http://localhost:5173 — Vite's dev server, with
+`VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
+backend. The Copilot, Documents, Operations, and System Status pages are
+all in the left sidebar.
+
+**Streamlit (legacy, still supported).** Instead of the above:
 
 ```bash
 cd frontend/streamlit && uv run --group frontend streamlit run app.py
 ```
 
-Then visit http://localhost:8501 — the Copilot, Documents, Operations, and
-System Status pages are all in the sidebar. `AEGIS_BACKEND_URL` (default
+Then visit http://localhost:8501. `AEGIS_BACKEND_URL` (default
 `http://localhost:8000`) and `AEGIS_BACKEND_TIMEOUT_SECONDS` (default
-`30.0`) point the frontend at a backend running on a different host/port.
+`30.0`) point it at a backend running on a different host/port.
 
 ### Run the whole stack in containers
 
-Alternatively, run everything — backend, frontend, Postgres, Redis —
-in Docker:
+Alternatively, run everything — backend, the React frontend, Postgres,
+Redis — in Docker:
 
 ```bash
 cp .env.example .env            # optionally set GROQ_API_KEY
@@ -484,12 +526,16 @@ make docker-migrate             # runs the existing Alembic migrations once
 ```
 
 Then visit http://localhost:8000/docs (backend) and
-http://localhost:8501 (Copilot UI). `make docker-logs` tails every
-service's logs; `make docker-down` stops the stack. See
+http://localhost:3000 (Copilot UI). `make docker-logs` tails every
+service's logs; `make docker-down` stops the stack. To also run the
+legacy Streamlit UI in Docker instead/alongside (port 8501):
+`docker compose --profile legacy-ui up -d frontend-streamlit`. See
 [ADR 012](docs/architecture/decisions/012-deployment-architecture.md)
 for the full container/Kubernetes architecture, and
 [infra/kubernetes/README.md](infra/kubernetes/README.md) for deploying
-to a Kubernetes cluster.
+to a Kubernetes cluster — including a known gap where the React app's
+browser-side API calls need the backend reachable from outside the
+cluster, which hasn't been decided yet.
 
 To run a real Groq request locally, set `GROQ_API_KEY` in `.env` (get one at
 https://console.groq.com/keys), then:
@@ -669,9 +715,16 @@ RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
     uv run pytest -m multi_agent_integration -v
 ```
 
-Run the frontend test suite (no real backend/network — every backend call
-is mocked; `--group frontend` is needed since `streamlit`/its test runner
-aren't in the default dependency set):
+Run the React frontend's checks (no real backend/network — every `fetch`
+call is mocked in its tests):
+
+```bash
+cd frontend/web && npm ci && npm run lint && npm run build && npm run test
+```
+
+Run the legacy Streamlit frontend's test suite (no real backend/network —
+every backend call is mocked; `--group frontend` is needed since
+`streamlit`/its test runner aren't in the default dependency set):
 
 ```bash
 uv run --group frontend pytest frontend/streamlit/tests -v
@@ -705,14 +758,19 @@ oriented multi-agent orchestration: a deterministic orchestrator routing
 to Research/Document/Analyst specialists through that same A2A boundary,
 with explicit capability authorization, loop/delegation limits, partial-
 failure-aware aggregation, retries, and timeouts), and Milestone 9 (the
-Copilot UI/operations dashboard: a Streamlit frontend over the M8 API,
-with a Documents page, a real-data-only Operations dashboard, and a
-System Status page — no orchestration logic in the frontend), and
-Milestone 10 (a Docker/Kubernetes deployment foundation for that existing
-system: production-oriented multi-stage images for both the backend and
-frontend, an extended Compose stack with real healthchecks, and
-`kubectl apply`-able Kubernetes manifests with hardened security context
-and Secret templates — no application redesign) are done. Remaining, in
+Copilot UI/operations dashboard over the M8 API, with a Documents page, a
+real-data-only Operations dashboard, and a System Status page — no
+orchestration logic in the frontend; originally Streamlit, since migrated
+to React/TypeScript/Vite, with Streamlit kept as a legacy, still-tested
+option), and Milestone 10 (a Docker/Kubernetes deployment foundation for
+that existing system: production-oriented multi-stage images for the
+backend and each frontend, an extended Compose stack with real
+healthchecks, and `kubectl apply`-able Kubernetes manifests with hardened
+security context and Secret templates — no application redesign; the K8s
+frontend manifests target the React app, though the backend's external
+reachability for it is a known, documented gap — see
+[infra/kubernetes/README.md](infra/kubernetes/README.md)) are done.
+Remaining, in
 rough order, each as its own milestone: memory beyond conversation
 history → evaluation → security/RBAC → observability/LLMOps → async
 workers → multimodal/voice.
