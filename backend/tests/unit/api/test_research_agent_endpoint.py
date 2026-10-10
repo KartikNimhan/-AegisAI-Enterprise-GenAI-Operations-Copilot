@@ -41,9 +41,7 @@ def test_llm_error_returns_a_clear_typed_failure_message() -> None:
     assert response.status_code == 200
     task = response.json()
     message_parts = task["status"]["message"]["parts"]
-    assert any(
-        "language model is unavailable" in part.get("text", "") for part in message_parts
-    )
+    assert any("language model is unavailable" in part.get("text", "") for part in message_parts)
 
 
 def test_unexpected_exception_returns_a_generic_failure_message() -> None:
