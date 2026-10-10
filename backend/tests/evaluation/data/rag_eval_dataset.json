@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "description": "Small, synthetic, non-sensitive RAG evaluation dataset. The corpus/questions are the same content as rag_fixtures.py's EVAL_CORPUS/EVAL_QUESTIONS (kept in sync by hand, not generated) — see that module's and scripts/evaluate.py's docstrings for why a dedicated, version-controlled file exists separately from the inline Python fixture test_recall_at_k.py already uses.",
+  "corpus": [
+    {"id": "c1", "document_title": "Travel & Expense Policy", "text": "Employees may claim reimbursement for business travel expenses including flights, hotels, and meals when accompanied by itemized receipts."},
+    {"id": "c2", "document_title": "Travel & Expense Policy", "text": "Expense reports must be submitted within 30 days of the trip's completion to be eligible for reimbursement."},
+    {"id": "c3", "document_title": "IT Security Policy", "text": "All employees must enable multi-factor authentication on their corporate accounts within the first week of employment."},
+    {"id": "c4", "document_title": "IT Security Policy", "text": "Passwords must be at least twelve characters long and rotated every ninety days."},
+    {"id": "c5", "document_title": "Remote Work Policy", "text": "Employees working remotely must maintain a stable internet connection and be reachable during core business hours."},
+    {"id": "c6", "document_title": "Remote Work Policy", "text": "The company provides a one-time stipend of $500 to set up a home office."}
+  ],
+  "cases": [
+    {
+      "id": "q1",
+      "question": "How do I get reimbursed for a business trip?",
+      "relevant_chunk_ids": ["c1"],
+      "expected_answer_contains": ["itemized receipt"],
+      "category": "retrieval"
+    },
+    {
+      "id": "q2",
+      "question": "What's the deadline for submitting an expense report?",
+      "relevant_chunk_ids": ["c2"],
+      "expected_answer_contains": ["30 days"],
+      "category": "retrieval"
+    },
+    {
+      "id": "q3",
+      "question": "Do I need two-factor authentication on my work account?",
+      "relevant_chunk_ids": ["c3"],
+      "expected_answer_contains": ["multi-factor", "first week"],
+      "category": "retrieval"
+    },
+    {
+      "id": "q4",
+      "question": "How often do I need to change my password?",
+      "relevant_chunk_ids": ["c4"],
+      "expected_answer_contains": ["ninety days", "90 days"],
+      "category": "retrieval"
+    },
+    {
+      "id": "q5",
+      "question": "Does the company help pay for home office equipment?",
+      "relevant_chunk_ids": ["c6"],
+      "expected_answer_contains": ["$500", "stipend"],
+      "category": "retrieval"
+    }
+  ]
+}
