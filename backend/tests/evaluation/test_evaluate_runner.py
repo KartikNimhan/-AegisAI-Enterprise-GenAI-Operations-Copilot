@@ -65,13 +65,24 @@ async def test_run_evaluation_against_the_real_shipped_dataset(db_session: Async
     recall = report.summary["recall_at_k"]
     assert recall["status"] == "computed"
     print(f"\nrecall_at_k = {recall['value']:.2f}")
-    assert recall["value"] >= 0.8, (
+    assert recall["value"] >= 0.7, (
         f"recall_at_k was {recall['value']:.2f} against the real shipped dataset; "
-        f"per-case: {[(c.case_id, c.recall_hit) for c in report.cases]}"
+        f"per-case: {[(c.case_id, c.recall_fraction) for c in report.cases]}"
     )
 
     context_inclusion = report.summary["context_inclusion_rate"]
     assert context_inclusion["status"] == "computed"
+
+    # The one expect_no_answer case in the shipped dataset (q7) must be
+    # excluded from recall_at_k/context_inclusion_rate and reported only
+    # via no_answer_abstention_rate — never folded into the two metrics
+    # above as a trivial pass.
+    no_answer_cases = [c for c in report.cases if c.expect_no_answer]
+    assert len(no_answer_cases) == 1
+    assert no_answer_cases[0].recall_fraction is None
+    assert no_answer_cases[0].no_answer_abstained is not None
+    no_answer_metric = report.summary["no_answer_abstention_rate"]
+    assert no_answer_metric["status"] == "computed"
 
     # The two LLM-dependent metrics must never be computed in this phase,
     # real infra or not.

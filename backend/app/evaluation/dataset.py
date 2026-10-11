@@ -37,6 +37,14 @@ class EvalCase:
     relevant_chunk_ids: tuple[str, ...]
     expected_answer_contains: tuple[str, ...]
     category: str
+    # Explicit classification (Phase 2) for a case the corpus has no
+    # supporting evidence for at all — deliberately a separate field
+    # rather than inferred from an empty relevant_chunk_ids, so a
+    # dataset author can never produce this case "by accident" (e.g. a
+    # typo'd chunk id silently becoming "no answer expected"). See
+    # app.evaluation.metrics' module docstring for why this case type
+    # must never be folded into ordinary recall calculation.
+    expect_no_answer: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,6 +118,21 @@ def _parse_dataset(raw: dict, *, source: str) -> EvalDataset:
                 f"must match a corpus[].id"
             )
 
+        expect_no_answer = bool(entry.get("expect_no_answer", False))
+        if expect_no_answer and relevant_ids:
+            raise DatasetValidationError(
+                f"{source}: cases[{i}] ({case_id!r}) sets expect_no_answer=true "
+                f"but also declares relevant_chunk_ids {relevant_ids!r} — a "
+                f"no-answer case must not claim any chunk is relevant"
+            )
+        if not expect_no_answer and not relevant_ids:
+            raise DatasetValidationError(
+                f"{source}: cases[{i}] ({case_id!r}) has an empty "
+                f"relevant_chunk_ids but does not set expect_no_answer=true — "
+                f"every case must either name at least one relevant chunk or "
+                f"explicitly declare that none exists"
+            )
+
         cases.append(
             EvalCase(
                 id=case_id,
@@ -117,6 +140,7 @@ def _parse_dataset(raw: dict, *, source: str) -> EvalDataset:
                 relevant_chunk_ids=relevant_ids,
                 expected_answer_contains=tuple(entry.get("expected_answer_contains", [])),
                 category=entry.get("category", "uncategorized"),
+                expect_no_answer=expect_no_answer,
             )
         )
 

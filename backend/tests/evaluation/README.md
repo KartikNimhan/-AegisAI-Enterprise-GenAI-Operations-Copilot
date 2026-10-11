@@ -1,9 +1,10 @@
-# AegisAI Evaluation — M11 Phase 1 + Phase 2 Step 1
+# AegisAI Evaluation — M11 Phase 1 + Phase 2
 
 A reusable, version-controlled RAG evaluation dataset and a CLI runner
 (`scripts/evaluate.py`) that exercises the **real** retrieval pipeline
-against it, plus (Phase 2 Step 1) a committed baseline to compare
-against. See the M11 inspection/implementation reports for the full
+against it, a committed baseline to compare against (Phase 2 Step 1),
+and a deterministic multi-agent orchestration evaluation fixture (Phase
+2 Step 2). See the M11 inspection/implementation reports for the full
 roadmap and what's deliberately out of scope here.
 
 ## What this is not
@@ -39,6 +40,26 @@ success or failure.
 Options: `--dataset <path>`, `--output-dir <path>`, `--top-k <int>`
 (default 3), `--baseline <path>`, `--compare-to-baseline`,
 `--update-baseline` — see `scripts/evaluate.py --help`.
+
+### Which tests need what
+
+- `backend/tests/unit/evaluation/` — unit-only. No Docker, no model, no
+  network. Run with `uv run pytest backend/tests/unit/evaluation`.
+- `backend/tests/evaluation/test_multi_agent_evaluation.py`,
+  `test_agent_evaluation.py` — unit-only (despite living under
+  `tests/evaluation/`). No Docker, no model, no network — every LLM/
+  retrieval dependency is a scripted/fake double. Run with
+  `uv run pytest backend/tests/evaluation/test_multi_agent_evaluation.py
+  backend/tests/evaluation/test_agent_evaluation.py`.
+- `backend/tests/evaluation/test_recall_at_k.py`,
+  `test_evaluate_runner.py` — **opt-in**, need a reachable Postgres
+  (`docker compose up -d postgres`) and the real Sentence Transformers
+  embedding model (downloaded/cached on first use). Run with:
+  ```bash
+  RUN_EMBEDDING_INTEGRATION=1 uv run pytest backend/tests/evaluation -m embedding_integration
+  ```
+  Without `RUN_EMBEDDING_INTEGRATION=1` set, both are skipped (not
+  failed) — this is also why ordinary CI runs never need this variable.
 
 ## Baseline comparison (Phase 2, Step 1)
 
@@ -100,11 +121,12 @@ is never modified by a failed comparison attempt.
 
 ## Dataset format
 
-`data/rag_eval_dataset.json`:
+`data/rag_eval_dataset.json` (currently **version 2** — see "Dataset
+versioning" below):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "corpus": [{"id": "c1", "document_title": "...", "text": "..."}],
   "cases": [
     {
@@ -113,6 +135,13 @@ is never modified by a failed comparison attempt.
       "relevant_chunk_ids": ["c1"],
       "expected_answer_contains": ["some phrase"],
       "category": "retrieval"
+    },
+    {
+      "id": "q7",
+      "question": "A question the corpus has no evidence for...",
+      "relevant_chunk_ids": [],
+      "expect_no_answer": true,
+      "category": "no_answer"
     }
   ]
 }
@@ -124,18 +153,50 @@ is never modified by a failed comparison attempt.
 dataset that could never produce a meaningful result.
 `expected_answer_contains` is carried through the schema for forward
 compatibility with a future phase that generates real answers — it is
-**not read by Phase 1's metrics at all**, since there is no answer to
-check it against.
+**not read by Phase 1/2's metrics at all**, since there is no generated
+answer to check it against.
+
+`expect_no_answer` (Phase 2, default `false`) explicitly marks a case
+whose `relevant_chunk_ids` is intentionally empty — the corpus has no
+evidence for the question at all. This is a required, explicit
+declaration, not inferred: `load_dataset` **rejects** a case with an
+empty `relevant_chunk_ids` that doesn't set `expect_no_answer: true`
+(so a typo'd/omitted chunk reference can never silently become a
+no-answer case), and **rejects** a case that sets `expect_no_answer:
+true` while also declaring `relevant_chunk_ids` (so it can never
+accidentally both claim and deny evidence).
+
+### Case types in the shipped dataset (v2)
+
+| Case(s) | Type | What it tests |
+|---|---|---|
+| q1-q5 | ordinary, single relevant chunk | The original Phase 1 cases — unchanged |
+| q6 | **multi-relevant-chunk** | Two chunks (`c3`, `c4`) both answer "what are the IT security requirements" — tests partial vs. complete multi-chunk recall (see `recall_at_k` below) |
+| q7 | **no-answer** | "What is the company's policy on parental leave?" — none of the six corpus chunks address this. `relevant_chunk_ids: []`, `expect_no_answer: true`. Excluded from `recall_at_k`/`context_inclusion_rate`; scored only by `no_answer_abstention_rate` |
+| q8 | **ambiguous** | "What is the time requirement for IT security?" is genuinely underspecified between `c3` ("within the first week") and `c4` ("every ninety days") — both chunks are relevant, but no single phrase answers the question uniquely. Participates in `recall_at_k`/`context_inclusion_rate` exactly like a multi-chunk case (retrieval *should* surface both); **no metric here claims to detect or score the ambiguity itself** — doing that would require judging whether a generated answer handled the ambiguity well, which needs a live LLM (out of scope; see "What this is not") |
 
 ## Metrics, their inputs, and their limitations
 
-| Metric | Computed from | Limitation |
-|---|---|---|
-| `recall_at_k` | `RetrievalRepository.search`'s raw top-K nearest neighbors (real embedding model, real pgvector) vs. each case's `relevant_chunk_ids` | Same measurement `test_recall_at_k.py` already makes — small/synthetic corpus, not a production benchmark |
-| `context_inclusion_rate` | `RetrievalService.retrieve` (applies the similarity-threshold filter) + `ContextAssembler.assemble` (applies the context char-budget truncation) vs. `relevant_chunk_ids` | A *different* number from `recall_at_k`, not a restatement of it: a chunk can be in the raw top-K but dropped by the threshold or truncated out of the context budget. Still synthetic-corpus-only |
-| `operational_failure_rate` | Fraction of cases whose retrieval step raised an exception | Only catches exceptions during this evaluation run itself, not every failure mode the real API might hit (e.g. request-level timeouts, which this runner doesn't simulate) |
-| `answer_correctness` | — | **Always reported `"skipped"`.** Scoring a generated answer against `expected_answer_contains` requires a real LLM call, which Phase 1 deliberately never makes |
-| `citation_precision` | — | **Always reported `"skipped"`,** same reason — this would measure which chunks a model actually chose to cite, which doesn't exist without generating an answer |
+| Metric | Computed from | Included / excluded | Limitation |
+|---|---|---|---|
+| `recall_at_k` | Mean, over **ordinary cases only** (`expect_no_answer: false`), of the fraction of each case's `relevant_chunk_ids` found in `RetrievalRepository.search`'s raw top-K (real embedding model, real pgvector) | Excludes every `expect_no_answer: true` case (see below) | A case with one relevant chunk scores 0.0 or 1.0 (identical to Phase 1's plain hit/no-hit); a case with several relevant chunks (q6, q8) can score a partial fraction (e.g. 0.5) if only some are retrieved. Small/synthetic corpus, not a production benchmark |
+| `context_inclusion_rate` | Same fraction-of-relevant-found definition as `recall_at_k`, but over `RetrievalService.retrieve` (similarity-threshold filter) + `ContextAssembler.assemble` (context char-budget truncation) | Same ordinary-cases-only set as `recall_at_k` | A *different* number from `recall_at_k`, not a restatement of it: a chunk can be in the raw top-K but dropped by the threshold or truncated out of the context budget (see `test_context_inclusion_rate_drops_below_recall_at_k_when_the_configured_threshold_excludes_a_relevant_chunk` in `test_threshold_sensitivity.py` for a worked example against the real `RetrievalService`). Still synthetic-corpus-only |
+| `no_answer_abstention_rate` | Fraction of `expect_no_answer: true` cases for which `RetrievalService.retrieve` returned **zero** results — i.e. nothing cleared the real, configured `rag_similarity_threshold` | Only `expect_no_answer: true` cases (q7 in the shipped dataset) | **Not** proof the system "knows" it lacks an answer in any deeper sense — only that the configured threshold happened to exclude everything for this question against a small, topically well-separated synthetic corpus. The retrieval API has no separate "no evidence exists" signal distinct from "nothing matched the threshold" — this metric measures the latter, which is the same signal `ResearchAgentService` already uses in production to say "no relevant evidence was found." `"skipped"` (never `"error"` or a fabricated 0.0) if the dataset has no such case at all |
+| `operational_failure_rate` | Fraction of **all** cases (ordinary and no-answer) whose retrieval step raised an exception | All cases | Only catches exceptions during this evaluation run itself, not every failure mode the real API might hit (e.g. request-level timeouts, which this runner doesn't simulate) |
+| `answer_correctness` | — | — | **Always reported `"skipped"`.** Scoring a generated answer against `expected_answer_contains` requires a real LLM call, which this evaluation framework deliberately never makes |
+| `citation_precision` | — | — | **Always reported `"skipped"`,** same reason — this would measure which chunks a model actually chose to cite, which doesn't exist without generating an answer |
+
+**Why a no-answer case is never folded into `recall_at_k`:** an earlier
+version of `recall_hit` treated an empty `relevant_chunk_ids` as a
+trivial pass ("nothing to recall, so count it as a hit"). That is
+exactly backwards for a no-answer case — it would make `recall_at_k`
+look *better* every time a no-answer case was added, regardless of
+retrieval quality. `app.evaluation.metrics.recall_fraction` now raises
+if given an empty relevant set; the runner excludes `expect_no_answer`
+cases from the calculation entirely and reports on them only via
+`no_answer_abstention_rate`. Every report (`EvaluationReport.
+render_summary`) states exactly how many cases were scored by
+`recall_at_k`/`context_inclusion_rate` vs. excluded as no-answer.
 
 If live infrastructure (Postgres, or the embedding model) is unavailable
 when the script runs, **every** retrieval-dependent metric above is
@@ -143,17 +204,101 @@ reported `"skipped"` with the specific reason (e.g. "Postgres is not
 reachable"), and the run exits non-zero — never a fabricated or
 best-guess value.
 
+## Retrieval-threshold coverage (Phase 2, item 4)
+
+`RetrievalService`'s similarity-threshold filtering (both the
+configured default and a caller-supplied override) is already covered
+deterministically, with controlled fixtures and no DB/model, in
+`backend/tests/unit/rag/test_retrieval_service.py`
+(`test_results_below_the_similarity_threshold_are_excluded`,
+`test_caller_supplied_threshold_overrides_the_configured_default`).
+Rather than duplicate that coverage or tune the production default
+against this tiny eight-case synthetic dataset,
+`backend/tests/unit/evaluation/test_threshold_sensitivity.py` drives the
+**real** `RetrievalService.retrieve` against a `FakeRetrievalStrategy`
+with results on opposite sides of a configured `rag_similarity_threshold`
+(the same doubles `test_retrieval_service.py` itself uses), reads
+`outcome.candidates` (unfiltered) vs. `outcome.results` (threshold
+-filtered) off that real call, and feeds both into `recall_fraction`/
+`context_inclusion_rate` — proving `context_inclusion_rate` is genuinely
+downstream of the real filtering logic, not a restatement of
+`recall_at_k` under a different name and not a test of metric arithmetic
+alone. (An earlier version of this coverage lived in `test_metrics.py`
+and only fed hand-constructed id sets straight into the metric
+functions, without ever calling `RetrievalService` — it claimed to prove
+threshold sensitivity but didn't actually exercise the filter; it has
+been replaced.) **No production retrieval default was changed**, and no new
+"threshold quality" metric was invented — a metric claiming to show how
+retrieval quality changes *across* threshold values would need either
+changing production config per evaluation run (not something this
+framework does) or an LLM judging whether a given threshold's
+inclusion/exclusion decisions were "correct", which needs real answer
+generation (out of scope here).
+
+## Multi-agent evaluation (Phase 2, item 5)
+
+`backend/tests/unit/multi_agent/` already has thorough, deterministic
+coverage of `MultiAgentOrchestrator` (routing, parallel/sequential
+execution, Analyst synthesis, partial failure, timeout, prompt-injection
+safety, observability events) driven through the real
+`POST /api/v1/multi-agent/run` endpoint with a scripted LLM gateway and
+fake retrieval strategy (`tests/unit/multi_agent/conftest.py`'s
+`orchestrator_env`/`async_client` fixtures) — no live LLM, DB, or
+network call.
+
+`multi_agent_fixtures.py` + `test_multi_agent_evaluation.py` package a
+small, named subset of that same kind of scenario into the evaluation
+suite's scenario-table/pass-fail-summary form — the same shape
+`agent_fixtures.py`/`test_agent_evaluation.py` already gives the
+single-agent path — so the M11 evaluation report has an entry for
+multi-agent behavior alongside its single-agent counterpart. It reuses
+the existing `orchestrator_env`/`async_client` harness directly (via a
+re-export in `backend/tests/evaluation/conftest.py`) rather than
+building a second mocking seam, and asserts only observable outcomes:
+the expected agent path (`agents_used`), citation/source metadata
+retention across a tier1 → Analyst handoff (`sources[].filename`), and
+graceful partial-failure handling. It does **not** claim anything about
+a *live* model choosing the right route unprompted — routing itself is
+still the deterministic keyword-based `app.multi_agent.router.route`,
+not an LLM decision, in both this fixture and the orchestrator itself.
+
+## Dataset versioning
+
+`version` in the dataset JSON is the compatibility key
+`app.evaluation.baseline.compare_to_baseline` checks **before** computing
+any per-metric delta — a mismatch means "skip the comparison entirely,"
+never "compare numbers measured under different conditions." Phase 2
+bumped it from 1 to 2 when q6/q7/q8 were added: even though the *metric
+formulas* for q1-q5 are unchanged (a single-relevant-chunk case scores
+identically under the old boolean `recall_hit` and the new fractional
+`recall_fraction`), the aggregate `recall_at_k`/`context_inclusion_rate`
+values themselves change because they're now averaged over more cases,
+and a new case type (no-answer) is excluded from them by design. Compare
+against a `version: 1`-captured baseline would otherwise silently mix
+numbers from a 5-case and an 8-case run under the same metric name.
+
+**The committed `data/baseline.json` is still `dataset_version: 1`** (captured
+against the original 5-case dataset, before this Phase 2 change) — this
+is deliberate: regenerating it requires a live evaluation run and is a
+separate, explicit, reviewed action (`--update-baseline`), never an
+automatic side effect of a dataset change. Until someone runs
+`--update-baseline` against the current dataset, `--compare-to-baseline`
+will correctly report `"dataset_version mismatch (current 2, baseline
+1)"` and skip the comparison — this is the compatibility check working
+as designed, not a bug.
+
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `data/rag_eval_dataset.json` | The dataset itself |
-| `data/baseline.json` | Committed snapshot of a past successful run's metrics — see "Baseline comparison" above |
-| `backend/app/evaluation/dataset.py` | Loading + validation |
-| `backend/app/evaluation/metrics.py` | Pure metric functions (`MetricResult`, `recall_hit`, `recall_at_k`, `context_inclusion_rate`, `operational_failure_rate`, `skipped_metric`) |
+| `data/rag_eval_dataset.json` | The dataset itself (version 2 — see "Dataset versioning") |
+| `data/baseline.json` | Committed snapshot of a past successful run's metrics (still version 1 — see "Dataset versioning") — see "Baseline comparison" above |
+| `backend/app/evaluation/dataset.py` | Loading + validation, including `expect_no_answer` classification |
+| `backend/app/evaluation/metrics.py` | Pure metric functions (`MetricResult`, `recall_fraction`, `recall_at_k`, `context_inclusion_rate`, `operational_failure_rate`, `no_answer_abstention_rate`, `skipped_metric`) |
 | `backend/app/evaluation/baseline.py` | `Baseline` load/save + `compare_to_baseline` (compatibility check, per-metric direction-aware delta) |
-| `backend/app/evaluation/runner.py` | Orchestrates a run against the real retrieval pipeline |
-| `backend/app/evaluation/report.py` | `EvaluationReport` — JSON serialization + terminal rendering |
+| `backend/app/evaluation/runner.py` | Orchestrates a run against the real retrieval pipeline; routes `expect_no_answer` cases to `no_answer_abstention_rate` instead of `recall_at_k`/`context_inclusion_rate` |
+| `backend/app/evaluation/report.py` | `EvaluationReport` — JSON serialization + terminal rendering (states included/excluded case counts) |
 | `scripts/evaluate.py` | CLI entrypoint |
-| `backend/tests/unit/evaluation/` | Deterministic unit tests (dataset validation, metrics, report serialization, baseline comparison, seeding-failure error handling, and the CLI's own baseline-comparison glue in `test_evaluate_cli.py`) — no live infra |
-| `backend/tests/evaluation/test_evaluate_runner.py` | Opt-in integration test of the full runner against real Postgres + the real embedding model (`RUN_EMBEDDING_INTEGRATION=1`) |
+| `backend/tests/unit/evaluation/` | Deterministic unit tests (dataset validation incl. no-answer classification, metrics incl. multi-chunk/no-answer/threshold-sensitivity, report serialization, baseline comparison, seeding-failure error handling, and the CLI's own baseline-comparison glue in `test_evaluate_cli.py`) — no live infra |
+| `backend/tests/evaluation/test_evaluate_runner.py` | Opt-in integration test of the full runner against real Postgres + the real embedding model (`RUN_EMBEDDING_INTEGRATION=1`) — now also asserts the shipped no-answer case is excluded from recall/context-inclusion and scored via `no_answer_abstention_rate` |
+| `backend/tests/evaluation/multi_agent_fixtures.py`, `test_multi_agent_evaluation.py` | Deterministic multi-agent orchestration evaluation fixture (Phase 2 item 5) — no live infra |

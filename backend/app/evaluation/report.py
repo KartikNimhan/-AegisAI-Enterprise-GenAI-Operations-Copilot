@@ -22,8 +22,19 @@ class CaseOutcome:
     duration_ms: float
     retrieved_chunk_ids: list[str] = field(default_factory=list)
     relevant_chunk_ids: list[str] = field(default_factory=list)
-    recall_hit: bool | None = None
-    context_inclusion_hit: bool | None = None
+    # Fraction of relevant_chunk_ids found (0.0-1.0) — None for a
+    # no-answer case, which is excluded from recall_at_k/
+    # context_inclusion_rate entirely (see app.evaluation.metrics).
+    recall_fraction: float | None = None
+    context_inclusion_fraction: float | None = None
+    # True for a case with expect_no_answer=true (see
+    # app.evaluation.dataset.EvalCase) — reported separately via
+    # no_answer_abstention_rate, never folded into the two fields above.
+    expect_no_answer: bool = False
+    # For a no-answer case only: whether RetrievalService.retrieve
+    # returned zero results for this question. None for an ordinary
+    # case (the question is meaningless there).
+    no_answer_abstained: bool | None = None
     error: str | None = None
 
 
@@ -67,7 +78,14 @@ class EvaluationReport:
             else:
                 lines.append(f"  {metric_name}: {metric['status']} ({metric['reason']})")
         cases_with_errors = [c for c in self.cases if c.status == "error"]
-        lines.append(f"  cases: {len(self.cases)} total, {len(cases_with_errors)} errored")
+        no_answer_cases = [c for c in self.cases if c.expect_no_answer]
+        ordinary_cases = [c for c in self.cases if not c.expect_no_answer]
+        lines.append(
+            f"  cases: {len(self.cases)} total, {len(cases_with_errors)} errored — "
+            f"recall_at_k/context_inclusion_rate computed over {len(ordinary_cases)} "
+            f"ordinary case(s); {len(no_answer_cases)} no-answer case(s) excluded from "
+            f"those and reported separately via no_answer_abstention_rate"
+        )
         for case in cases_with_errors:
             lines.append(f"    [ERROR] {case.case_id}: {case.error}")
         return "\n".join(lines)

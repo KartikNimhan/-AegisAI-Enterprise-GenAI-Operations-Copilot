@@ -123,6 +123,68 @@ def test_the_real_shipped_dataset_loads_and_validates() -> None:
     )
     dataset = load_dataset(real_path)
 
-    assert dataset.version == 1
+    assert dataset.version == 2
     assert len(dataset.corpus) >= 1
     assert len(dataset.cases) >= 1
+
+
+# --- expect_no_answer classification (M11 Phase 2) ----------------------
+
+
+def test_defaults_expect_no_answer_to_false(tmp_path: Path) -> None:
+    dataset = load_dataset(_write(tmp_path, _VALID))
+
+    assert dataset.cases[0].expect_no_answer is False
+
+
+def test_loads_an_explicit_no_answer_case(tmp_path: Path) -> None:
+    payload = {
+        **_VALID,
+        "cases": [
+            {
+                "id": "q-no-answer",
+                "question": "Unanswerable?",
+                "relevant_chunk_ids": [],
+                "expect_no_answer": True,
+            }
+        ],
+    }
+
+    dataset = load_dataset(_write(tmp_path, payload))
+
+    assert dataset.cases[0].expect_no_answer is True
+    assert dataset.cases[0].relevant_chunk_ids == ()
+
+
+def test_rejects_a_no_answer_case_that_also_declares_relevant_chunks(tmp_path: Path) -> None:
+    payload = {
+        **_VALID,
+        "cases": [
+            {
+                "id": "q-contradictory",
+                "question": "Contradictory?",
+                "relevant_chunk_ids": ["c1"],
+                "expect_no_answer": True,
+            }
+        ],
+    }
+
+    with pytest.raises(DatasetValidationError, match="expect_no_answer=true"):
+        load_dataset(_write(tmp_path, payload))
+
+
+def test_rejects_an_empty_relevant_chunk_ids_without_expect_no_answer(tmp_path: Path) -> None:
+    """An empty relevant_chunk_ids must always be an explicit,
+    intentional declaration (expect_no_answer=true) — never a silent
+    default, since that's exactly the shape a typo'd/omitted field would
+    take, and it would otherwise be excluded from recall_at_k with no
+    one noticing why."""
+    payload = {
+        **_VALID,
+        "cases": [
+            {"id": "q-ambiguous-empty", "question": "What?", "relevant_chunk_ids": []},
+        ],
+    }
+
+    with pytest.raises(DatasetValidationError, match="expect_no_answer"):
+        load_dataset(_write(tmp_path, payload))

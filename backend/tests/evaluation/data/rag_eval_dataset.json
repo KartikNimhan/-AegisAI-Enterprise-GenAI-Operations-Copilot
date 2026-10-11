@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Small, synthetic, non-sensitive RAG evaluation dataset. The corpus/questions are the same content as rag_fixtures.py's EVAL_CORPUS/EVAL_QUESTIONS (kept in sync by hand, not generated) — see that module's and scripts/evaluate.py's docstrings for why a dedicated, version-controlled file exists separately from the inline Python fixture test_recall_at_k.py already uses.",
+  "version": 2,
+  "description": "Small, synthetic, non-sensitive RAG evaluation dataset. The corpus and q1-q5 are the same content as rag_fixtures.py's EVAL_CORPUS/EVAL_QUESTIONS (kept in sync by hand, not generated) — see that module's and scripts/evaluate.py's docstrings for why a dedicated, version-controlled file exists separately from the inline Python fixture test_recall_at_k.py already uses. Version 2 (M11 Phase 2) adds q6 (multi-relevant-chunk), q7 (no-answer), q8 (ambiguous) over the same corpus — rag_fixtures.py is intentionally left at the original 5 questions since it feeds a different, illustrative fixture (test_recall_at_k.py), not this versioned file. See backend/tests/evaluation/README.md for what each new case type means and why version was bumped.",
   "corpus": [
     {"id": "c1", "document_title": "Travel & Expense Policy", "text": "Employees may claim reimbursement for business travel expenses including flights, hotels, and meals when accompanied by itemized receipts."},
     {"id": "c2", "document_title": "Travel & Expense Policy", "text": "Expense reports must be submitted within 30 days of the trip's completion to be eligible for reimbursement."},
@@ -44,6 +44,28 @@
       "relevant_chunk_ids": ["c6"],
       "expected_answer_contains": ["$500", "stipend"],
       "category": "retrieval"
+    },
+    {
+      "id": "q6",
+      "question": "What are the IT security requirements employees must follow?",
+      "relevant_chunk_ids": ["c3", "c4"],
+      "expected_answer_contains": ["multi-factor", "twelve characters"],
+      "category": "multi_chunk"
+    },
+    {
+      "id": "q7",
+      "question": "What is the company's policy on parental leave?",
+      "relevant_chunk_ids": [],
+      "expect_no_answer": true,
+      "expected_answer_contains": [],
+      "category": "no_answer"
+    },
+    {
+      "id": "q8",
+      "question": "What is the time requirement for IT security?",
+      "relevant_chunk_ids": ["c3", "c4"],
+      "expected_answer_contains": ["first week", "ninety days"],
+      "category": "ambiguous"
     }
   ]
 }

@@ -37,8 +37,8 @@ def _sample_report() -> EvaluationReport:
                 duration_ms=12.5,
                 retrieved_chunk_ids=["x1"],
                 relevant_chunk_ids=["x1"],
-                recall_hit=True,
-                context_inclusion_hit=True,
+                recall_fraction=1.0,
+                context_inclusion_fraction=1.0,
             ),
             CaseOutcome(
                 case_id="q2",
@@ -103,6 +103,26 @@ def test_render_summary_reports_case_count_and_errors() -> None:
 
     assert "cases: 2 total, 1 errored" in text
     assert "[ERROR] q2: RuntimeError: boom" in text
+
+
+def test_render_summary_states_how_many_cases_were_excluded_as_no_answer() -> None:
+    report = _sample_report()
+    report.cases.append(
+        CaseOutcome(
+            case_id="q3",
+            question="Unanswerable?",
+            category="no_answer",
+            status="ok",
+            duration_ms=1.0,
+            expect_no_answer=True,
+            no_answer_abstained=True,
+        )
+    )
+
+    text = report.render_summary()
+
+    assert "computed over 2 ordinary case(s)" in text
+    assert "1 no-answer case(s) excluded" in text
 
 
 def test_metric_to_summary_entry_preserves_all_fields() -> None:

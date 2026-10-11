@@ -13,19 +13,28 @@ precision over what a model actually chose to cite) is reported via
 against a fabricated stand-in answer.
 
 Two retrieval-stage metrics ARE computed for real, against real Postgres
-and the real embedding model:
-- `recall_at_k`: is a relevant chunk among the raw top-K nearest
-  neighbors `RetrievalRepository.search` returns (same measurement
-  `backend/tests/evaluation/test_recall_at_k.py` already makes, now
-  reusable against the versioned dataset file instead of only the inline
-  fixture).
-- `context_inclusion_rate`: is a relevant chunk still present after
-  `RetrievalService.retrieve`'s similarity-threshold filter AND
-  `ContextAssembler.assemble`'s character-budget truncation — i.e. would
-  it actually have reached an LLM prompt. This can differ from
+and the real embedding model, over ordinary (non-no-answer) cases only:
+- `recall_at_k`: fraction of each case's relevant chunks found among the
+  raw top-K nearest neighbors `RetrievalRepository.search` returns (same
+  measurement `backend/tests/evaluation/test_recall_at_k.py` already
+  makes, now reusable against the versioned dataset file, and now a
+  fraction rather than a plain hit/no-hit so a case with more than one
+  relevant chunk reports partial retrieval instead of collapsing it).
+- `context_inclusion_rate`: fraction of each case's relevant chunks still
+  present after `RetrievalService.retrieve`'s similarity-threshold filter
+  AND `ContextAssembler.assemble`'s character-budget truncation — i.e.
+  would they actually have reached an LLM prompt. This can differ from
   `recall_at_k` (a chunk can be in the raw top-K but filtered out by the
   threshold, or truncated out of the context budget), so it is not a
   restatement of the same number under a different name.
+
+A case marked `expect_no_answer=True` (see `app.evaluation.dataset`) has
+no relevant chunk by design, so it is excluded from both metrics above —
+see `app.evaluation.metrics`'s module docstring for why folding it in
+would silently inflate them. Such a case is instead scored by
+`no_answer_abstention_rate`: did `RetrievalService.retrieve` return zero
+results for it (nothing cleared the real, configured similarity
+threshold)?
 """
 
 from __future__ import annotations
@@ -87,6 +96,7 @@ async def run_evaluation(
         skipped = metrics.skipped_metric("recall_at_k", reason)
         skipped_context = metrics.skipped_metric("context_inclusion_rate", reason)
         skipped_ops = metrics.skipped_metric("operational_failure_rate", reason)
+        skipped_no_answer = metrics.skipped_metric("no_answer_abstention_rate", reason)
         return EvaluationReport(
             run_id=run_id,
             dataset_path=dataset_path,
@@ -97,6 +107,7 @@ async def run_evaluation(
                 "recall_at_k": metric_to_summary_entry(skipped),
                 "context_inclusion_rate": metric_to_summary_entry(skipped_context),
                 "operational_failure_rate": metric_to_summary_entry(skipped_ops),
+                "no_answer_abstention_rate": metric_to_summary_entry(skipped_no_answer),
                 "answer_correctness": metric_to_summary_entry(
                     metrics.skipped_metric("answer_correctness", metrics.SKIPPED_NO_LIVE_LLM)
                 ),
@@ -114,8 +125,9 @@ async def run_evaluation(
     retrieval_service = RetrievalService(strategy=strategy, settings=settings)
     context_assembler = ContextAssembler(max_context_chars=settings.rag_max_context_chars)
 
-    recall_hits: list[bool] = []
-    context_hits: list[bool] = []
+    recall_fractions: list[float] = []
+    context_fractions: list[float] = []
+    no_answer_abstentions: list[bool] = []
     case_outcomes: list[CaseOutcome] = []
     error_count = 0
 
@@ -137,14 +149,26 @@ async def run_evaluation(
                 top_k=top_k,
             )
             retrieved_ids = {str(chunk.id) for _embedding, chunk, _document, _distance in rows}
-            hit = metrics.recall_hit(retrieved_ids, relevant_db_ids)
-            recall_hits.append(hit)
 
             outcome = await retrieval_service.retrieve(query=case.question, top_k=top_k)
             assembled = context_assembler.assemble(outcome.results)
             included_ids = {str(source.chunk_id) for source in assembled.sources}
-            context_hit = metrics.recall_hit(included_ids, relevant_db_ids)
-            context_hits.append(context_hit)
+
+            recall_fraction: float | None = None
+            context_fraction: float | None = None
+            no_answer_abstained: bool | None = None
+            if case.expect_no_answer:
+                # Nothing to compute recall over by design — see
+                # app.evaluation.metrics' module docstring. Instead,
+                # record whether the real, configured similarity
+                # threshold excluded every candidate for this question.
+                no_answer_abstained = len(outcome.results) == 0
+                no_answer_abstentions.append(no_answer_abstained)
+            else:
+                recall_fraction = metrics.recall_fraction(retrieved_ids, relevant_db_ids)
+                recall_fractions.append(recall_fraction)
+                context_fraction = metrics.recall_fraction(included_ids, relevant_db_ids)
+                context_fractions.append(context_fraction)
 
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
             case_outcomes.append(
@@ -156,8 +180,10 @@ async def run_evaluation(
                     duration_ms=duration_ms,
                     retrieved_chunk_ids=sorted(retrieved_ids),
                     relevant_chunk_ids=sorted(relevant_db_ids),
-                    recall_hit=hit,
-                    context_inclusion_hit=context_hit,
+                    recall_fraction=recall_fraction,
+                    context_inclusion_fraction=context_fraction,
+                    expect_no_answer=case.expect_no_answer,
+                    no_answer_abstained=no_answer_abstained,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - one case's operational failure
@@ -172,17 +198,21 @@ async def run_evaluation(
                     status="error",
                     duration_ms=duration_ms,
                     relevant_chunk_ids=sorted(relevant_db_ids),
+                    expect_no_answer=case.expect_no_answer,
                     error=f"{type(exc).__name__}: {exc}",
                 )
             )
 
     summary = {
-        "recall_at_k": metric_to_summary_entry(metrics.recall_at_k(recall_hits)),
+        "recall_at_k": metric_to_summary_entry(metrics.recall_at_k(recall_fractions)),
         "context_inclusion_rate": metric_to_summary_entry(
-            metrics.context_inclusion_rate(context_hits)
+            metrics.context_inclusion_rate(context_fractions)
         ),
         "operational_failure_rate": metric_to_summary_entry(
             metrics.operational_failure_rate(error_count, len(dataset.cases))
+        ),
+        "no_answer_abstention_rate": metric_to_summary_entry(
+            metrics.no_answer_abstention_rate(no_answer_abstentions)
         ),
         "answer_correctness": metric_to_summary_entry(
             metrics.skipped_metric("answer_correctness", metrics.SKIPPED_NO_LIVE_LLM)

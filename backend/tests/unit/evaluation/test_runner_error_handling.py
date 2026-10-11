@@ -79,7 +79,12 @@ async def test_run_evaluation_reports_skipped_metrics_when_seeding_fails(
     )
 
     assert report.cases == []
-    for metric_name in ("recall_at_k", "context_inclusion_rate", "operational_failure_rate"):
+    for metric_name in (
+        "recall_at_k",
+        "context_inclusion_rate",
+        "operational_failure_rate",
+        "no_answer_abstention_rate",
+    ):
         entry = report.summary[metric_name]
         assert entry["status"] == "skipped"
         assert "simulated: embedding model unavailable" in entry["reason"]
