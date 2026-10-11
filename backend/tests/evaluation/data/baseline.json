@@ -1,0 +1,33 @@
+{
+  "dataset_version": 1,
+  "top_k": 3,
+  "captured_at": "2026-10-10T12:28:51+00:00",
+  "git_commit": "5eee8b5",
+  "summary": {
+    "recall_at_k": {
+      "status": "computed",
+      "value": 1.0,
+      "reason": null
+    },
+    "context_inclusion_rate": {
+      "status": "computed",
+      "value": 1.0,
+      "reason": null
+    },
+    "operational_failure_rate": {
+      "status": "computed",
+      "value": 0.0,
+      "reason": null
+    },
+    "answer_correctness": {
+      "status": "skipped",
+      "value": null,
+      "reason": "requires a live LLM call to generate a real answer to score \u2014 Phase 1 of the evaluation framework does not call any LLM (no API key requirement, no paid calls; see scripts/evaluate.py)"
+    },
+    "citation_precision": {
+      "status": "skipped",
+      "value": null,
+      "reason": "requires a live LLM call to generate a real answer to score \u2014 Phase 1 of the evaluation framework does not call any LLM (no API key requirement, no paid calls; see scripts/evaluate.py)"
+    }
+  }
+}
