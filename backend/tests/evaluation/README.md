@@ -263,8 +263,9 @@ this dataset (see "Retrieval-threshold coverage" below).
 
 The committed evaluation baseline at
 `backend/tests/evaluation/data/baseline.json` was not updated by this
-run and remains at `dataset_version: 1` (see "Dataset versioning"). The
-run's JSON report was written to `data/evaluation/`, which is gitignored.
+run; it stayed at `dataset_version: 1` until it was deliberately
+regenerated later the same day (see "Dataset versioning"). The run's
+JSON report was written to `data/evaluation/`, which is gitignored.
 
 ## Retrieval-threshold coverage (Phase 2, item 4)
 
@@ -339,22 +340,36 @@ and a new case type (no-answer) is excluded from them by design. Compare
 against a `version: 1`-captured baseline would otherwise silently mix
 numbers from a 5-case and an 8-case run under the same metric name.
 
-**The committed `data/baseline.json` is still `dataset_version: 1`** (captured
-against the original 5-case dataset, before this Phase 2 change) — this
-is deliberate: regenerating it requires a live evaluation run and is a
-separate, explicit, reviewed action (`--update-baseline`), never an
-automatic side effect of a dataset change. Until someone runs
-`--update-baseline` against the current dataset, `--compare-to-baseline`
-will correctly report `"dataset_version mismatch (current 2, baseline
-1)"` and skip the comparison — this is the compatibility check working
-as designed, not a bug.
+**Baseline history.** The original `baseline.json` was
+`dataset_version: 1` (captured against the original 5-case dataset,
+before this Phase 2 change). It was deliberately kept at version 1
+after the dataset moved to version 2, because regenerating it requires
+a live evaluation run and is a separate, explicit, reviewed action
+(`--update-baseline`), never an automatic side effect of a dataset
+change. While it was still version 1, `--compare-to-baseline` correctly
+reported `"dataset_version mismatch (current 2, baseline 1)"` and
+skipped the comparison — the compatibility check working as designed,
+not a bug.
+
+**Current baseline.** On 2026-10-18 it was deliberately regenerated with
+`--update-baseline`: `dataset_version: 2`, `top_k: 3`, captured at
+`2026-10-18T16:10:07+00:00` from commit `11b904a`. Its computed metrics
+are `recall_at_k` 1.0, `context_inclusion_rate` 1.0,
+`operational_failure_rate` 0.0 and `no_answer_abstention_rate` 0.0;
+`answer_correctness` and `citation_precision` remain skipped. The
+`no_answer_abstention_rate` value keeps the limitations documented
+above: it measures *retrieval* abstention only (zero results after the
+similarity threshold), it comes from a single no-answer case (`q7`) so
+it can only be 0.0 or 1.0, and it does not measure whether an LLM
+refuses to answer. The baseline is a regression-tracking reference for
+current behavior, not a quality target.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
 | `data/rag_eval_dataset.json` | The dataset itself (version 2 — see "Dataset versioning") |
-| `data/baseline.json` | Committed snapshot of a past successful run's metrics (still version 1 — see "Dataset versioning") — see "Baseline comparison" above |
+| `data/baseline.json` | Committed snapshot of a past successful run's metrics (now version 2, captured 2026-10-18T16:10:07+00:00 from commit `11b904a`; originally version 1 — see "Dataset versioning") — see "Baseline comparison" above |
 | `backend/app/evaluation/dataset.py` | Loading + validation, including `expect_no_answer` classification |
 | `backend/app/evaluation/metrics.py` | Pure metric functions (`MetricResult`, `recall_fraction`, `recall_at_k`, `context_inclusion_rate`, `operational_failure_rate`, `no_answer_abstention_rate`, `skipped_metric`) |
 | `backend/app/evaluation/baseline.py` | `Baseline` load/save + `compare_to_baseline` (compatibility check, per-metric direction-aware delta) |

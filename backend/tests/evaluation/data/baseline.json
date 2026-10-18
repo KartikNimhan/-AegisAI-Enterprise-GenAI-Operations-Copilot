@@ -1,8 +1,8 @@
 {
-  "dataset_version": 1,
+  "dataset_version": 2,
   "top_k": 3,
-  "captured_at": "2026-10-10T12:28:51+00:00",
-  "git_commit": "5eee8b5",
+  "captured_at": "2026-10-18T16:10:07+00:00",
+  "git_commit": "11b904a",
   "summary": {
     "recall_at_k": {
       "status": "computed",
@@ -15,6 +15,11 @@
       "reason": null
     },
     "operational_failure_rate": {
+      "status": "computed",
+      "value": 0.0,
+      "reason": null
+    },
+    "no_answer_abstention_rate": {
       "status": "computed",
       "value": 0.0,
       "reason": null
