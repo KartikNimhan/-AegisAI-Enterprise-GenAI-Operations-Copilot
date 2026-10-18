@@ -204,6 +204,54 @@ reported `"skipped"` with the specific reason (e.g. "Postgres is not
 reachable"), and the run exits non-zero — never a fabricated or
 best-guess value.
 
+## Live run record: 2026-10-18 (dataset v2)
+
+The first live run of `scripts/evaluate.py` against the version 2
+dataset, recorded here as a **measurement**, not as a quality target.
+
+| Item | Value |
+|---|---|
+| Run | 2026-10-18 15:46 UTC |
+| Commit | `6cb5fee` |
+| Dataset | version 2, 8 cases |
+| `top_k` | 3 |
+| Errored cases | 0 |
+
+| Metric | Result |
+|---|---|
+| `recall_at_k` | 1.0 (computed) |
+| `context_inclusion_rate` | 1.0 (computed) |
+| `operational_failure_rate` | 0.0 (computed) |
+| `no_answer_abstention_rate` | 0.0 (computed) |
+| `answer_correctness` | skipped — Phase 1 makes no live LLM call |
+| `citation_precision` | skipped — Phase 1 makes no live LLM call |
+
+**The `q7` finding.** `q7` ("What is the company's policy on parental
+leave?") is marked `expect_no_answer: true`, but its
+`no_answer_abstained` was `false`: at least one retrieved chunk scored
+at or above the configured `rag_similarity_threshold`, so the
+retrieval step did not come back empty. That is what
+`no_answer_abstention_rate = 0.0` (0 of 1 no-answer case) records.
+This result is consistent with the current implementation. It remains
+an observed limitation of no-answer retrieval on this dataset; it has
+not been investigated further or fixed.
+
+**The threshold margin is unknown.** The JSON report stores each
+case's retrieved chunk ids but not their similarity scores, so this
+run cannot show how far above (or how close to) the threshold `q7`'s
+best chunk was.
+
+**How to read it.** This is a measurement on a small, synthetic,
+eight-case dataset. It is not evidence that no-answer handling meets
+any quality target, and no such target is defined in this repository.
+The production `rag_similarity_threshold` should not be tuned against
+this dataset (see "Retrieval-threshold coverage" below).
+
+The committed evaluation baseline at
+`backend/tests/evaluation/data/baseline.json` was not updated by this
+run and remains at `dataset_version: 1` (see "Dataset versioning"). The
+run's JSON report was written to `data/evaluation/`, which is gitignored.
+
 ## Retrieval-threshold coverage (Phase 2, item 4)
 
 `RetrievalService`'s similarity-threshold filtering (both the
