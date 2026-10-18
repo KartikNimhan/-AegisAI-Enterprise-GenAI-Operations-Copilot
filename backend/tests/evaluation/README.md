@@ -10,8 +10,10 @@ roadmap and what's deliberately out of scope here.
 ## What this is not
 
 - **Not a benchmark.** The dataset (`data/rag_eval_dataset.json`) is
-  small, synthetic, and topically well-separated on purpose, mirroring
-  the existing `rag_fixtures.py`/`test_recall_at_k.py` fixture this was
+  small, synthetic, and built from topically distinct policy areas on
+  purpose (distinct topics do not guarantee that an unrelated question
+  retrieves nothing above the current similarity threshold — see "Live
+  run record" below), mirroring the existing `rag_fixtures.py`/`test_recall_at_k.py` fixture this was
   built alongside. No claim is made about retrieval quality on any real,
   production-scale corpus.
 - **Not an LLM evaluation.** Phase 1 makes **no LLM call at all** — no
@@ -181,7 +183,7 @@ accidentally both claim and deny evidence).
 |---|---|---|---|
 | `recall_at_k` | Mean, over **ordinary cases only** (`expect_no_answer: false`), of the fraction of each case's `relevant_chunk_ids` found in `RetrievalRepository.search`'s raw top-K (real embedding model, real pgvector) | Excludes every `expect_no_answer: true` case (see below) | A case with one relevant chunk scores 0.0 or 1.0 (identical to Phase 1's plain hit/no-hit); a case with several relevant chunks (q6, q8) can score a partial fraction (e.g. 0.5) if only some are retrieved. Small/synthetic corpus, not a production benchmark |
 | `context_inclusion_rate` | Same fraction-of-relevant-found definition as `recall_at_k`, but over `RetrievalService.retrieve` (similarity-threshold filter) + `ContextAssembler.assemble` (context char-budget truncation) | Same ordinary-cases-only set as `recall_at_k` | A *different* number from `recall_at_k`, not a restatement of it: a chunk can be in the raw top-K but dropped by the threshold or truncated out of the context budget (see `test_context_inclusion_rate_drops_below_recall_at_k_when_the_configured_threshold_excludes_a_relevant_chunk` in `test_threshold_sensitivity.py` for a worked example against the real `RetrievalService`). Still synthetic-corpus-only |
-| `no_answer_abstention_rate` | Fraction of `expect_no_answer: true` cases for which `RetrievalService.retrieve` returned **zero** results — i.e. nothing cleared the real, configured `rag_similarity_threshold` | Only `expect_no_answer: true` cases (q7 in the shipped dataset) | **Not** proof the system "knows" it lacks an answer in any deeper sense — only that the configured threshold happened to exclude everything for this question against a small, topically well-separated synthetic corpus. The retrieval API has no separate "no evidence exists" signal distinct from "nothing matched the threshold" — this metric measures the latter, which is the same signal `ResearchAgentService` already uses in production to say "no relevant evidence was found." `"skipped"` (never `"error"` or a fabricated 0.0) if the dataset has no such case at all |
+| `no_answer_abstention_rate` | Fraction of `expect_no_answer: true` cases for which `RetrievalService.retrieve` returned **zero** results — i.e. nothing cleared the real, configured `rag_similarity_threshold` | Only `expect_no_answer: true` cases (q7 in the shipped dataset) | **Not** proof the system "knows" it lacks an answer in any deeper sense — only that the configured threshold happened to exclude everything for this question against a small synthetic corpus of distinct topics (which does not guarantee zero results — see "Live run record" below). The retrieval API has no separate "no evidence exists" signal distinct from "nothing matched the threshold" — this metric measures the latter, which is the same signal `ResearchAgentService` already uses in production to say "no relevant evidence was found." `"skipped"` (never `"error"` or a fabricated 0.0) if the dataset has no such case at all |
 | `operational_failure_rate` | Fraction of **all** cases (ordinary and no-answer) whose retrieval step raised an exception | All cases | Only catches exceptions during this evaluation run itself, not every failure mode the real API might hit (e.g. request-level timeouts, which this runner doesn't simulate) |
 | `answer_correctness` | — | — | **Always reported `"skipped"`.** Scoring a generated answer against `expected_answer_contains` requires a real LLM call, which this evaluation framework deliberately never makes |
 | `citation_precision` | — | — | **Always reported `"skipped"`,** same reason — this would measure which chunks a model actually chose to cite, which doesn't exist without generating an answer |
@@ -232,6 +234,8 @@ leave?") is marked `expect_no_answer: true`, but its
 at or above the configured `rag_similarity_threshold`, so the
 retrieval step did not come back empty. That is what
 `no_answer_abstention_rate = 0.0` (0 of 1 no-answer case) records.
+The 0.00 comes from exactly one no-answer case (`q7`), so with this
+dataset the metric can only be 0.0 or 1.0.
 This result is consistent with the current implementation. It remains
 an observed limitation of no-answer retrieval on this dataset; it has
 not been investigated further or fixed.
@@ -241,9 +245,19 @@ case's retrieved chunk ids but not their similarity scores, so this
 run cannot show how far above (or how close to) the threshold `q7`'s
 best chunk was.
 
+**What the metric measures.** `no_answer_abstention_rate` measures
+*retrieval* abstention: whether zero results remained after the
+similarity threshold was applied. It does not measure whether a
+generated LLM answer refuses to answer. In production, a question that
+clears the threshold still reaches the LLM, whose prompt tells it to say
+so plainly when the context is insufficient; this framework never calls
+the LLM, so that final-answer behavior is not evaluated.
+
 **How to read it.** This is a measurement on a small, synthetic,
 eight-case dataset. It is not evidence that no-answer handling meets
 any quality target, and no such target is defined in this repository.
+Answer correctness, citation precision, and final-answer refusal all
+remain unmeasured in Phase 1.
 The production `rag_similarity_threshold` should not be tuned against
 this dataset (see "Retrieval-threshold coverage" below).
 
