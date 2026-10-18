@@ -198,6 +198,12 @@ async def _main_async(args: argparse.Namespace) -> int:
             for name in ("recall_at_k", "context_inclusion_rate", "operational_failure_rate")
             if report.summary.get(name, {}).get("status") != "computed"
         ]
+        # no_answer_abstention_rate is allowed to be legitimately
+        # "skipped" (the dataset simply has no expect_no_answer case) —
+        # only an "error" status there blocks the update, same bar as
+        # the metrics above.
+        if report.summary.get("no_answer_abstention_rate", {}).get("status") == "error":
+            skipped_retrieval_metrics.append("no_answer_abstention_rate")
         if not report.cases:
             print(
                 "Refusing to update the baseline: this run produced no case "
