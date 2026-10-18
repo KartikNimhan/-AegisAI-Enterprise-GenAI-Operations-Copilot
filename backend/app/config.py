@@ -2,12 +2,32 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
+from urllib.parse import urlparse
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/config.py -> backend/app -> backend -> repo root
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Asymmetric signature algorithms only. HMAC (HS*) and "none" are never
+# acceptable for tokens verified with a published key set — see ADR/plan for M12.
+ALLOWED_AUTH_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
+)
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _check_url(name: str, value: str, *, require_https: bool) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"{name} must be an http(s) URL with a host")
+    if require_https and parsed.scheme != "https" and parsed.hostname not in _LOOPBACK_HOSTS:
+        raise ValueError(
+            f"{name} must use https outside local development (plain http is only "
+            "allowed for loopback hosts)"
+        )
 
 
 class Settings(BaseSettings):
@@ -142,6 +162,78 @@ class Settings(BaseSettings):
     multi_agent_max_retries: int = 1
     max_agent_depth: int = 2
     max_agent_delegations: int = 5
+
+    # Authentication (Milestone 12, Phase 1a). The API is an OIDC *resource
+    # server*: it verifies bearer access tokens and holds no passwords or
+    # signing secrets (only public keys, fetched from auth_jwks_url).
+    # auth_issuer must equal the token's `iss` EXACTLY — with Keycloak that is
+    # the URL the browser used, which can differ from the URL the backend uses
+    # to reach it, so the key-set URL is a separate setting. Required
+    # (together with auth_audience) whenever environment != "local"; unset
+    # locally means every protected route fails closed with 503.
+    # Outside "local" these must be https (loopback hosts excepted).
+    auth_issuer: str | None = None
+    auth_audience: str | None = None
+    auth_jwks_url: str | None = None
+    auth_allowed_algorithms: list[str] = ["RS256"]
+    auth_leeway_seconds: int = 30
+    auth_jwks_cache_seconds: int = 600
+    auth_jwks_min_refresh_seconds: float = 30.0
+    auth_jwks_timeout_seconds: float = 5.0
+
+    @field_validator("auth_issuer", "auth_audience", "auth_jwks_url", mode="before")
+    @classmethod
+    def _blank_auth_value_is_unset(cls, value: object) -> object:
+        # docker-compose passes unset variables through as empty strings.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _validate_auth_settings(self) -> Self:
+        algorithms = self.auth_allowed_algorithms
+        if not algorithms or any(a not in ALLOWED_AUTH_ALGORITHMS for a in algorithms):
+            raise ValueError(
+                "AUTH_ALLOWED_ALGORITHMS may only contain asymmetric algorithms "
+                f"({', '.join(sorted(ALLOWED_AUTH_ALGORITHMS))}); HMAC and 'none' are never allowed"
+            )
+        if not 0 <= self.auth_leeway_seconds <= 60:
+            raise ValueError("AUTH_LEEWAY_SECONDS must be between 0 and 60")
+        if self.auth_jwks_cache_seconds <= 0 or self.auth_jwks_timeout_seconds <= 0:
+            raise ValueError("AUTH_JWKS_CACHE_SECONDS and AUTH_JWKS_TIMEOUT_SECONDS must be > 0")
+        if self.auth_jwks_min_refresh_seconds < 0:
+            raise ValueError("AUTH_JWKS_MIN_REFRESH_SECONDS must be >= 0")
+
+        non_local = self.environment != "local"
+        if non_local:
+            missing = [
+                name
+                for name, value in (
+                    ("AUTH_ISSUER", self.auth_issuer),
+                    ("AUTH_AUDIENCE", self.auth_audience),
+                    ("AUTH_JWKS_URL", self.auth_jwks_url),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"Authentication is not configured for ENVIRONMENT={self.environment!r}: "
+                    f"set {', '.join(missing)}. The API refuses to start without it outside "
+                    "local development."
+                )
+        if self.auth_issuer:
+            _check_url("AUTH_ISSUER", self.auth_issuer, require_https=non_local)
+        if self.auth_jwks_url:
+            _check_url("AUTH_JWKS_URL", self.auth_jwks_url, require_https=non_local)
+        if non_local:
+            # The caller's bearer token is forwarded to these agents.
+            for agent_url in self.trusted_a2a_agents:
+                _check_url("TRUSTED_A2A_AGENTS entry", agent_url, require_https=True)
+        return self
+
+    @property
+    def auth_configured(self) -> bool:
+        return bool(self.auth_issuer and self.auth_audience and self.auth_jwks_url)
 
     @property
     def has_groq_api_key(self) -> bool:

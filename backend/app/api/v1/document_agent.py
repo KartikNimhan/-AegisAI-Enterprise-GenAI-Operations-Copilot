@@ -32,6 +32,8 @@ from app.dependencies import DBSessionDep
 
 logger = structlog.get_logger(__name__)
 
+# Public Agent Card metadata (see app.api.v1.research_agent); tasks are authenticated.
+card_router = APIRouter(prefix="/agents/document", tags=["a2a"])
 router = APIRouter(prefix="/agents/document", tags=["a2a"])
 
 DOCUMENT_RESULT_ARTIFACT_NAME = "document_result"
@@ -48,7 +50,7 @@ def get_document_agent_service(session: DBSessionDep) -> DocumentAgentService:
 DocumentAgentServiceDep = Annotated[DocumentAgentService, Depends(get_document_agent_service)]
 
 
-@router.get("/card")
+@card_router.get("/card")
 async def get_document_agent_card(request: Request) -> JSONResponse:
     settings = get_settings()
     card = build_document_agent_card(settings, base_url=str(request.base_url).rstrip("/"))

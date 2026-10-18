@@ -37,6 +37,9 @@ from app.rag.retrieval.service import RetrievalService, get_retrieval_service
 logger = structlog.get_logger(__name__)
 
 well_known_router = APIRouter(tags=["a2a"])
+# Public, non-sensitive Agent Card metadata (fetched without credentials by
+# A2AClient). Task submission lives on the authenticated `router` below.
+card_router = APIRouter(prefix="/agents/research", tags=["a2a"])
 router = APIRouter(prefix="/agents/research", tags=["a2a"])
 
 
@@ -66,7 +69,7 @@ async def get_well_known_agent_card(request: Request) -> JSONResponse:
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
-@router.get("/card")
+@card_router.get("/card")
 async def get_research_agent_card(request: Request) -> JSONResponse:
     """A convenience alias for the well-known path, at a path under this
     project's own versioned API prefix."""

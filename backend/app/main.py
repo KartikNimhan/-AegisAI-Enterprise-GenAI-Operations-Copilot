@@ -11,10 +11,10 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.router import api_router
+from app.api.router import api_router, public_api_router
 from app.api.v1 import health
 from app.api.v1.research_agent import well_known_router
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIdMiddleware
@@ -45,11 +45,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(app_settings: Settings | None = None) -> FastAPI:
+    settings = app_settings or get_settings()
+    # Interactive docs and the OpenAPI schema describe the whole API surface;
+    # they are served only in local development (Milestone 12).
+    docs_enabled = settings.environment == "local"
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
         lifespan=lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
     )
 
     application.add_middleware(CorrelationIdMiddleware)
@@ -72,7 +79,9 @@ def create_app() -> FastAPI:
     # are conventionally not versioned.
     application.include_router(health.router)
     application.include_router(well_known_router)
-    # Versioned business routes (empty for now; see app.api.router docstring).
+    # Versioned routes: the three public Agent Cards, then everything else
+    # behind the authentication gate (see app.api.router docstring).
+    application.include_router(public_api_router, prefix=settings.api_v1_prefix)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
 
     return application

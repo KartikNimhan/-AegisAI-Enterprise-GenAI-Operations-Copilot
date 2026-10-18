@@ -1,5 +1,6 @@
 """Request correlation ID and access-logging middleware."""
 
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -13,6 +14,11 @@ logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
+# A client-supplied id is only trusted if it is short and made of safe
+# characters; otherwise a fresh one is generated (it ends up in every log line
+# and in the response header).
+_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """Binds a request/correlation ID to each request and logs its outcome."""
@@ -20,7 +26,10 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        request_id = request.headers.get(REQUEST_ID_HEADER, str(uuid.uuid4()))
+        supplied = request.headers.get(REQUEST_ID_HEADER)
+        request_id = (
+            supplied if supplied and _SAFE_REQUEST_ID.match(supplied) else str(uuid.uuid4())
+        )
         request.state.request_id = request_id
 
         structlog.contextvars.clear_contextvars()

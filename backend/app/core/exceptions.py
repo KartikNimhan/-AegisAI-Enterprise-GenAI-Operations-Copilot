@@ -37,10 +37,12 @@ class AppError(Exception):
         *,
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         code: str = "internal_error",
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.message = message
         self.status_code = status_code
         self.code = code
+        self.headers = headers
         super().__init__(message)
 
 
@@ -56,6 +58,31 @@ class ServiceUnavailableError(AppError):
 class NotFoundError(AppError):
     def __init__(self, message: str = "Resource not found") -> None:
         super().__init__(message, status_code=status.HTTP_404_NOT_FOUND, code="not_found")
+
+
+# Authentication errors. The messages are deliberately generic: the specific
+# reason (expired, wrong audience, unknown identity, ...) is logged server-side
+# with the request id, never returned to the caller and never including the token.
+class UnauthorizedError(AppError):
+    def __init__(self, message: str = "Authentication required") -> None:
+        super().__init__(
+            message,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="unauthorized",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class ForbiddenError(AppError):
+    def __init__(self, message: str = "Access denied") -> None:
+        super().__init__(message, status_code=status.HTTP_403_FORBIDDEN, code="forbidden")
+
+
+class AuthUnavailableError(AppError):
+    def __init__(self, message: str = "Authentication is temporarily unavailable") -> None:
+        super().__init__(
+            message, status_code=status.HTTP_503_SERVICE_UNAVAILABLE, code="auth_unavailable"
+        )
 
 
 def _error_payload(request: Request, *, code: str, message: str) -> dict[str, Any]:
@@ -75,6 +102,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.status_code,
             content=_error_payload(request, code=exc.code, message=exc.message),
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)

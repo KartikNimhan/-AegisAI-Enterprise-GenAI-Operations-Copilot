@@ -26,13 +26,17 @@ from app.rag.retrieval.service import RetrievalService
 
 
 async def build_tool_registry(
-    *, documents: DocumentRepository, retrieval: RetrievalService, settings: Settings
+    *,
+    documents: DocumentRepository,
+    retrieval: RetrievalService,
+    settings: Settings,
+    auth_token: str | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(CALCULATOR_TOOL)
     registry.register(build_document_metadata_tool(documents))
     registry.register(build_knowledge_base_tool(retrieval))
-    registry.register(build_research_delegation_tool(settings))
+    registry.register(build_research_delegation_tool(settings, auth_token))
 
     mcp_server = build_mcp_server(documents=documents, retrieval=retrieval)
     mcp_tools = await discover_mcp_tool_definitions(server=mcp_server, settings=settings)

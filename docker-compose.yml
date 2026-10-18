@@ -26,6 +26,17 @@ services:
       # starts without one — only chat/agent endpoints need it, same as
       # running locally without Docker.
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Authentication (Milestone 12). ENVIRONMENT is "docker", so the backend
+      # REFUSES TO START unless all three are set (it names the missing ones in
+      # its startup error). They are passed through empty by default so that
+      # `docker compose config` still validates (CI runs it with none set). The
+      # issuer must equal the token's `iss` exactly (outside local development
+      # https is required); the key-set URL is separate because the URL the
+      # backend uses to reach the identity provider can differ from the one the
+      # browser used. See the README and .env.example.
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
     volumes:
       - ./data/uploads:/data/uploads
     depends_on:

@@ -67,8 +67,11 @@ def _make_executor(*, client: A2AClient, base_url: str) -> Any:
     return _execute
 
 
-def build_research_delegation_tool(settings: Settings) -> ToolDefinition:
-    client = A2AClient(settings=settings)
+def build_research_delegation_tool(
+    settings: Settings, auth_token: str | None = None
+) -> ToolDefinition:
+    # `auth_token` is the calling user's bearer token (see app.a2a.client).
+    client = A2AClient(settings=settings, auth_token=auth_token)
     base_url = settings.trusted_a2a_agents[0]
     return ToolDefinition(
         name=RESEARCH_AGENT_TOOL_NAME,

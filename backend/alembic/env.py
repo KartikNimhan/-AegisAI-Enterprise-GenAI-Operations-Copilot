@@ -18,6 +18,9 @@ from app.domain.models import (  # noqa: F401
     Document,
     DocumentChunk,
     Message,
+    Organization,
+    User,
+    UserIdentity,
 )
 
 config = context.config

@@ -42,6 +42,7 @@ from app.agents.tools.base import ToolRegistry
 from app.agents.tools.registry import build_tool_registry
 from app.config import Settings, get_settings
 from app.core.exceptions import NotFoundError
+from app.core.security import BearerTokenDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
@@ -394,11 +395,14 @@ async def get_agent_service(
     session: DBSessionDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    bearer_token: BearerTokenDep,
 ) -> AgentService:
     settings = get_settings()
     documents = DocumentRepository(session)
+    # The caller's token is forwarded (only to a validated trusted destination)
+    # when the agent delegates to the Research Agent over A2A.
     tool_registry = await build_tool_registry(
-        documents=documents, retrieval=retrieval, settings=settings
+        documents=documents, retrieval=retrieval, settings=settings, auth_token=bearer_token
     )
     return AgentService(
         session=session,

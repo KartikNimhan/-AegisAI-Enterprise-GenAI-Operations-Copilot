@@ -19,6 +19,7 @@ disproportionate to one small, synchronous Research Agent.
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -38,9 +39,23 @@ from app.config import Settings
 logger = structlog.get_logger(__name__)
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parsed = urlparse(url)
+    port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
+    return parsed.scheme, parsed.hostname, port
+
+
 class A2AClient:
-    def __init__(self, *, settings: Settings) -> None:
+    def __init__(self, *, settings: Settings, auth_token: str | None = None) -> None:
         self._settings = settings
+        # The calling user's bearer token (Milestone 12). It is sent ONLY on the
+        # task POST, and only after the task URL has been validated to lie within
+        # the trusted agent's own origin; Agent Card fetches are never
+        # authenticated (cards are public metadata). Never logged.
+        self._auth_token = auth_token
         # Keyed by (base_url, card_path). Agent Cards are static for the
         # lifetime of one `A2AClient` in this reference deployment (the
         # three agents never change their advertised capabilities at
@@ -136,7 +151,7 @@ class A2AClient:
             expected_name=expected_agent_name,
             expected_skill_id=expected_skill_id,
         )
-        task_url = card["supportedInterfaces"][0]["url"]
+        task_url = self._validated_task_url(base_url, card)
         run_id = uuid.uuid4()
 
         logger.info("a2a.task_started", run_id=str(run_id), base_url=base_url)
@@ -144,7 +159,9 @@ class A2AClient:
             async with httpx.AsyncClient(
                 timeout=self._settings.a2a_client_timeout_seconds
             ) as client:
-                response = await client.post(task_url, json=payload)
+                # httpx does not follow redirects by default, so the token is
+                # never re-sent to a redirect target; a 3xx fails raise_for_status.
+                response = await client.post(task_url, json=payload, headers=self._auth_headers())
                 response.raise_for_status()
                 task = response.json()
         except httpx.TimeoutException as exc:
@@ -156,6 +173,34 @@ class A2AClient:
 
         logger.info("a2a.task_completed", run_id=str(run_id), base_url=base_url)
         return task
+
+    def _auth_headers(self) -> dict[str, str] | None:
+        if not self._auth_token:
+            return None
+        return {"Authorization": f"Bearer {self._auth_token}"}
+
+    def _validated_task_url(self, base_url: str, card: dict) -> str:
+        """The task URL comes from the (remote-supplied) Agent Card, so it is
+        untrusted until proven to point at the trusted agent itself: same
+        scheme, host and port as the allowlisted `base_url`, no embedded
+        credentials, and under this API's `/agents/` path. Anything else is
+        rejected BEFORE any request is made, so neither the payload nor the
+        caller's bearer token can be sent to a destination the card chose."""
+        try:
+            task_url = card["supportedInterfaces"][0]["url"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise A2AInvalidCardError("Agent card has no usable task URL") from exc
+        if not isinstance(task_url, str):
+            raise A2AInvalidCardError("Agent card task URL is not a string")
+        candidate = urlparse(task_url)
+        if candidate.username or candidate.password:
+            raise A2AInvalidCardError("Agent card task URL must not embed credentials")
+        if _origin(task_url) != _origin(base_url):
+            raise A2AInvalidCardError("Agent card task URL is outside the trusted agent origin")
+        expected_prefix = f"{self._settings.api_v1_prefix.rstrip('/')}/agents/"
+        if not candidate.path.startswith(expected_prefix):
+            raise A2AInvalidCardError("Agent card task URL is not under the agents API path")
+        return task_url
 
 
 def _validate_card(card: dict, *, expected_name: str, expected_skill_id: str) -> None:
