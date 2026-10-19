@@ -24,20 +24,51 @@ COPY . .
 RUN npm run build
 
 # ---- runtime ---------------------------------------------------------------
-FROM nginx:1.27-alpine AS runtime
+# nginx-unprivileged: runs as the non-root user 101 (a numeric USER, so
+# Kubernetes can verify `runAsNonRoot`), listens on 8080 (an unprivileged
+# process cannot bind port 80), and keeps its pid file and temp directories under
+# /tmp. Same nginx 1.27 line as the stock image this replaced. Multi-arch
+# (amd64/arm64); index digest at the time of pinning:
+# sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+FROM nginxinc/nginx-unprivileged:1.27.5-alpine AS runtime
+
+# The build steps below need root; the final USER drops back to 101.
+USER root
 
 COPY --from=builder /srv/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY docker-entrypoint.sh /docker-entrypoint.d/50-aegis-config.sh
-RUN chmod +x /docker-entrypoint.d/50-aegis-config.sh
+# The nginx image renders /etc/nginx/templates/*.template into conf.d at
+# start (substituting ${BACKEND_UPSTREAM}); drop its stock default.conf so
+# the rendered file is the only server block.
+RUN rm -f /etc/nginx/conf.d/default.conf
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker-entrypoint.sh /docker-entrypoint.d/10-aegis-config.sh
+# Writable by the runtime user (uid 101, gid 0) at start-up without root:
+#   - the html directory, because docker-entrypoint.sh writes config.js there;
+#   - conf.d, because the image's template step renders default.conf there
+#     (already so in this base image; repeated so the dependency is explicit).
+# Group write is included so an orchestrator that assigns an arbitrary uid in
+# group 0 works too. Nothing else in the root filesystem is written at runtime
+# (pid file and temp paths are under /tmp).
+# (`sed` removes carriage returns: a checkout with CRLF line endings, e.g.
+# Windows with core.autocrlf, would otherwise make the script's `#!/bin/sh`
+# unrunnable inside the Linux image.)
+RUN sed -i 's/\r$//' /docker-entrypoint.d/10-aegis-config.sh /etc/nginx/templates/default.conf.template \
+    && chmod +x /docker-entrypoint.d/10-aegis-config.sh \
+    && chown 101:0 /usr/share/nginx/html /etc/nginx/conf.d \
+    && chmod g+w /usr/share/nginx/html /etc/nginx/conf.d
+
+USER 101
 
 # The browser (not this container) calls the backend directly, so this
 # only needs to be reachable from the host — see src/config.ts's own
 # docstring on why the backend's Docker-published port is used here, not
 # the internal Compose service name.
 ENV API_BASE_URL=http://localhost:8000
+# Where nginx forwards /api/ requests (used when API_BASE_URL is empty, i.e.
+# same-origin, and available regardless). Compose service name by default.
+ENV BACKEND_UPSTREAM=http://backend:8000
 
-EXPOSE 80
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1
+    CMD wget -q -O- http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1

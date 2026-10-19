@@ -17,7 +17,8 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # A client-supplied id is only trusted if it is short and made of safe
 # characters; otherwise a fresh one is generated (it ends up in every log line
 # and in the response header).
-_SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# (`fullmatch`, not `match` with `$`: `$` also matches before a trailing newline.)
+_SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
@@ -28,7 +29,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         supplied = request.headers.get(REQUEST_ID_HEADER)
         request_id = (
-            supplied if supplied and _SAFE_REQUEST_ID.match(supplied) else str(uuid.uuid4())
+            supplied if supplied and _SAFE_REQUEST_ID.fullmatch(supplied) else str(uuid.uuid4())
         )
         request.state.request_id = request_id
 

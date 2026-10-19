@@ -28,7 +28,16 @@ data:
   # external MCP endpoint is ever configured here.
   TRUSTED_MCP_SERVERS: '["aegisai-internal"]'
   TRUSTED_MCP_TOOLS: '["search_knowledge_base","calculator","get_document_metadata"]'
-  # A2A (Milestone 7/8) — the trusted agent is this same backend Service,
-  # reached through the cluster-internal Service DNS name, never an
-  # external/user-supplied endpoint.
-  TRUSTED_A2A_AGENTS: '["http://aegisai-backend:8000"]'
+  # A2A (Milestone 7/8) — the trusted agent is this same backend, called over
+  # the pod's loopback interface. Settings only accept plain http for loopback
+  # hosts (a cluster Service DNS name over http is rejected outside local
+  # development), and the in-process call also keeps the caller's bearer token
+  # inside the pod.
+  TRUSTED_A2A_AGENTS: '["http://localhost:8000"]'
+  # Authentication (M12 Phase 1a). The API refuses to start outside local
+  # development until all three are set to your identity provider's values
+  # (https URLs, except loopback). Left empty on purpose: there is no default
+  # identity provider to point at.
+  AUTH_ISSUER: ""
+  AUTH_AUDIENCE: ""
+  AUTH_JWKS_URL: ""

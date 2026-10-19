@@ -7,15 +7,23 @@ modular monolith backend + one React frontend; see
 [ADR 012](../../docs/architecture/decisions/012-deployment-architecture.md)).
 No Helm/ArgoCD/Flux/service mesh is introduced.
 
-**Known gap:** the frontend manifests below target the React app
-(`frontend/web/`, port 80), but the backend remains ClusterIP-only (see
-`backend-service.yaml`) — fine for the original Streamlit app, which
-called the backend server-side, but the React app's API calls happen in
-the browser and need a backend URL reachable from outside the cluster.
-That's a network-security decision this project hasn't made yet; see
-`frontend-configmap.yaml` and `ingress.example.yaml`'s own comments.
-Applying these manifests as-is will deploy a frontend that *starts*
-successfully but cannot actually reach the backend from a real browser.
+**Browser access:** the React app's API calls happen in the browser, so the
+frontend image's nginx serves the app *and* proxies `/api/` to the
+cluster-internal `aegisai-backend` Service (`BACKEND_UPSTREAM` in
+`frontend-configmap.yaml`). The browser only ever talks to the frontend's
+own origin; the backend stays ClusterIP-only and needs no separate external
+URL or CORS configuration. (The previous "known gap" is closed by this; it has
+not been exercised in a real cluster — see "What was actually validated".)
+The frontend image is `nginx-unprivileged` (user 101, container port **8080**; the
+Service port stays 80), so the Deployment keeps `runAsNonRoot: true` and drops all
+capabilities. The proxy also forwards the exact path `/health` for the UI's
+connection indicator.
+
+**Authentication is required before anything works end to end.** The backend
+refuses to start until `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AUTH_JWKS_URL` in
+`backend-configmap.yaml` are set to your identity provider's values, and the
+React UI has no sign-in flow yet (M12 Phase 1b), so a browser cannot obtain a
+token. API clients that already hold a token work.
 
 ## What's here
 
@@ -58,9 +66,9 @@ successfully but cannot actually reach the backend from a real browser.
 6. `kubectl apply -f frontend-configmap.yaml -f frontend-deployment.yaml -f frontend-service.yaml`
 7. Optional external access: `kubectl port-forward svc/aegisai-frontend 8080:80`
    for local access, or edit and apply `ingress.example.yaml` if you have
-   an ingress controller. Either way, also set `API_BASE_URL` in
-   `frontend-configmap.yaml` to a URL your browser can actually reach —
-   see that file's own comment and the "Known gap" note above.
+   an ingress controller. No backend URL needs to be configured:
+   `API_BASE_URL` is empty (same origin) and `/api/` is proxied by the
+   frontend.
 
 Update `image:` in `backend-deployment.yaml`/`frontend-deployment.yaml`/
 `migration-job.yaml` to your own registry/tag first — see ADR 012,

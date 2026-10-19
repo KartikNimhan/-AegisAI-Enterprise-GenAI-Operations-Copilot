@@ -124,6 +124,29 @@ export async function triggerEmbeddings(documentId: string): Promise<void> {
   await requestJson(`/api/v1/documents/${documentId}/embeddings`, { method: 'POST' })
 }
 
+export interface DocumentChunk {
+  id: string
+  chunk_index: number
+  content: string
+  character_count: number
+  token_count: number | null
+  metadata: Record<string, unknown> | null
+  created_at: string
+}
+
+/** Chunks are fetched on demand (details view), never with the list. */
+export async function getDocumentChunks(
+  documentId: string,
+  limit = 10,
+  offset = 0,
+): Promise<{ items: DocumentChunk[]; total: number }> {
+  const payload = await requestJson<ListResponse<DocumentChunk>>(
+    `/api/v1/documents/${documentId}/chunks`,
+    { params: { limit, offset } },
+  )
+  return { items: payload?.items ?? [], total: payload?.total ?? 0 }
+}
+
 export async function getEmbeddingStatus(documentId: string): Promise<EmbeddingStatus | null> {
   return requestJson<EmbeddingStatus>(`/api/v1/documents/${documentId}/embeddings`)
 }

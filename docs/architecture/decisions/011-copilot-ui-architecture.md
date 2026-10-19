@@ -329,6 +329,24 @@ semantic was touched.
   documented omission rather than a fabricated one, but a real gap for
   anyone expecting those numbers until M8 gains workflow persistence.
 
+## Addendum: React frontend and authentication
+
+This ADR was written for the Streamlit UI; the default frontend is now the
+React app in `frontend/web/` (`src/api/` is the equivalent of the central
+`BackendError` client, and the same one-endpoint Copilot, honest-status and
+real-data-only rules apply). Differences worth knowing:
+
+- The Documents page has a per-document Details row: document id, content type,
+  page/character counts, chunks fetched on demand, and embedding status.
+- API calls are made by the browser. With an empty `API_BASE_URL` they go to the
+  page's own origin, where nginx proxies `/api/` (see ADR 012 addendum).
+- **Authentication (M12 Phase 1a).** Protected endpoints now require a bearer
+  token, and there is no sign-in flow in either UI yet (M12 Phase 1b). Until
+  then both UIs show a 401 message, and neither can be used end to end against
+  an auth-enabled backend. The Streamlit app is not supported against it.
+- The CORS statement above is out of date: CORS middleware is configured
+  (`CORS_ORIGINS`), and is unnecessary when the same-origin proxy is used.
+
 ## Related
 
 - [010-multi-agent-architecture.md](010-multi-agent-architecture.md)

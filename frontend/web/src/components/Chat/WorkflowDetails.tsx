@@ -47,7 +47,12 @@ export function WorkflowDetails({ result }: { result: MultiAgentRunResult }) {
 
   return (
     <div className={styles.container}>
-      <button type="button" className={styles.toggle} onClick={() => setOpen((o) => !o)}>
+      <button
+        type="button"
+        className={styles.toggle}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
         <Icon name={open ? 'chevron-left' : 'chevron-right'} size={14} />
         Workflow details
         <span className={styles.statusPill}>{label}</span>

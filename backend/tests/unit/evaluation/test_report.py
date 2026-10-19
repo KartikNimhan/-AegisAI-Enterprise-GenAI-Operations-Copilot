@@ -10,7 +10,12 @@ import json
 from pathlib import Path
 
 from app.evaluation.metrics import MetricResult
-from app.evaluation.report import CaseOutcome, EvaluationReport, metric_to_summary_entry
+from app.evaluation.report import (
+    CaseOutcome,
+    EvaluationReport,
+    file_sha256,
+    metric_to_summary_entry,
+)
 
 
 def _sample_report() -> EvaluationReport:
@@ -131,3 +136,23 @@ def test_metric_to_summary_entry_preserves_all_fields() -> None:
     entry = metric_to_summary_entry(metric)
 
     assert entry == {"status": "computed", "value": 0.5, "reason": None}
+
+
+def test_file_sha256_identifies_the_exact_bytes(tmp_path: Path) -> None:
+    dataset = tmp_path / "d.json"
+    dataset.write_bytes(b'{"version": 1}')
+    first = file_sha256(dataset)
+
+    dataset.write_bytes(b'{"version": 1 }')  # same version, different bytes
+
+    assert first is not None and len(first) == 64
+    assert file_sha256(dataset) != first
+    assert file_sha256(tmp_path / "missing.json") is None
+
+
+def test_the_dataset_hash_is_serialized_and_optional() -> None:
+    report = _sample_report()
+    assert report.to_dict()["dataset_sha256"] is None  # reports built without it still work
+
+    hashed = EvaluationReport(**{**report.__dict__, "dataset_sha256": "ab" * 32})
+    assert hashed.to_dict()["dataset_sha256"] == "ab" * 32

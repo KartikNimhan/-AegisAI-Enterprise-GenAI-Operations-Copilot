@@ -18,8 +18,9 @@ disproportionate to one small, synchronous Research Agent.
 
 from __future__ import annotations
 
+import re
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 import structlog
@@ -28,6 +29,7 @@ from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from app.a2a.agent_card import RESEARCH_SKILL_ID
 from app.a2a.exceptions import (
     A2AConnectionError,
+    A2AError,
     A2AInvalidCardError,
     A2ATaskFailedError,
     A2ATimeoutError,
@@ -40,12 +42,37 @@ logger = structlog.get_logger(__name__)
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+# Whitespace, control characters, DEL and backslashes: `urllib` and `httpx` parse
+# these differently (urllib silently strips tabs/newlines; WHATWG-style parsers
+# treat `\` like `/`), so a URL containing any of them is never accepted.
+_UNSAFE_URL_CHARS = re.compile(r"[\x00-\x20\x7f\\]")
 
 
-def _origin(url: str) -> tuple[str, str | None, int | None]:
-    parsed = urlparse(url)
-    port = parsed.port or _DEFAULT_PORTS.get(parsed.scheme)
-    return parsed.scheme, parsed.hostname, port
+def _split_http_url(url: object, *, error: type[A2AError], what: str) -> SplitResult:
+    """Parses `url` only if it is a clean, ASCII, credential-free http(s) URL.
+    Every malformed input becomes `error` — never a raw `ValueError`."""
+    if not isinstance(url, str) or not url.isascii() or _UNSAFE_URL_CHARS.search(url):
+        raise error(f"{what} is not a clean ASCII URL")
+    try:
+        parts = urlsplit(url)
+        port = parts.port  # raises ValueError for an unparsable or out-of-range port
+    except ValueError as exc:
+        raise error(f"{what} is malformed") from exc
+    if parts.scheme not in _DEFAULT_PORTS or not parts.hostname:
+        raise error(f"{what} must be an http(s) URL with a host")
+    if "@" in parts.netloc or parts.username is not None or parts.password is not None:
+        raise error(f"{what} must not embed credentials")
+    if port == 0:
+        raise error(f"{what} must not use port 0")
+    return parts
+
+
+def _origin(parts: SplitResult) -> tuple[str, str, int]:
+    assert parts.hostname is not None
+    # Compare the explicit port when there is one (`port or default` would turn
+    # an explicit 0 into the default), else the scheme's default.
+    port = parts.port if parts.port is not None else _DEFAULT_PORTS[parts.scheme]
+    return parts.scheme, parts.hostname, port
 
 
 class A2AClient:
@@ -104,7 +131,7 @@ class A2AClient:
                 card = response.json()
         except httpx.TimeoutException as exc:
             raise A2ATimeoutError(f"Timed out fetching agent card from {base_url}") from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
 
         _validate_card(card, expected_name=expected_name, expected_skill_id=expected_skill_id)
@@ -167,7 +194,9 @@ class A2AClient:
         except httpx.TimeoutException as exc:
             logger.warning("a2a.task_failed", run_id=str(run_id), reason="timeout")
             raise A2ATimeoutError(f"Timed out submitting task to {base_url}") from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # (`InvalidURL` is not an `HTTPError`; the URL was already validated
+            # above, so this is defense in depth and never sent a request.)
             logger.warning("a2a.task_failed", run_id=str(run_id), reason="connection")
             raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
 
@@ -181,26 +210,33 @@ class A2AClient:
 
     def _validated_task_url(self, base_url: str, card: dict) -> str:
         """The task URL comes from the (remote-supplied) Agent Card, so it is
-        untrusted until proven to point at the trusted agent itself: same
-        scheme, host and port as the allowlisted `base_url`, no embedded
-        credentials, and under this API's `/agents/` path. Anything else is
-        rejected BEFORE any request is made, so neither the payload nor the
-        caller's bearer token can be sent to a destination the card chose."""
+        untrusted until proven to point at the trusted agent itself. It must be
+        a clean ASCII http(s) URL (no whitespace/control characters/backslashes,
+        no credentials, a valid non-zero port), with the same scheme, host and
+        port as the allowlisted `base_url`, no query or fragment, and a path of
+        exactly the form `<api prefix>/agents/<name>/tasks` — the restricted
+        character set rules out dot segments, percent-encoded tricks, `;`
+        parameters and empty segments, so the URL has one meaning for every
+        parser. Anything else is rejected BEFORE any request is made, so neither
+        the payload nor the caller's bearer token can be sent to a destination
+        the card chose."""
         try:
-            task_url = card["supportedInterfaces"][0]["url"]
+            raw_url = card["supportedInterfaces"][0]["url"]
         except (KeyError, IndexError, TypeError) as exc:
             raise A2AInvalidCardError("Agent card has no usable task URL") from exc
-        if not isinstance(task_url, str):
-            raise A2AInvalidCardError("Agent card task URL is not a string")
-        candidate = urlparse(task_url)
-        if candidate.username or candidate.password:
-            raise A2AInvalidCardError("Agent card task URL must not embed credentials")
-        if _origin(task_url) != _origin(base_url):
+        candidate = _split_http_url(raw_url, error=A2AInvalidCardError, what="Agent card task URL")
+        trusted = _split_http_url(
+            base_url, error=A2AUntrustedAgentError, what="The trusted agent base URL"
+        )
+        if _origin(candidate) != _origin(trusted):
             raise A2AInvalidCardError("Agent card task URL is outside the trusted agent origin")
-        expected_prefix = f"{self._settings.api_v1_prefix.rstrip('/')}/agents/"
-        if not candidate.path.startswith(expected_prefix):
-            raise A2AInvalidCardError("Agent card task URL is not under the agents API path")
-        return task_url
+        # (Checked on the raw string too: a bare trailing `?` parses to an empty query.)
+        if "?" in raw_url or "#" in raw_url or candidate.query or candidate.fragment:
+            raise A2AInvalidCardError("Agent card task URL must not carry a query or fragment")
+        prefix = re.escape(self._settings.api_v1_prefix.rstrip("/"))
+        if not re.fullmatch(rf"{prefix}/agents/[A-Za-z0-9_-]+/tasks", candidate.path):
+            raise A2AInvalidCardError("Agent card task URL is not an agents task path")
+        return raw_url
 
 
 def _validate_card(card: dict, *, expected_name: str, expected_skill_id: str) -> None:

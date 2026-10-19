@@ -1,3 +1,5 @@
+# The Service port stays 80 (nicer for in-cluster and Ingress use); it forwards
+# to the container's named port `http`, which is 8080 (nginx-unprivileged).
 # ClusterIP by default — the simplest option that's always available
 # regardless of cluster/cloud (see the brief: "if a simpler Service
 # exposure is sufficient, prefer that"). Reach it via `kubectl port-forward

@@ -61,6 +61,7 @@ from app.evaluation.report import (
     CaseOutcome,
     EvaluationReport,
     current_git_commit,
+    file_sha256,
     metric_to_summary_entry,
 )
 from app.rag.context.assembler import ContextAssembler
@@ -101,6 +102,7 @@ async def run_evaluation(
             run_id=run_id,
             dataset_path=dataset_path,
             dataset_version=dataset.version,
+            dataset_sha256=file_sha256(dataset_path),
             git_commit=git_commit,
             top_k=top_k,
             summary={
@@ -226,6 +228,7 @@ async def run_evaluation(
         run_id=run_id,
         dataset_path=dataset_path,
         dataset_version=dataset.version,
+        dataset_sha256=file_sha256(dataset_path),
         git_commit=git_commit,
         top_k=top_k,
         summary=summary,

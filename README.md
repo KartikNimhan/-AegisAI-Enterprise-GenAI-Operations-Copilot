@@ -72,12 +72,11 @@ deployment foundation (`infra/kubernetes/`) — Deployments/Services/
 ConfigMaps, Secret *templates* (never a real credential committed), a
 migration Job, and clearly-labeled dev/staging-only Postgres/Redis
 manifests, since this project has not made a cloud-provider decision.
-The Kubernetes frontend manifests target the React app/port 80, but the
-backend remains ClusterIP-only — fine for the original Streamlit app
-(which called the backend server-side) but not for the React app's
-browser-side API calls; see
-[`infra/kubernetes/README.md`](infra/kubernetes/README.md)'s "Known gap"
-note. See
+The Kubernetes frontend manifests target the React app (nginx-unprivileged, container port 8080); its nginx
+proxies `/api/` to the ClusterIP-only backend, so the browser needs no
+separate backend URL (see
+[`infra/kubernetes/README.md`](infra/kubernetes/README.md), which also notes
+that these manifests have not been applied to a real cluster). See
 [ADR 012](docs/architecture/decisions/012-deployment-architecture.md) for
 the original reasoning, including exactly what was and wasn't validated
 given this environment's own Docker/Kubernetes limitations.
@@ -462,7 +461,8 @@ frontend/web/
       system.ts              GET /api/v1/system/status
       health.ts               GET /health (liveness)
   Dockerfile              multi-stage: npm build -> static nginx image
-  docker-entrypoint.sh    writes config.js from API_BASE_URL at container start
+  docker-entrypoint.sh    validates + writes config.js from API_BASE_URL at container start
+  nginx.conf.template     static app + /api/ proxy to BACKEND_UPSTREAM (empty API_BASE_URL = same origin)
 ```
 
 Vitest + Testing Library tests live alongside the files they cover
@@ -504,7 +504,9 @@ Then visit http://localhost:5173 — Vite's dev server, with
 backend. The Copilot, Documents, Operations, and System Status pages are
 all in the left sidebar.
 
-**Streamlit (legacy, still supported).** Instead of the above:
+**Streamlit (legacy).** Not supported against an authentication-enabled backend
+(M12 Phase 1a requires bearer tokens; neither UI has a sign-in flow until Phase 1b).
+Instead of the above:
 
 ```bash
 cd frontend/streamlit && uv run --group frontend streamlit run app.py

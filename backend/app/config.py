@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables / .env."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Self
@@ -19,8 +20,19 @@ ALLOWED_AUTH_ALGORITHMS = frozenset(
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
+_UNSAFE_URL_CHARS = re.compile(r"[\x00-\x20\x7f\\]")
+
+
 def _check_url(name: str, value: str, *, require_https: bool) -> None:
-    parsed = urlparse(value)
+    if _UNSAFE_URL_CHARS.search(value):
+        raise ValueError(f"{name} must not contain whitespace, control characters or backslashes")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port  # raises ValueError for an unparsable or out-of-range port
+    except ValueError as exc:
+        raise ValueError(f"{name} is not a valid URL") from exc
+    if port == 0:
+        raise ValueError(f"{name} must not use port 0")
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError(f"{name} must be an http(s) URL with a host")
     if require_https and parsed.scheme != "https" and parsed.hostname not in _LOOPBACK_HOSTS:
@@ -180,6 +192,10 @@ class Settings(BaseSettings):
     auth_jwks_cache_seconds: int = 600
     auth_jwks_min_refresh_seconds: float = 30.0
     auth_jwks_timeout_seconds: float = 5.0
+    # After a failed (or malformed) key-set fetch, further fetches are refused
+    # for this many seconds so an outage cannot make every request wait on the
+    # network. 0 disables the circuit breaker.
+    auth_jwks_failure_cooldown_seconds: float = 5.0
 
     @field_validator("auth_issuer", "auth_audience", "auth_jwks_url", mode="before")
     @classmethod
@@ -203,24 +219,21 @@ class Settings(BaseSettings):
             raise ValueError("AUTH_JWKS_CACHE_SECONDS and AUTH_JWKS_TIMEOUT_SECONDS must be > 0")
         if self.auth_jwks_min_refresh_seconds < 0:
             raise ValueError("AUTH_JWKS_MIN_REFRESH_SECONDS must be >= 0")
+        if not 0 <= self.auth_jwks_failure_cooldown_seconds <= 60:
+            raise ValueError("AUTH_JWKS_FAILURE_COOLDOWN_SECONDS must be between 0 and 60")
 
         non_local = self.environment != "local"
-        if non_local:
-            missing = [
-                name
-                for name, value in (
-                    ("AUTH_ISSUER", self.auth_issuer),
-                    ("AUTH_AUDIENCE", self.auth_audience),
-                    ("AUTH_JWKS_URL", self.auth_jwks_url),
-                )
-                if not value
-            ]
-            if missing:
-                raise ValueError(
-                    f"Authentication is not configured for ENVIRONMENT={self.environment!r}: "
-                    f"set {', '.join(missing)}. The API refuses to start without it outside "
-                    "local development."
-                )
+        if non_local and self.debug:
+            # DEBUG turns on verbose behavior (SQL statement logging with bound
+            # parameters, among others) that must never run outside local.
+            raise ValueError(
+                f"DEBUG must be false when ENVIRONMENT={self.environment!r} (it is only "
+                "allowed in local development)"
+            )
+        # NOTE: whether authentication is *configured at all* is deliberately NOT
+        # checked here — Alembic, scripts and the evaluation CLI load Settings
+        # too and do not serve requests. That requirement is enforced when the
+        # API is built (see `validate_for_serving`, called from `app.main`).
         if self.auth_issuer:
             _check_url("AUTH_ISSUER", self.auth_issuer, require_https=non_local)
         if self.auth_jwks_url:
@@ -234,6 +247,34 @@ class Settings(BaseSettings):
     @property
     def auth_configured(self) -> bool:
         return bool(self.auth_issuer and self.auth_audience and self.auth_jwks_url)
+
+    @property
+    def sql_echo(self) -> bool:
+        """SQL statement logging (with bound parameters, which include identity
+        data) is only ever enabled in local development, whatever DEBUG says."""
+        return self.debug and self.environment == "local"
+
+    def validate_for_serving(self) -> None:
+        """Refuses to let the API start outside local development without
+        authentication configured. Called when the application is built;
+        deliberately not part of settings loading (see the note in
+        `_validate_auth_settings`)."""
+        if self.environment == "local" or self.auth_configured:
+            return
+        missing = [
+            name
+            for name, value in (
+                ("AUTH_ISSUER", self.auth_issuer),
+                ("AUTH_AUDIENCE", self.auth_audience),
+                ("AUTH_JWKS_URL", self.auth_jwks_url),
+            )
+            if not value
+        ]
+        raise ValueError(
+            f"Authentication is not configured for ENVIRONMENT={self.environment!r}: "
+            f"set {', '.join(missing)}. The API refuses to start without it outside "
+            "local development."
+        )
 
     @property
     def has_groq_api_key(self) -> bool:

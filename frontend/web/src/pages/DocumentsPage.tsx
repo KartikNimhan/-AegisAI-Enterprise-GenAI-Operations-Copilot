@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
+import { DocumentDetails } from '../components/Documents/DocumentDetails'
 import { Card } from '../components/Card'
 import { EmptyState } from '../components/EmptyState'
 import { Icon } from '../components/Icon'
@@ -13,6 +14,7 @@ export function DocumentsPage() {
   const [documents, setDocuments] = useState<DocumentRecord[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     setError(null)
@@ -57,7 +59,7 @@ export function DocumentsPage() {
       <Uploader onUploaded={refresh} />
 
       {error && (
-        <p className={styles.error}>
+        <p role="alert" className={styles.error}>
           <Icon name="alert" size={14} /> {error}
         </p>
       )}
@@ -84,38 +86,59 @@ export function DocumentsPage() {
             </thead>
             <tbody>
               {documents.map((doc) => (
-                <tr key={doc.id}>
-                  <td className={styles.filename}>{doc.filename}</td>
-                  <td>{doc.document_type}</td>
-                  <td>{formatBytes(doc.file_size)}</td>
-                  <td>
-                    <StatusPill status={doc.status} />
-                    {doc.status === 'failed' && doc.error_message && (
-                      <div className={styles.errorMessage}>{doc.error_message}</div>
-                    )}
-                  </td>
-                  <td>{formatDate(doc.created_at)}</td>
-                  <td className={styles.actions}>
-                    <button
-                      type="button"
-                      className={styles.actionButton}
-                      disabled={busyId === doc.id || doc.status !== 'processed'}
-                      onClick={() => handleEmbed(doc.id)}
-                      title="Generate embeddings"
-                    >
-                      <Icon name="refresh" size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.actionButton}
-                      disabled={busyId === doc.id}
-                      onClick={() => handleDelete(doc.id)}
-                      title="Delete document"
-                    >
-                      <Icon name="trash" size={14} />
-                    </button>
-                  </td>
-                </tr>
+                <Fragment key={doc.id}>
+                  <tr>
+                    <td className={styles.filename}>{doc.filename}</td>
+                    <td>{doc.document_type}</td>
+                    <td>{formatBytes(doc.file_size)}</td>
+                    <td>
+                      <StatusPill status={doc.status} />
+                      {doc.status === 'failed' && doc.error_message && (
+                        <div className={styles.errorMessage}>{doc.error_message}</div>
+                      )}
+                    </td>
+                    <td>{formatDate(doc.created_at)}</td>
+                    <td className={styles.actions}>
+                      <button
+                        type="button"
+                        className={styles.actionButton}
+                        aria-expanded={openId === doc.id}
+                        aria-label={`Details for ${doc.filename}`}
+                        title="Details"
+                        onClick={() => setOpenId(openId === doc.id ? null : doc.id)}
+                      >
+                        <Icon name="chevron-right" size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.actionButton}
+                        disabled={busyId === doc.id || doc.status !== 'processed'}
+                        onClick={() => handleEmbed(doc.id)}
+                        aria-label={`Generate embeddings for ${doc.filename}`}
+                        title="Generate embeddings"
+                      >
+                        <Icon name="refresh" size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.actionButton}
+                        disabled={busyId === doc.id}
+                        onClick={() => handleDelete(doc.id)}
+                        aria-label={`Delete ${doc.filename}`}
+                        title="Delete document"
+                      >
+                        <Icon name="trash" size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                  {openId === doc.id && (
+                    <tr>
+                      <td colSpan={6}>
+                        <DocumentDetails doc={doc} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

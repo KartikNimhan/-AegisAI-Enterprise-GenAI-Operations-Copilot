@@ -38,7 +38,7 @@ export function SystemStatusPage() {
       </div>
 
       {error && (
-        <p className={styles.error}>
+        <p role="alert" className={styles.error}>
           <Icon name="alert" size={14} /> {error}
         </p>
       )}

@@ -346,6 +346,35 @@ secrets/prompts/raw document content; this was already true (Milestones
   without real metrics backing it, and no metrics-server-fed signal
   exists yet) — scaling remains a manual `replicas:` edit for now.
 
+## Addendum: React frontend image and same-origin proxy
+
+The frontend image (`frontend/web/Dockerfile`) is
+`nginxinc/nginx-unprivileged:1.27.5-alpine` serving the React build: it runs as the
+non-root user 101 and listens on **8080** (Compose maps `3000:8080`; the
+Kubernetes container port and probes use 8080; the Service still exposes 80).
+This is what lets the Kubernetes Deployment keep `runAsNonRoot: true` and
+`capabilities.drop: ["ALL"]`; the stock `nginx` image runs as root on port 80
+and would be refused. The start-up script writes `config.js` by renaming a new
+file over the build's placeholder, which only needs write access to the html
+directory (the image `chown`s it for uid 101, gid 0).
+It also proxies `/api/` and the exact path `/health` (the top-bar liveness
+indicator; `/health/ready` is deliberately not exposed) to `BACKEND_UPSTREAM` (default `http://backend:8000` in
+Compose; `http://aegisai-backend:8000` in Kubernetes), so with an empty
+`API_BASE_URL` the browser needs no externally reachable backend and the backend
+Service stays ClusterIP-only. This closes the gap the Kubernetes README used to
+list. `docker-entrypoint.sh` refuses unsafe `API_BASE_URL`/`BACKEND_UPSTREAM`
+values instead of writing them into `config.js`/nginx config.
+
+Verified for the image only: it was built and run locally as uid 101 with all
+capabilities dropped against a stand-in upstream (config.js, SPA fallback,
+`/health`, `/api/`, 413 above the upload limit). Not verified in a cluster.
+
+Kubernetes notes: `TRUSTED_A2A_AGENTS` in the ConfigMap is `http://localhost:8000`
+(settings accept plain http only for loopback outside local development), and
+the ConfigMap carries empty `AUTH_ISSUER`/`AUTH_AUDIENCE`/`AUTH_JWKS_URL` keys the
+operator must fill in. `backend/tests/unit/test_k8s_manifests_settings.py` loads the
+ConfigMap through `Settings` so the two cannot drift apart silently.
+
 ## Related
 
 - [001-modular-monolith.md](001-modular-monolith.md) (the one-deployable-

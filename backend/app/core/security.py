@@ -67,6 +67,7 @@ def _cached_verifier(
     cache_seconds: int,
     min_refresh: float,
     timeout: float,
+    failure_cooldown: float,
 ) -> TokenVerifier:
     # Keyed on primitives (Settings is unhashable) so one verifier — hence one
     # cached key set — is shared across requests.
@@ -80,15 +81,19 @@ def _cached_verifier(
             cache_seconds=cache_seconds,
             timeout=timeout,
             min_refresh_seconds=min_refresh,
+            failure_cooldown_seconds=failure_cooldown,
         ),
     )
 
 
 def get_token_verifier(settings: SettingsDep) -> TokenVerifier:
     if not settings.auth_configured:
-        # Fail closed: an unconfigured API never lets a request through.
-        logger.error("auth.not_configured")
-        raise AuthUnavailableError("Authentication is not configured")
+        # Fail closed: an unconfigured API never lets a request through. The
+        # misconfiguration is logged ONCE at startup (see `app.main`), not on
+        # every anonymous request, and the public response is the same generic
+        # 503 as any other authentication outage (no configuration details).
+        logger.debug("auth.not_configured")
+        raise AuthUnavailableError()
     assert settings.auth_issuer and settings.auth_audience and settings.auth_jwks_url
     return _cached_verifier(
         settings.auth_issuer,
@@ -99,6 +104,7 @@ def get_token_verifier(settings: SettingsDep) -> TokenVerifier:
         settings.auth_jwks_cache_seconds,
         settings.auth_jwks_min_refresh_seconds,
         settings.auth_jwks_timeout_seconds,
+        settings.auth_jwks_failure_cooldown_seconds,
     )
 
 
@@ -127,7 +133,11 @@ async def get_current_principal(
     try:
         claims = await verifier.verify(credentials.credentials)
     except AuthKeysUnavailableError as exc:
-        logger.error("auth.unavailable", reason=exc.reason)
+        logger.error(
+            "auth.unavailable",
+            reason=exc.reason,
+            cause=type(exc.__cause__).__name__ if exc.__cause__ else None,
+        )
         raise AuthUnavailableError() from exc
     except AuthError as exc:
         logger.info("auth.denied", reason=exc.reason)

@@ -34,7 +34,14 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/srv/.venv/bin:${PATH}" \
     HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8000 \
+    ENVIRONMENT=production \
+    DEBUG=false
+# ENVIRONMENT/DEBUG default to non-local here on purpose: a container that
+# forgets to set them must NOT inherit the local-development defaults (docs
+# served, plain-http identity URLs, auth optional). docker-compose.yml and the
+# Kubernetes ConfigMap override ENVIRONMENT explicitly. Alembic (the migration
+# service/Job uses this same image) does not require authentication settings.
 
 # A dedicated, unprivileged user — the application never runs as root.
 RUN groupadd --system app && useradd --system --gid app --no-create-home app

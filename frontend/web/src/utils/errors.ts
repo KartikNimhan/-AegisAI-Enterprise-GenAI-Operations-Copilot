@@ -14,9 +14,19 @@ const FRONTEND_MESSAGES: Record<string, string> = {
   malformed_response: 'The backend returned an unexpected response.',
 }
 
+const STATUS_MESSAGES: Record<number, string> = {
+  401: 'You are not signed in, or your session has expired. Sign-in is not available in this UI yet.',
+  403: 'You do not have permission to do that.',
+  503: 'The service is temporarily unavailable. Please try again shortly.',
+}
+
 export function friendlyMessage(error: unknown): string {
   if (error instanceof BackendError) {
-    return FRONTEND_MESSAGES[error.code] ?? error.message
+    return (
+      FRONTEND_MESSAGES[error.code] ??
+      (error.statusCode !== undefined ? STATUS_MESSAGES[error.statusCode] : undefined) ??
+      error.message
+    )
   }
   if (error instanceof Error) return error.message
   return 'Something went wrong.'

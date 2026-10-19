@@ -3,14 +3,9 @@
 # this one renders entirely in the browser), so it scales horizontally
 # without the backend's uploads-volume constraint.
 #
-# NOTE — browser reachability gap (see frontend-configmap.yaml's own
-# comment): this app's API calls happen in the end user's BROWSER, not
-# inside this Pod, so `API_BASE_URL` below must be a URL reachable from
-# outside the cluster. This project has not yet decided how the backend
-# itself gets exposed externally (see backend-service.yaml, ClusterIP-
-# only) — that's a network-security decision for a future milestone, not
-# made here. Until it is, this Deployment is not reachable end-to-end
-# from outside the cluster even once applied.
+# The browser talks only to this Deployment: its nginx serves the static
+# app and proxies `/api/` to the aegisai-backend Service (BACKEND_UPSTREAM
+# in frontend-configmap.yaml), so the backend needs no external exposure.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,7 +42,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
           envFrom:
             - configMapRef:
                 name: aegisai-frontend-config
@@ -84,9 +79,12 @@ spec:
             readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
-            # readOnlyRootFilesystem left false: stock nginx writes its
-            # pid file and proxy/client-body temp dirs under /var/run and
-            # /var/cache/nginx even when just serving static files — not
-            # forced read-only just to tick the box (see
-            # backend-deployment.yaml's own comment for the same
-            # reasoning).
+            # The image is nginx-unprivileged (user 101, port 8080), so
+            # runAsNonRoot and the dropped capabilities hold without
+            # exceptions; port 8080 needs no privilege. At start the
+            # entrypoint writes config.js into the image's html directory
+            # and nginx renders conf.d, so the root filesystem is written
+            # once at start. That is why readOnlyRootFilesystem stays false:
+            # setting it would need emptyDir mounts for those two paths
+            # (and a /tmp mount), which has not been built or tested here.
+            # (See backend-deployment.yaml's comment for the same reasoning.)

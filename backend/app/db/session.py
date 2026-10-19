@@ -9,7 +9,9 @@ from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, echo=settings.debug)
+# SQL echo logs statements with their bound parameters (including identity data),
+# so it is tied to local development, not just to DEBUG.
+engine = create_async_engine(settings.database_url, pool_pre_ping=True, echo=settings.sql_echo)
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 

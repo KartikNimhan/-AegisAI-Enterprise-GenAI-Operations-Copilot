@@ -5,6 +5,7 @@ sources of truth for the same numbers.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -47,12 +48,17 @@ class EvaluationReport:
     top_k: int
     summary: dict[str, dict]
     cases: list[CaseOutcome]
+    # SHA-256 of the dataset file, so a report says exactly which bytes it was
+    # computed from (dataset_version alone cannot catch an edit without a bump).
+    # Optional: reports and baselines written before this field still load.
+    dataset_sha256: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
             "dataset_path": self.dataset_path,
             "dataset_version": self.dataset_version,
+            "dataset_sha256": self.dataset_sha256,
             "git_commit": self.git_commit,
             "top_k": self.top_k,
             "summary": self.summary,
@@ -93,6 +99,13 @@ class EvaluationReport:
 
 def metric_to_summary_entry(metric: MetricResult) -> dict:
     return {"status": metric.status, "value": metric.value, "reason": metric.reason}
+
+
+def file_sha256(path: str | Path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def current_git_commit() -> str | None:

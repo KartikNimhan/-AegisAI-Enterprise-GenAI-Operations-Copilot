@@ -47,6 +47,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app(app_settings: Settings | None = None) -> FastAPI:
     settings = app_settings or get_settings()
+    # Outside local development the API refuses to start without authentication
+    # configured (raises, naming the missing variables). Settings loading itself
+    # does not require it, so Alembic and scripts can still run.
+    settings.validate_for_serving()
+    if not settings.auth_configured:
+        # Local development only (validate_for_serving passed): say so ONCE here
+        # rather than on every request.
+        logger.error(
+            "auth.not_configured",
+            detail="AUTH_ISSUER/AUTH_AUDIENCE/AUTH_JWKS_URL are unset: every protected "
+            "route will answer 503 until they are set",
+        )
     # Interactive docs and the OpenAPI schema describe the whole API surface;
     # they are served only in local development (Milestone 12).
     docs_enabled = settings.environment == "local"

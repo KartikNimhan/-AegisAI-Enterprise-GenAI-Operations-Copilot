@@ -16,6 +16,11 @@
  *    `vite preview` without the runtime script.
  * 3. `http://localhost:8000` — the default for `npm run dev` and for
  *    docker-compose.yml's default backend port mapping.
+ *
+ * An EMPTY runtime `apiBaseUrl` means "same origin": the page's own nginx
+ * proxies `/api/` to the backend (see nginx.conf.template), so the browser
+ * needs no separate, externally reachable backend URL. This is how the
+ * Kubernetes deployment works (infra/kubernetes/frontend-configmap.yaml).
  */
 
 declare global {
@@ -30,7 +35,7 @@ const DEFAULT_API_BASE_URL = 'http://localhost:8000'
 
 export function getApiBaseUrl(): string {
   const runtimeUrl = window.__AEGIS_CONFIG__?.apiBaseUrl
-  if (runtimeUrl) return runtimeUrl
+  if (typeof runtimeUrl === 'string') return runtimeUrl || window.location.origin
 
   const buildTimeUrl = import.meta.env.VITE_API_BASE_URL as string | undefined
   if (buildTimeUrl) return buildTimeUrl
