@@ -69,10 +69,11 @@ async def create_user(
     return TestUser(user_id=user.id, organization_id=organization_id, role=role, email=email)
 
 
-def test_user_of(session: AsyncSession) -> TestUser:
+def owner_of(session: AsyncSession) -> TestUser:
+    # Not named test_*: pytest collects an imported helper with that prefix as a test.
     return session.info["test_user"]
 
 
 def scope_of(session: AsyncSession) -> AccessScope:
     """The scope of the throwaway user the `db_session` fixture created for this test."""
-    return test_user_of(session).scope
+    return owner_of(session).scope

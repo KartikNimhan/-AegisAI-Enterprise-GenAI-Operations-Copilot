@@ -9,6 +9,7 @@ A document outside the scope is simply "not found".
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -108,6 +109,10 @@ class DocumentRepository:
         if document is None:
             return None
         document.visibility = visibility
+        # Assigned explicitly (the project's convention, as in DocumentService): the column's
+        # server-side `onupdate=func.now()` would otherwise leave `updated_at` expired after the
+        # flush, and reading it in async code raises MissingGreenlet.
+        document.updated_at = datetime.now(UTC)
         await self._session.flush()
         return document
 

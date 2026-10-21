@@ -60,7 +60,7 @@ from app.storage.local import LocalFileStorage, get_document_storage
 from ..document_fixtures import make_txt_bytes
 from ..unit.services.doubles import ScriptedChatGateway
 from ..unit.services.embedding_doubles import FakeEmbeddingProvider
-from .scoping import TestUser, create_user, test_user_of
+from .scoping import TestUser, create_user, owner_of
 
 pytestmark = pytest.mark.integration
 
@@ -81,7 +81,7 @@ class World:
 
 @pytest.fixture
 async def world(db_session: AsyncSession) -> World:
-    alice = test_user_of(db_session)
+    alice = owner_of(db_session)
     other = await create_user(db_session)
     return World(
         alice=alice,

@@ -73,7 +73,7 @@ _DEFAULT_BASELINE = _REPO_ROOT / "backend" / "tests" / "evaluation" / "data" / "
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument(
         "--dataset",
         type=Path,

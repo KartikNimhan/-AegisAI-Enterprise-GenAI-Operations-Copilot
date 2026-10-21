@@ -42,7 +42,7 @@ from app.llm.schemas import CompletionResponse, StreamChunk, TokenUsage
 from app.main import app
 
 from ..unit.services.doubles import ScriptedChatGateway
-from .scoping import scope_of
+from .scoping import TestUser, create_user
 
 pytestmark = pytest.mark.integration
 
@@ -240,9 +240,12 @@ async def test_streaming_chat_persistence_query_ignores_unrelated_messages(
     committed — before running the same streaming flow, and asserts the
     conversation_id-scoped query is unaffected by it.
     """
-    unrelated_conversation = Conversation(title="unrelated, pre-existing conversation")
-    db_session.add(unrelated_conversation)
-    await db_session.flush()
+    # It belongs to a second, valid user (conversations must have an owner), and is created through
+    # the repository scoped to that user, exactly as the application would.
+    someone_else = await create_user(db_session)
+    unrelated_conversation = await ConversationRepository(db_session, someone_else.scope).create(
+        title="unrelated, pre-existing conversation"
+    )
     db_session.add(
         Message(
             conversation_id=unrelated_conversation.id,
@@ -286,13 +289,19 @@ async def test_streaming_chat_persistence_query_ignores_unrelated_messages(
     assert [m.content for m in stored] == ["hi", "Hello"]
 
 
-async def test_failed_turn_is_fully_rolled_back(db_session: AsyncSession) -> None:
+async def test_failed_turn_is_fully_rolled_back(
+    db_session: AsyncSession, committed_user: TestUser
+) -> None:
     """Uses the REAL get_session dependency (no override) for the request
     itself, to verify a failed turn leaves no trace — the atomic-turn
     guarantee this milestone relies on. `db_session` is used only for its
     skip-if-unreachable check and for the post-request verification query
     (a separate connection from the one the request used internally;
     nothing here needs them to be the same connection).
+
+    Because the request opens its own connection, the signed-in user must be COMMITTED: a user
+    that exists only in `db_session`'s uncommitted transaction would be invisible to it and the
+    ownership foreign key would reject the conversation (the `committed_user` fixture).
     """
     app.dependency_overrides[get_llm_gateway] = lambda: ScriptedChatGateway(
         completion_error=LLMTimeoutError("timed out", provider="groq")
@@ -308,6 +317,6 @@ async def test_failed_turn_is_fully_rolled_back(db_session: AsyncSession) -> Non
 
     assert response.status_code == 504
 
-    repo = ConversationRepository(db_session, scope_of(db_session))
+    repo = ConversationRepository(db_session, committed_user.scope)
     remaining = await repo.list(limit=50)
     assert not any(c.title == "this will fail" for c in remaining)
