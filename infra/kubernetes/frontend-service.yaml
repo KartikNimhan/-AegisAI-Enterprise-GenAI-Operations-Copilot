@@ -6,8 +6,10 @@
 # svc/aegisai-frontend 8080:80` for local/dev access, or apply
 # ingress.example.yaml (requires an ingress controller) / change `type` to
 # `LoadBalancer` if your cluster/cloud provisions one, for real external
-# access. See frontend-configmap.yaml's own comment for why reaching the
-# frontend alone is not yet enough for the app to actually work end-to-end.
+# access. Reaching the frontend is enough for the browser to talk to the
+# backend: the frontend's nginx proxies /api/ and /health to it (see
+# frontend-configmap.yaml). The app still needs authentication to be
+# configured and a way to sign in before it works end to end.
 apiVersion: v1
 kind: Service
 metadata:

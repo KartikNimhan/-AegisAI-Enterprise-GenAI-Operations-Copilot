@@ -1,0 +1,91 @@
+# DEVELOPMENT ONLY: adds a local Keycloak identity provider and points the stack's
+# authentication at it. Layer it over the main file, which stays strict and unchanged:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev-idp.yml up -d keycloak
+#
+# Nothing here is used by a plain `docker compose ...` / `make docker-*` command.
+#
+# Before starting Keycloak, set the admin password IN YOUR SHELL (it is deliberately not
+# stored in this file or in `.env`; Compose refuses to start without it):
+#
+#   PowerShell:  $env:KC_ADMIN_PASSWORD = '<a password you choose>'
+#   bash:        export KC_ADMIN_PASSWORD='<a password you choose>'
+#
+# The realm (`aegisai-demo`) is imported from infra/keycloak/realm-aegisai-demo.json. It
+# has no users: create the first one in the Keycloak admin console
+# (http://localhost:18081, realm `aegisai-demo`), then link it with
+# scripts/provision_identity.py (README, "Authentication setup").
+#
+# Why the backend runs with ENVIRONMENT=local here
+# ------------------------------------------------
+# Outside ENVIRONMENT=local the backend requires https for AUTH_ISSUER and AUTH_JWKS_URL
+# (loopback hosts excepted; app/config.py `_check_url`). The backend reaches Keycloak
+# over the Compose network as http://keycloak:8080, which is neither https nor a loopback
+# address, and "localhost" inside the backend container is the container itself. The only
+# supported way to accept that address is ENVIRONMENT=local, so this override sets it and
+# the main file keeps ENVIRONMENT=docker. What that changes for the backend: /docs and
+# /openapi.json are served, AUTH_* is no longer required at start-up (a missing value
+# makes protected routes answer 503 instead of stopping the API), and TRUSTED_A2A_AGENTS
+# is not checked for https. Tokens are still fully verified (signature, issuer, audience,
+# expiry). The backend's port is published on 127.0.0.1 only because /docs is exposed.
+
+services:
+  keycloak:
+    # Pinned to the digest of the image already present locally (Keycloak 26.8.1); never pulled.
+    image: quay.io/keycloak/keycloak@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
+    pull_policy: never
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Admin account for the `master` realm, created on first start only.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:?Set KC_ADMIN_PASSWORD in your shell before starting Keycloak}
+      # Tokens carry iss=http://localhost:18081/realms/aegisai-demo whichever host name
+      # the caller used, so the backend's AUTH_ISSUER matches exactly.
+      KC_HOSTNAME: http://localhost:18081
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      # Loopback only, on the host.
+      - "127.0.0.1:18081:8080"
+    volumes:
+      # A new volume used only by Keycloak: its embedded dev database lives here, so the
+      # first user survives restarts. Existing volumes (pgdata) are not touched.
+      - keycloak_data:/opt/keycloak/data
+      - ./infra/keycloak/realm-aegisai-demo.json:/opt/keycloak/data/import/realm-aegisai-demo.json:ro
+    healthcheck:
+      # The image has no curl/wget: ask the management port (9000, not published) with bash only.
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 &&
+          read -r status <&3 &&
+          case "$$status" in *" 200 "*) exit 0;; esac; exit 1'
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+
+  backend:
+    # Replaces (rather than adds to) the main file's "8000:8000".
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    environment:
+      ENVIRONMENT: local
+      # Must equal the token's `iss` exactly (what the BROWSER sees).
+      AUTH_ISSUER: http://localhost:18081/realms/aegisai-demo
+      # Must appear in the token's `aud` (the realm's audience mapper adds it).
+      AUTH_AUDIENCE: aegisai-api
+      # Fetched by the backend over the Compose network.
+      AUTH_JWKS_URL: http://keycloak:8080/realms/aegisai-demo/protocol/openid-connect/certs
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  frontend:
+    environment:
+      # Same issuer URL, as the browser reaches it, and the realm's public client.
+      OIDC_AUTHORITY: http://localhost:18081/realms/aegisai-demo
+      OIDC_CLIENT_ID: aegisai-web
+
+volumes:
+  keycloak_data:

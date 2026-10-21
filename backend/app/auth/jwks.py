@@ -22,6 +22,14 @@ Hardening (M12 review findings M1/M2):
   that cannot be parsed, no signing keys) is *infrastructure* failure ->
   `AuthKeysUnavailableError` (503). Only "no published key matches this token's
   `kid`" and an unparsable token are *user* problems -> `InvalidTokenError` (401).
+  "Unknown `kid`" is decided from the data (the key set is usable and does not
+  contain the `kid`) and signalled with `UnknownSigningKeyError`; PyJWT's
+  exception message text is never inspected.
+- **No lingering unusable key set.** A response that parses but holds no signing
+  key (only `use: enc` keys, or keys without a `kid`) is cached by PyJWT before it
+  is checked, and PyJWT would then keep failing every lookup from that cache
+  until it expired, without ever refetching. It is discarded and the breaker is
+  tripped instead, so the next fetch after the cooldown can recover.
 """
 
 from __future__ import annotations
@@ -38,11 +46,10 @@ from app.config import Settings
 
 MAX_CONCURRENT_KEY_LOOKUPS = 4
 
-# PyJWT's message when a well-formed key set has no key for the token's `kid`.
-# The classification below depends on it; a test exercises the real client so a
-# PyJWT upgrade that changes the wording fails loudly instead of silently
-# turning "unknown kid" (401) into "keys unavailable" (503).
-_UNKNOWN_KID_MESSAGE = "Unable to find a signing key that matches"
+
+class UnknownSigningKeyError(jwt.PyJWKClientError):
+    """The key set is healthy but publishes no signing key for the token's `kid`
+    (or the token has none). Raised only by `GuardedJWKClient`."""
 
 
 class SigningKeyProvider(Protocol):
@@ -103,6 +110,42 @@ class GuardedJWKClient(jwt.PyJWKClient):
             self._trip()
             raise jwt.PyJWKClientConnectionError("unusable key set") from exc
 
+    def _discard_cached_key_set(self) -> None:
+        if self.jwk_set_cache is not None:
+            self.jwk_set_cache.put(None)  # PyJWT's documented way to clear the cache
+
+    def get_signing_keys(self, refresh: bool = False) -> list[jwt.PyJWK]:
+        try:
+            return super().get_signing_keys(refresh)
+        except jwt.PyJWKClientConnectionError:
+            raise
+        except jwt.PyJWKClientError as exc:
+            # `get_jwk_set` (above) already turns every fetch and parse failure
+            # into a connection error, so the only error left here is "the set
+            # parsed, but holds no signing key". PyJWT has cached that set by
+            # now; drop it and open the breaker so the next fetch (after the
+            # cooldown) can pick up a corrected key set instead of failing from
+            # the cache for its whole lifetime.
+            self._trip()
+            self._discard_cached_key_set()
+            raise jwt.PyJWKClientConnectionError("key set has no usable signing keys") from exc
+
+    def get_signing_key(self, kid: str) -> jwt.PyJWK:
+        try:
+            return super().get_signing_key(kid)
+        except jwt.PyJWKClientConnectionError:
+            raise
+        except jwt.PyJWKClientError as exc:
+            # PyJWT reports "no key matches" with the same base exception it uses
+            # for other problems, so do not trust the exception: decide from the
+            # data. The key set must be usable (otherwise this raises a connection
+            # error) and must not contain the `kid`. If it does contain it, PyJWT
+            # failed for some other reason and the caller must not see a 401.
+            published = self.get_signing_keys()
+            if any(key.key_id == kid for key in published):
+                raise
+            raise UnknownSigningKeyError("no published signing key matches this kid") from exc
+
 
 class JwksSigningKeyProvider:
     def __init__(
@@ -149,10 +192,10 @@ class JwksSigningKeyProvider:
                 signing_key = await asyncio.to_thread(self._client.get_signing_key_from_jwt, token)
             except jwt.PyJWKClientConnectionError as exc:
                 raise AuthKeysUnavailableError("jwks_unreachable") from exc
+            except UnknownSigningKeyError as exc:
+                raise InvalidTokenError("unknown_signing_key") from exc
             except jwt.PyJWKClientError as exc:
-                if _UNKNOWN_KID_MESSAGE in str(exc):
-                    raise InvalidTokenError("unknown_signing_key") from exc
-                # e.g. a key set with no signing keys at all.
+                # Anything else from the key client is not the caller's fault.
                 raise AuthKeysUnavailableError("jwks_unusable") from exc
             except jwt.PyJWKSetError as exc:
                 raise AuthKeysUnavailableError("jwks_unusable") from exc

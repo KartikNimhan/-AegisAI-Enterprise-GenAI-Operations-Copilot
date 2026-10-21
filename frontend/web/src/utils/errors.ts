@@ -15,7 +15,7 @@ const FRONTEND_MESSAGES: Record<string, string> = {
 }
 
 const STATUS_MESSAGES: Record<number, string> = {
-  401: 'You are not signed in, or your session has expired. Sign-in is not available in this UI yet.',
+  401: 'You are not signed in, or your session has expired. Please sign in again.',
   403: 'You do not have permission to do that.',
   503: 'The service is temporarily unavailable. Please try again shortly.',
 }

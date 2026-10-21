@@ -20,3 +20,9 @@ metadata:
 data:
   API_BASE_URL: ""
   BACKEND_UPSTREAM: "http://aegisai-backend:8000"
+  # Browser sign-in (public values, not secrets). OIDC_AUTHORITY is the identity
+  # provider's issuer URL as the browser reaches it (the same value as the
+  # backend's AUTH_ISSUER); left empty on purpose, the UI then says sign-in is not
+  # configured. OIDC_CLIENT_ID is the public client registered for this app.
+  OIDC_AUTHORITY: ""
+  OIDC_CLIENT_ID: "aegisai-web"

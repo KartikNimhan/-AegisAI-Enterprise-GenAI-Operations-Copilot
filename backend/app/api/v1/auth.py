@@ -1,7 +1,8 @@
 """Authentication endpoints (Milestone 12, Phase 1a).
 
 Only `GET /auth/me` for now — the authenticated caller's own identity, useful
-as the post-sign-in check. Invitation redemption is Phase 1b.
+as the post-sign-in check. Accounts are linked by an operator
+(`scripts/provision_identity.py`); self-service invitation redemption does not exist.
 """
 
 from __future__ import annotations

@@ -10,6 +10,7 @@
  * backend failures identically.
  */
 
+import { authHeaders, notifyUnauthorized } from '../auth/token'
 import { getApiBaseUrl } from '../config'
 
 export class BackendError extends Error {
@@ -74,7 +75,7 @@ export async function requestJson<T = unknown>(path: string, options: RequestOpt
   try {
     response = await fetch(url, {
       method,
-      headers: json !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: { ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
       body: formData ?? (json !== undefined ? JSON.stringify(json) : undefined),
       signal: controller.signal,
     })
@@ -92,6 +93,8 @@ export async function requestJson<T = unknown>(path: string, options: RequestOpt
 
   const allowed = okStatusCodes ?? Array.from({ length: 100 }, (_, i) => 200 + i)
   if (!allowed.includes(response.status)) {
+    // A 401 means the token is missing, expired or refused: let the auth layer react.
+    if (response.status === 401) notifyUnauthorized()
     throw await parseErrorResponse(response)
   }
 

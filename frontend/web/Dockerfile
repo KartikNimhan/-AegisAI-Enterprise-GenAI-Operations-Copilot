@@ -28,9 +28,13 @@ RUN npm run build
 # Kubernetes can verify `runAsNonRoot`), listens on 8080 (an unprivileged
 # process cannot bind port 80), and keeps its pid file and temp directories under
 # /tmp. Same nginx 1.27 line as the stock image this replaced. Multi-arch
-# (amd64/arm64); index digest at the time of pinning:
-# sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
-FROM nginxinc/nginx-unprivileged:1.27.5-alpine AS runtime
+# (amd64/arm64).
+# The digest below is enforced: it is the multi-arch index digest of the
+# 1.27.5-alpine tag, confirmed against the Docker Hub registry (the manifest's
+# Docker-Content-Digest header, and the SHA-256 of the index body itself).
+# The tag stays for readability. To update, resolve the new tag's index digest
+# from the registry and replace both together.
+FROM nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
 
 # The build steps below need root; the final USER drops back to 101.
 USER root
@@ -67,6 +71,11 @@ ENV API_BASE_URL=http://localhost:8000
 # Where nginx forwards /api/ requests (used when API_BASE_URL is empty, i.e.
 # same-origin, and available regardless). Compose service name by default.
 ENV BACKEND_UPSTREAM=http://backend:8000
+# Browser sign-in (public values, not secrets): the identity provider's issuer URL
+# and the id of the public client registered for this app. Empty authority = the
+# app shows "Sign-in is not configured" (see src/auth/).
+ENV OIDC_AUTHORITY=
+ENV OIDC_CLIENT_ID=aegisai-web
 
 EXPOSE 8080
 

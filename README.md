@@ -82,7 +82,30 @@ the original reasoning, including exactly what was and wasn't validated
 given this environment's own Docker/Kubernetes limitations.
 `infra/terraform/` is an empty placeholder — no Terraform has been
 written; nothing there is deployable. Memory beyond plain conversation
-history is **not** implemented yet — see [Roadmap](#roadmap) below.
+history is **not** implemented yet — see [Implementation history and remaining work](#implementation-history-and-remaining-work) below.
+
+## Official Project Roadmap
+
+| # | Milestone | Main skills covered |
+|---|---|---|
+| **M0** | Foundation & Architecture | FastAPI, PostgreSQL, Docker, config, logging, testing |
+| **M1** | LLM Gateway | Groq, multiple models, streaming, retries, provider abstraction |
+| **M2** | Conversational AI | Chat, prompt engineering, history, SSE streaming, token tracking |
+| **M3** | Document Intelligence | PDF/DOCX/TXT, extraction, normalization, chunking, storage |
+| **M4** | Embeddings | Sentence Transformers, vectors, pgvector, similarity, batching, versioning |
+| **M5** | Production RAG | Retrieval, metadata filtering, top-K, context assembly, citations |
+| **M6** | Agentic AI | LangGraph, tool calling, workflows, state, memory |
+| **M7** | MCP + A2A Multi-Agent | MCP servers/tools, A2A communication, multi-agent orchestration |
+| **M8** | GenAI UI + APIs | Streamlit/React, WebSockets/SSE, chat UI, document UI, dashboards |
+| **M9** | Production / MLOps / Responsible AI | Docker, Kubernetes, CI/CD, monitoring, evaluation, security, governance |
+
+This is the **official project milestone structure**. Use it as the source of
+truth for future roadmap discussions, progress tracking, and milestone
+completion reviews. The table defines each milestone's scope and the skills it
+covers; it is not evidence of completion and carries no status. The
+milestone numbers used elsewhere in this README, in the ADRs, and in code
+comments (for example "Milestone 10" or "Milestone 12") are the project's
+earlier working numbering and are not redefined by this table.
 
 ## What's implemented today
 
@@ -272,6 +295,21 @@ history is **not** implemented yet — see [Roadmap](#roadmap) below.
   for the original design reasoning (still accurate for both UIs' shared
   backend-contract boundary) and the [UI](#ui) section below for how to
   run either one.
+- **Authentication** (Milestone 12, Phase 1a, `backend/app/auth/` and
+  `backend/app/core/security.py`) — the API verifies OIDC bearer tokens
+  (signature, issuer, audience, expiry, required claims) against the provider's
+  public keys and maps them to an internal user, organization and role stored in
+  the database. Every `/api/v1` route is protected by default; see
+  [Authentication setup](#authentication-setup) for configuration and for what
+  is still missing (data scoping, a user admin API). Sign-in is in the React
+  app (`frontend/web/src/auth/`) and accounts are linked with
+  `scripts/provision_identity.py`.
+- **Evaluation harness** (Milestone 11, `backend/app/evaluation/`,
+  `scripts/evaluate.py`) — runs a version-controlled dataset through the real
+  retrieval pipeline and reports recall, context inclusion, operational failure
+  and no-answer abstention rates, compared against a stored baseline. It makes
+  no LLM call, so `answer_correctness` and `citation_precision` are reported as
+  skipped. Details in `backend/tests/evaluation/README.md`.
 
 ## Stack
 
@@ -378,7 +416,11 @@ backend/app/
                      the generic form Milestone 8 uses for all 3 agents)
     exceptions.py    typed A2AError hierarchy
   memory/         agent memory beyond conversation history (reserved)
-  evaluation/     evaluation harness (reserved)
+  auth/           authentication (M12 Phase 1a): tokens.py verifies OIDC bearer
+                   tokens, jwks.py looks up signing keys (cache + circuit breaker),
+                   service.py maps a verified token to an internal Principal
+  evaluation/     evaluation harness - implemented (M11): dataset.py, metrics.py,
+                   runner.py, report.py, baseline.py; CLI in scripts/evaluate.py
   observability/  LLMOps observability (reserved)
   workers/        async workers (reserved)
   db/             SQLAlchemy session + Redis client management
@@ -489,7 +531,142 @@ cd backend && uv run uvicorn app.main:app --reload
 ```
 
 Then visit http://localhost:8000/health, http://localhost:8000/health/ready,
-and http://localhost:8000/docs.
+and http://localhost:8000/docs (served only because `.env.example` sets
+`ENVIRONMENT=local`). With the `AUTH_*` variables blank, every protected route
+answers `503`; see [Authentication setup](#authentication-setup) below.
+
+## Authentication setup
+
+The API is an OIDC **resource server** (Milestone 12, Phase 1a). Every
+`/api/v1` route requires an `Authorization: Bearer <access token>` issued by
+your identity provider, except the three agent-card routes
+(`/api/v1/agents/*/card`). `/health`, `/health/ready` and
+`/.well-known/agent-card.json` are also public. The API stores no passwords or
+signing secrets; it only fetches the provider's public keys.
+
+Three settings tell it which provider to trust (public identifiers, not
+secrets; see `.env.example` and `backend/app/config.py`):
+
+| Variable | Meaning |
+|---|---|
+| `AUTH_ISSUER` | Must equal the token's `iss` claim **exactly** |
+| `AUTH_AUDIENCE` | The API audience that must appear in the token's `aud` |
+| `AUTH_JWKS_URL` | The provider's key-set URL, fetched **by the backend** (it may differ from the issuer's host) |
+
+Optional tuning (defaults in `.env.example`): `AUTH_ALLOWED_ALGORITHMS`
+(asymmetric algorithms only, default `["RS256"]`), `AUTH_LEEWAY_SECONDS`
+(0-60), `AUTH_JWKS_CACHE_SECONDS`, `AUTH_JWKS_MIN_REFRESH_SECONDS`,
+`AUTH_JWKS_TIMEOUT_SECONDS`, `AUTH_JWKS_FAILURE_COOLDOWN_SECONDS` (0-60).
+
+**What `ENVIRONMENT` changes**
+
+| | `ENVIRONMENT=local` (the default, and in `.env.example`) | Any other value |
+|---|---|---|
+| Used by | Running the API directly with `uvicorn` | Compose sets `docker`; the Kubernetes ConfigMap sets `kubernetes`; the backend image defaults to `production` |
+| `AUTH_*` unset | The API starts, but every protected route answers `503` | The API **refuses to start** and names the missing variables |
+| URLs | `http` allowed | `AUTH_ISSUER` and `AUTH_JWKS_URL` must be `https` (loopback hosts excepted) |
+| `DEBUG` | May be `true` | Must be `false` |
+| `/docs`, `/openapi.json` | Served | Not served (404) |
+| `TRUSTED_A2A_AGENTS` | Not checked | Each entry must be `https` (loopback excepted) |
+
+**Docker Compose: configure before starting the stack**
+
+The Compose backend runs with `ENVIRONMENT=docker`, so it does not start until
+all three variables are set. Compose reads them from the shell environment or
+from the repo-root `.env` file (which is git-ignored); the containers never read
+`.env` themselves.
+
+1. Put your identity provider's values in `.env` (placeholders shown; use your
+   provider's real URLs):
+
+   ```bash
+   AUTH_ISSUER=https://idp.example.com/realms/aegis
+   AUTH_AUDIENCE=aegisai-api
+   AUTH_JWKS_URL=https://idp.example.com/realms/aegis/protocol/openid-connect/certs
+   ```
+
+2. `make docker-up`, then `make docker-migrate` (migrations do not need the
+   `AUTH_*` values).
+3. If the backend container exits, run `docker compose logs backend`. A missing
+   value is reported as `Authentication is not configured for
+   ENVIRONMENT='docker': set ...`.
+
+Because the key set is fetched from **inside** the backend container,
+`localhost` there means the container itself, and plain `http` is accepted only
+for loopback hosts. A provider running on your host machine therefore cannot be
+used over `http`; use an `https` URL that the container can reach.
+
+**Kubernetes:** the same three keys are in `infra/kubernetes/backend-configmap.yaml`,
+empty on purpose. The API will not start until you set them.
+
+**Signing in (React UI)**
+
+The React app signs people in itself: the OpenID Connect authorization-code flow
+with PKCE. It is a public client, so it holds no secret, and tokens stay in the
+browser tab's `sessionStorage`. Tell it which provider to use (public values, not
+secrets):
+
+| Variable | Meaning |
+|---|---|
+| `OIDC_AUTHORITY` | The provider's issuer URL exactly as the **browser** reaches it (normally the same value as `AUTH_ISSUER`) |
+| `OIDC_CLIENT_ID` | The id of the public client registered for this app (default `aegisai-web`) |
+
+Set them in `.env` next to the `AUTH_*` values (Compose passes them to the
+frontend container), in `infra/kubernetes/frontend-configmap.yaml`, or as
+`VITE_OIDC_AUTHORITY` / `VITE_OIDC_CLIENT_ID` for `npm run dev`. With
+`OIDC_AUTHORITY` empty the app shows "Sign-in is not configured".
+
+In your identity provider, register that client as:
+
+- **public** (no client secret), authorization-code flow only, **PKCE required**
+  (`S256`);
+- valid redirect URI **and** post-logout redirect URI: the app's origin with a
+  trailing slash (`http://localhost:3000/` for Compose, `http://localhost:5173/`
+  for `npm run dev`);
+- the app's origin allowed as a web origin (the browser fetches the provider's
+  discovery document and keys itself);
+- access tokens that carry the API audience (`AUTH_AUDIENCE`) in `aud`. With
+  Keycloak this normally means an audience mapper on the client. The backend
+  answers `401` to a token without it.
+
+**Creating the first user**
+
+Signing in is not enough: the backend must also know the person. Someone who
+signs in without an account sees "Your account is not set up yet", with the
+**subject** and **issuer** an operator needs. The operator links them:
+
+```bash
+# preview (changes nothing), then write
+uv run python scripts/provision_identity.py --organization "Acme" \
+    --email admin@example.com --subject <subject shown on screen> --role admin --dry-run
+uv run python scripts/provision_identity.py --organization "Acme" \
+    --email admin@example.com --subject <subject shown on screen> --role admin --yes
+```
+
+It writes to the database named by `DATABASE_URL` (the default matches the Compose
+Postgres on port 5433) after migrations have run (`make docker-migrate`). It prints
+the target (host, port, database; never the password) and will not write without
+`--yes`. `--issuer` defaults to `AUTH_ISSUER` and must equal the token's `iss`
+exactly. It only adds rows and is safe to repeat; it refuses, rather than changes,
+a disabled user or organization, a different role or organization for an existing
+email, or an identity already linked to someone else.
+
+**What is not available yet**
+
+- **The legacy Streamlit app has no sign-in**, so it cannot call this backend.
+- **No self-service sign-up or invitations, and no admin API for users.**
+  Accounts are created with the command above.
+- **No per-user or per-organization data scoping.** Any active user can read and
+  delete all documents and conversations.
+- **Silent renewal needs refresh tokens** from your provider; without them a user
+  signs in again when the access token expires.
+- **Verification status.** The sign-in flow is covered by unit tests with a mocked
+  provider. It has not yet been run against a real identity provider in a browser,
+  so expect to adjust the provider-side client settings above.
+
+Responses: `401` missing, invalid or expired token; `403` valid token but the
+identity is unlinked or disabled; `503` authentication not configured, key set
+unreachable, or the identity lookup failed.
 
 ## UI
 
@@ -502,10 +679,11 @@ cd frontend/web && npm install && npm run dev
 Then visit http://localhost:5173 — Vite's dev server, with
 `VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
 backend. The Copilot, Documents, Operations, and System Status pages are
-all in the left sidebar.
+all in the left sidebar. Signing in needs `VITE_OIDC_AUTHORITY` and
+`VITE_OIDC_CLIENT_ID` (see [Authentication setup](#authentication-setup)).
 
 **Streamlit (legacy).** Not supported against an authentication-enabled backend
-(M12 Phase 1a requires bearer tokens; neither UI has a sign-in flow until Phase 1b).
+(it has no sign-in flow, so it cannot call a backend that requires bearer tokens).
 Instead of the above:
 
 ```bash
@@ -523,21 +701,26 @@ Redis — in Docker:
 
 ```bash
 cp .env.example .env            # optionally set GROQ_API_KEY
+# Set AUTH_ISSUER, AUTH_AUDIENCE and AUTH_JWKS_URL in .env first: the Compose
+# backend refuses to start without them (see "Authentication setup" above).
 make docker-up                  # builds + starts backend, frontend, postgres, redis
 make docker-migrate             # runs the existing Alembic migrations once
 ```
 
-Then visit http://localhost:8000/docs (backend) and
-http://localhost:3000 (Copilot UI). `make docker-logs` tails every
+Then check http://localhost:8000/health (backend; the interactive `/docs`
+page is served only when `ENVIRONMENT=local`, so it is off in Compose) and open
+http://localhost:3000 (Copilot UI; it asks you to sign in with the identity
+provider from `OIDC_AUTHORITY`, and `scripts/provision_identity.py` links your
+account). `make docker-logs` tails every
 service's logs; `make docker-down` stops the stack. To also run the
 legacy Streamlit UI in Docker instead/alongside (port 8501):
 `docker compose --profile legacy-ui up -d frontend-streamlit`. See
 [ADR 012](docs/architecture/decisions/012-deployment-architecture.md)
 for the full container/Kubernetes architecture, and
 [infra/kubernetes/README.md](infra/kubernetes/README.md) for deploying
-to a Kubernetes cluster — including a known gap where the React app's
-browser-side API calls need the backend reachable from outside the
-cluster, which hasn't been decided yet.
+to a Kubernetes cluster. There the frontend's nginx proxies `/api/` and
+`/health` to the backend, so the backend needs no externally reachable URL
+(structurally validated only; never applied to a real cluster).
 
 To run a real Groq request locally, set `GROQ_API_KEY` in `.env` (get one at
 https://console.groq.com/keys), then:
@@ -747,7 +930,12 @@ Or `make check` (lint + typecheck + test + test-frontend). See the
 `docker-build`, `docker-up`, `docker-down`, `docker-migrate`,
 `docker-shell`, `k8s-validate`, `migrate`, ...).
 
-## Roadmap
+## Implementation history and remaining work
+
+> This section records what the project's earlier working milestone numbering
+> covered and what remains. It uses that older numbering (which includes
+> "Milestone 10" to "Milestone 12") and does not define the milestone
+> structure; the [Official Project Roadmap](#official-project-roadmap) above does.
 
 Milestone 0 (foundation), Milestone 1 (LLM gateway), Milestone 2
 (conversational chat + persistence), Milestone 3 (document ingestion),
@@ -769,13 +957,21 @@ that existing system: production-oriented multi-stage images for the
 backend and each frontend, an extended Compose stack with real
 healthchecks, and `kubectl apply`-able Kubernetes manifests with hardened
 security context and Secret templates — no application redesign; the K8s
-frontend manifests target the React app, though the backend's external
-reachability for it is a known, documented gap — see
+frontend manifests target the React app and its nginx proxies `/api/` to the
+backend; the manifests are validated structurally only and have never been
+applied to a cluster — see
 [infra/kubernetes/README.md](infra/kubernetes/README.md)) are done.
-Remaining, in
-rough order, each as its own milestone: memory beyond conversation
-history → evaluation → security/RBAC → observability/LLMOps → async
-workers → multimodal/voice.
+
+Since then: a retrieval-level **evaluation harness** (Milestone 11, see
+`backend/tests/evaluation/README.md`; answer-quality metrics are skipped because
+they need a live LLM) and the first part of security, **bearer-token
+authentication** and browser sign-in (Milestone 12; see [Authentication
+setup](#authentication-setup)). Not started or not finished, in rough order,
+each as its own milestone: memory beyond conversation history → the rest of
+security/RBAC (role-based authorization, per-user and
+per-organization data scoping, a user admin API) → observability/LLMOps → async workers →
+multimodal/voice. No document in the repository defines Milestones 11-13
+beyond the code, ADR addenda and evaluation README that mention them.
 
 Architecture decisions made ahead of their implementation are recorded in
 [docs/architecture/decisions/](docs/architecture/decisions/).

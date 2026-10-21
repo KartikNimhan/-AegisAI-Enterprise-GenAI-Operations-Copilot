@@ -105,6 +105,14 @@ class TokenVerifier:
                 (r for t, r in _REASON_BY_EXCEPTION if isinstance(exc, t)), "invalid_token"
             )
             raise InvalidTokenError(reason) from exc
+        except (TypeError, ValueError) as exc:
+            # PyJWT raises a plain TypeError (not a PyJWTError) when the key it is
+            # given cannot verify the token's algorithm, e.g. an RS256 token whose
+            # `kid` names an EC key in the key set, or the reverse. The caller
+            # chooses both `alg` and `kid`, so this is a rejected token, not a
+            # server error. Deliberately limited to these two types and to this
+            # call: anything else still surfaces as the bug it would be.
+            raise InvalidTokenError("key_algorithm_mismatch") from exc
 
         subject = claims.get("sub")
         if not isinstance(subject, str) or not subject or len(subject) > _MAX_SUBJECT_CHARS:

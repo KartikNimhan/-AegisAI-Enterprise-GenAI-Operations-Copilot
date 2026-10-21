@@ -22,7 +22,12 @@ cp .env.example .env
 ```
 
 The defaults in `.env.example` match `docker-compose.yml`'s Postgres/Redis
-credentials, so no edits are required to run everything via Docker Compose.
+credentials. Running the API locally (`ENVIRONMENT=local`) needs no further edits,
+but with `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AUTH_JWKS_URL` blank every protected
+route answers `503`. The full Compose stack (Option B below) additionally
+**requires** those three values: its backend runs with `ENVIRONMENT=docker` and
+refuses to start without them. See "Authentication setup" in the root
+[README](../../README.md#authentication-setup).
 
 ## 3. Start PostgreSQL and Redis
 
@@ -32,7 +37,8 @@ Option A — only the datastores, running the API locally for fast reload:
 docker compose up -d postgres redis
 ```
 
-Option B — the full stack (API + datastores) in containers:
+Option B — the full stack (API + datastores) in containers (set the `AUTH_*`
+values in `.env` first, see above):
 
 ```bash
 docker compose up --build
@@ -45,8 +51,9 @@ cd backend
 uv run alembic upgrade head
 ```
 
-This applies `0001_enable_pgvector`, which enables the `vector` Postgres
-extension (no application tables exist yet).
+This applies every migration in `backend/alembic/versions/` (currently `0001`
+to `0005`: the `vector` extension, conversations and messages, documents and
+chunks, chunk embeddings, and the identity tables).
 
 ## 5. Run the API locally
 
@@ -59,7 +66,8 @@ Then check:
 
 - http://localhost:8000/health — liveness
 - http://localhost:8000/health/ready — readiness (requires Postgres + Redis)
-- http://localhost:8000/docs — interactive OpenAPI docs
+- http://localhost:8000/docs — interactive OpenAPI docs (served only when
+  `ENVIRONMENT=local`)
 
 Or via `make run` / `make docker-up` from the repo root (see the
 [Makefile](../../Makefile)).

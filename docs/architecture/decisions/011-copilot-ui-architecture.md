@@ -340,10 +340,13 @@ real-data-only rules apply). Differences worth knowing:
   page/character counts, chunks fetched on demand, and embedding status.
 - API calls are made by the browser. With an empty `API_BASE_URL` they go to the
   page's own origin, where nginx proxies `/api/` (see ADR 012 addendum).
-- **Authentication (M12 Phase 1a).** Protected endpoints now require a bearer
-  token, and there is no sign-in flow in either UI yet (M12 Phase 1b). Until
-  then both UIs show a 401 message, and neither can be used end to end against
-  an auth-enabled backend. The Streamlit app is not supported against it.
+- **Authentication (M12).** Protected endpoints require a bearer token. The
+  React app signs people in itself (`src/auth/`: OIDC authorization code + PKCE,
+  token attached by `src/api/client.ts`, a gate that also checks the backend knows
+  the account via `GET /api/v1/auth/me`). A rejected token shows the sign-in
+  screen with a message; nothing redirects automatically, so a provider
+  misconfiguration cannot loop. The Streamlit app has no sign-in and is not
+  supported against an auth-enabled backend.
 - The CORS statement above is out of date: CORS middleware is configured
   (`CORS_ORIGINS`), and is unnecessary when the same-origin proxy is used.
 

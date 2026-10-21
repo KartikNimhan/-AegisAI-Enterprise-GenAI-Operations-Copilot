@@ -22,8 +22,10 @@ connection indicator.
 **Authentication is required before anything works end to end.** The backend
 refuses to start until `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AUTH_JWKS_URL` in
 `backend-configmap.yaml` are set to your identity provider's values, and the
-React UI has no sign-in flow yet (M12 Phase 1b), so a browser cannot obtain a
-token. API clients that already hold a token work.
+React UI needs `OIDC_AUTHORITY` (empty by default) in `frontend-configmap.yaml`, otherwise a browser cannot obtain a
+token. API clients that already hold a token work. Link each person's account with
+`scripts/provision_identity.py` (see the root README, "Authentication setup"), run against
+the cluster database, for example through `kubectl port-forward`.
 
 ## What's here
 

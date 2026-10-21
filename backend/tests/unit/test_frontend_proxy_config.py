@@ -103,7 +103,9 @@ def test_dockerfile_uses_a_pinned_unprivileged_image_and_a_numeric_user() -> Non
     image = re.search(r"^FROM (\S+) AS runtime", dockerfile, re.M)
     assert image is not None
     assert image.group(1).startswith("nginxinc/nginx-unprivileged:")
-    assert not image.group(1).endswith((":latest", ":alpine"))  # pinned to a version
+    assert not image.group(1).split("@")[0].endswith((":latest", ":alpine"))  # a version tag
+    # ...and the digest is enforced, not just mentioned in a comment.
+    assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image.group(1))
     # The last USER in the file is what the container runs as: numeric, not root.
     users = re.findall(r"^USER (\S+)", dockerfile, re.M)
     assert users[-1] == "101"
@@ -147,6 +149,8 @@ def test_kubernetes_service_targets_the_named_container_port() -> None:
 def test_the_frontend_configmap_matches_the_template_variables(template: str) -> None:
     data = _yaml(_K8S / "frontend-configmap.yaml")["data"]
 
-    assert set(data) == {"API_BASE_URL", "BACKEND_UPSTREAM"}
+    assert set(data) == {"API_BASE_URL", "BACKEND_UPSTREAM", "OIDC_AUTHORITY", "OIDC_CLIENT_ID"}
+    assert data["OIDC_AUTHORITY"] == ""  # no default identity provider
+    assert data["OIDC_CLIENT_ID"]  # the public client id has a default
     assert data["API_BASE_URL"] == ""  # same origin
     assert "${BACKEND_UPSTREAM}" in template

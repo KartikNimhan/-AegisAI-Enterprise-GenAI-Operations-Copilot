@@ -27,6 +27,11 @@ declare global {
   interface Window {
     __AEGIS_CONFIG__?: {
       apiBaseUrl?: string
+      /** Identity provider for browser sign-in (see src/auth/oidcConfig.ts). */
+      oidc?: {
+        authority?: string
+        clientId?: string
+      }
     }
   }
 }

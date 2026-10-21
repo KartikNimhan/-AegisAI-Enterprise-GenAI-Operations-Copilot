@@ -1,5 +1,6 @@
-"""The real PyJWT `PyJWKClient` (cache, `kid` matching, rate-limited refresh)
-driven through our `JwksSigningKeyProvider`, with only the HTTP fetch faked."""
+"""The real PyJWT key client (cache, `kid` matching, rate-limited refresh), as
+wrapped by our `GuardedJWKClient`, driven through `JwksSigningKeyProvider`, with
+only the HTTP fetch faked."""
 
 from __future__ import annotations
 
@@ -10,17 +11,18 @@ import jwt
 import pytest
 
 from app.auth.exceptions import AuthKeysUnavailableError, InvalidTokenError
-from app.auth.jwks import JwksSigningKeyProvider
+from app.auth.jwks import GuardedJWKClient, JwksSigningKeyProvider
 
 from ...auth_fixtures import JWKS_URL, SigningKey, generate_signing_key, jwks_for, mint_token
 
 
-class _FakeFetchClient(jwt.PyJWKClient):
-    """PyJWKClient with the network fetch replaced; everything else (caching,
-    kid lookup, refresh cooldown) is the real implementation."""
+class _FakeFetchClient(GuardedJWKClient):
+    """The guarded client (what production builds) with the network fetch
+    replaced; everything else (caching, kid lookup, refresh cooldown) is the real
+    implementation."""
 
     def __init__(self, jwk_set: dict[str, Any], **kwargs: Any) -> None:
-        super().__init__(JWKS_URL, **kwargs)
+        super().__init__(JWKS_URL, failure_cooldown_seconds=0, **kwargs)
         self.jwk_set = jwk_set
         self.fetches = 0
         self.fail = False

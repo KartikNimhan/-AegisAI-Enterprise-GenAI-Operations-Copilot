@@ -1,6 +1,12 @@
 services:
   backend:
     build: .
+    # Always (re)build from the local sources: without this, `docker compose up -d` or
+    # `docker compose run` reuses whatever image was built last time, so the running
+    # stack silently drifts from the code (a stale frontend image listening on the old
+    # port; a backend image that predates the authentication changes and migrations).
+    # Layer caching keeps an unchanged build fast.
+    pull_policy: build
     ports:
       - "8000:8000"
     environment:
@@ -62,6 +68,12 @@ services:
   # `docker compose run --rm migrate`.
   migrate:
     build: .
+    # Always (re)build from the local sources: without this, `docker compose up -d` or
+    # `docker compose run` reuses whatever image was built last time, so the running
+    # stack silently drifts from the code (a stale frontend image listening on the old
+    # port; a backend image that predates the authentication changes and migrations).
+    # Layer caching keeps an unchanged build fast.
+    pull_policy: build
     environment:
       DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
     command: ["alembic", "upgrade", "head"]
@@ -80,10 +92,21 @@ services:
   frontend:
     build:
       context: frontend/web
+    # Always (re)build from the local sources: without this, `docker compose up -d` or
+    # `docker compose run` reuses whatever image was built last time, so the running
+    # stack silently drifts from the code (a stale frontend image listening on the old
+    # port; a backend image that predates the authentication changes and migrations).
+    # Layer caching keeps an unchanged build fast.
+    pull_policy: build
     ports:
       - "3000:8080"
     environment:
       API_BASE_URL: http://localhost:8000
+      # Browser sign-in. OIDC_AUTHORITY is the identity provider's issuer URL as the
+      # BROWSER reaches it (the same value as AUTH_ISSUER); OIDC_CLIENT_ID is the id
+      # of the public client registered for this app. Public values, not secrets.
+      OIDC_AUTHORITY: ${OIDC_AUTHORITY:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-aegisai-web}
     depends_on:
       backend:
         condition: service_healthy
@@ -101,6 +124,12 @@ services:
     build:
       context: .
       dockerfile: frontend/streamlit/Dockerfile
+    # Always (re)build from the local sources: without this, `docker compose up -d` or
+    # `docker compose run` reuses whatever image was built last time, so the running
+    # stack silently drifts from the code (a stale frontend image listening on the old
+    # port; a backend image that predates the authentication changes and migrations).
+    # Layer caching keeps an unchanged build fast.
+    pull_policy: build
     ports:
       - "8501:8501"
     environment:

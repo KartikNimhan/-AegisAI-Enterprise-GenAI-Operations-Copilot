@@ -1,6 +1,7 @@
 /** Wraps Milestone 3's `/api/v1/documents` endpoints (app.api.schemas.documents). */
 
 import { BackendError, requestJson } from './client'
+import { authHeaders, notifyUnauthorized } from '../auth/token'
 import { getApiBaseUrl } from '../config'
 
 export interface DocumentRecord {
@@ -74,6 +75,7 @@ export function uploadDocumentWithProgress(
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', new URL('/api/v1/documents', getApiBaseUrl()).toString())
+    for (const [name, value] of Object.entries(authHeaders())) xhr.setRequestHeader(name, value)
 
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
@@ -87,6 +89,7 @@ export function uploadDocumentWithProgress(
           reject(new BackendError('The backend returned an unexpected response.', { code: 'malformed_response' }))
         }
       } else {
+        if (xhr.status === 401) notifyUnauthorized()
         try {
           const payload = JSON.parse(xhr.responseText)
           reject(

@@ -109,3 +109,48 @@ async def test_disabled_flags_round_trip(repo: IdentityRepository) -> None:
     assert context is not None
     assert context.user.is_active is False
     assert context.organization.is_active is False
+
+
+async def test_lookups_used_by_provisioning_find_rows_and_report_absence(
+    repo: IdentityRepository,
+) -> None:
+    org = await repo.add_organization(name="Acme (test)")
+    user = await repo.add_user(organization_id=org.id, email="Alice@Example.test")
+    await repo.link_identity(user_id=user.id, issuer=ISSUER, subject="sub-1")
+
+    assert (await repo.get_organization_by_name("Acme (test)")).id == org.id  # type: ignore[union-attr]
+    assert await repo.get_organization_by_name("acme (test)") is None  # names are exact
+    assert (await repo.get_user_by_email("alice@example.TEST")).id == user.id  # type: ignore[union-attr]
+    assert await repo.get_user_by_email("nobody@example.test") is None
+    identity = await repo.get_identity(issuer=ISSUER, subject="sub-1")
+    assert identity is not None and identity.user_id == user.id
+    assert await repo.get_identity(issuer=ISSUER, subject="other") is None
+    assert await repo.get_identity(issuer="https://other.example.test", subject="sub-1") is None
+
+
+async def test_provisioning_end_to_end_against_the_real_tables(
+    repo: IdentityRepository,
+) -> None:
+    from app.auth.provisioning import provision_identity
+
+    first = await provision_identity(
+        repo,
+        organization_name="Acme (test)",
+        email="Admin@Example.test",
+        issuer=ISSUER,
+        subject="sub-1",
+        role=UserRole.ADMIN,
+    )
+    again = await provision_identity(
+        repo,
+        organization_name="Acme (test)",
+        email="admin@example.test",
+        issuer=ISSUER,
+        subject="sub-1",
+        role=UserRole.ADMIN,
+    )
+
+    assert first.changed and not again.changed
+    context = await repo.get_context(issuer=ISSUER, subject="sub-1")
+    assert context is not None
+    assert context.user.role == UserRole.ADMIN and context.user.id == first.user_id
