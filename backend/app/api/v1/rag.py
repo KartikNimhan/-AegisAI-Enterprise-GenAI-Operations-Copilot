@@ -23,6 +23,8 @@ from app.api.schemas.rag import (
     RAGChatStreamChunk,
     RAGSourceResponse,
 )
+from app.api.streaming import start_stream
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 from app.rag.service import RAGService, get_rag_service
 
@@ -33,7 +35,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 RAGServiceDep = Annotated[RAGService, Depends(get_rag_service)]
 
 
-@router.post("/chat", response_model=RAGChatResponse)
+@router.post("/chat", response_model=RAGChatResponse, dependencies=[LLM_RATE_LIMIT])
 async def rag_chat(request: RAGChatRequest, rag_service: RAGServiceDep) -> RAGChatResponse:
     result = await rag_service.answer(
         conversation_id=request.conversation_id,
@@ -45,7 +47,7 @@ async def rag_chat(request: RAGChatRequest, rag_service: RAGServiceDep) -> RAGCh
     return RAGChatResponse.from_answer(result)
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[LLM_RATE_LIMIT])
 async def rag_chat_stream(request: RAGChatRequest, rag_service: RAGServiceDep) -> StreamingResponse:
     async def event_source() -> AsyncIterator[str]:
         try:
@@ -77,4 +79,6 @@ async def rag_chat_stream(request: RAGChatRequest, rag_service: RAGServiceDep) -
             )
             yield f"data: {error_event.model_dump_json()}\n\n"
 
-    return StreamingResponse(event_source(), media_type="text/event-stream")
+    # Run to the first event before the response starts, so a failure while setting the request up
+    # (an unknown or foreign conversation id) is a proper 404, not a committed 200 with no body.
+    return StreamingResponse(await start_stream(event_source()), media_type="text/event-stream")

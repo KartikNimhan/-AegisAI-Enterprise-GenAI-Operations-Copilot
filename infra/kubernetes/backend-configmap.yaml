@@ -41,3 +41,10 @@ data:
   AUTH_ISSUER: ""
   AUTH_AUDIENCE: ""
   AUTH_JWKS_URL: ""
+  # Rate limits: per signed-in user, counted in memory PER POD (replicas do not share counts, so the
+  # effective limit is limit x replicas). 0 switches one limit off. Starting points to review.
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  RATE_LIMIT_LLM_REQUESTS: "30"
+  RATE_LIMIT_DOCUMENT_UPLOADS: "10"
+  RATE_LIMIT_EMBEDDING_JOBS: "5"

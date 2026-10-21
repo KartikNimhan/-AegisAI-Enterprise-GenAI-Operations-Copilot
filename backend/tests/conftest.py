@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.auth.principal import Principal
 from app.auth.service import IdentityService
 from app.config import get_settings
+from app.core import rate_limit
 from app.core.security import (
     get_bearer_token,
     get_current_principal,
@@ -89,6 +90,15 @@ def auth_env(
     finally:
         app.dependency_overrides.pop(get_token_verifier, None)
         app.dependency_overrides.pop(get_identity_service, None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limiter() -> Iterator[None]:
+    """The limiter's counters are process-wide and most tests act as the same default user, so
+    every test starts with empty counters (or unrelated tests would start receiving 429)."""
+    rate_limit._cached_limiter.cache_clear()
+    yield
+    rate_limit._cached_limiter.cache_clear()
 
 
 @pytest.fixture

@@ -43,6 +43,12 @@ services:
       AUTH_ISSUER: ${AUTH_ISSUER:-}
       AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      # Rate limits (per user, in memory per process; see .env.example). 0 switches one off.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      RATE_LIMIT_LLM_REQUESTS: ${RATE_LIMIT_LLM_REQUESTS:-30}
+      RATE_LIMIT_DOCUMENT_UPLOADS: ${RATE_LIMIT_DOCUMENT_UPLOADS:-10}
+      RATE_LIMIT_EMBEDDING_JOBS: ${RATE_LIMIT_EMBEDDING_JOBS:-5}
     volumes:
       - ./data/uploads:/data/uploads
     depends_on:

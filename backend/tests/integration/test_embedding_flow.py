@@ -28,6 +28,7 @@ from app.embeddings.providers.local import get_local_embedding_provider
 from app.main import app
 
 from ..unit.services.embedding_doubles import FakeEmbeddingProvider
+from .scoping import scope_of
 
 pytestmark = pytest.mark.integration
 
@@ -56,7 +57,7 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
 async def _make_processed_document_with_chunks(
     db_session: AsyncSession, *, chunk_count: int = 3
 ) -> uuid.UUID:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     document = repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="report.txt",
@@ -123,7 +124,7 @@ async def test_triggering_twice_is_idempotent(
 async def test_trigger_embeddings_for_unprocessed_document_returns_400(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     document = repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="report.txt",

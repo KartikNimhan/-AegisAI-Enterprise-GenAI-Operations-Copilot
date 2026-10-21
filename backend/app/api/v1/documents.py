@@ -18,11 +18,16 @@ from app.api.schemas.documents import (
     DocumentChunkResponse,
     DocumentResponse,
     DocumentUploadResponse,
+    DocumentVisibilityRequest,
     PaginatedDocumentChunks,
     PaginatedDocuments,
 )
 from app.api.schemas.embeddings import EmbeddingStatusResponse, EmbeddingTriggerResponse
 from app.config import Settings, get_settings
+from app.core import audit
+from app.core.exceptions import NotFoundError
+from app.core.rate_limit import EMBEDDING_RATE_LIMIT, UPLOAD_RATE_LIMIT
+from app.core.security import PrincipalDep
 from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.services.document_service import DocumentService, get_document_service
 
@@ -37,10 +42,12 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
     "",
     response_model=DocumentUploadResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[UPLOAD_RATE_LIMIT],
 )
 async def upload_document(
     document_service: DocumentServiceDep,
     settings: SettingsDep,
+    principal: PrincipalDep,
     response: Response,
     file: Annotated[UploadFile, File()],
 ) -> DocumentUploadResponse:
@@ -53,6 +60,13 @@ async def upload_document(
         filename=file.filename or "upload",
         content_type=file.content_type or "application/octet-stream",
         content=content,
+    )
+    audit.record(
+        "document.uploaded",
+        actor=principal,
+        resource_type="document",
+        resource_id=result.document.id,
+        duplicate=result.is_duplicate,
     )
     if result.is_duplicate:
         # Nothing new was created — 200, not the decorator's default 201.
@@ -85,6 +99,29 @@ async def get_document(
     return DocumentResponse.from_document(document)
 
 
+@router.patch("/{document_id}/visibility", response_model=DocumentResponse)
+async def set_document_visibility(
+    document_id: uuid.UUID,
+    request: DocumentVisibilityRequest,
+    document_service: DocumentServiceDep,
+    principal: PrincipalDep,
+) -> DocumentResponse:
+    """Share a document with the owner's organization, or make it private again. Allowed for its
+    owner and for an administrator of its organization; anyone else gets 404."""
+    document = await document_service.set_visibility(document_id, request.visibility)
+    audit.record(
+        "document.visibility_changed",
+        actor=principal,
+        resource_type="document",
+        resource_id=document_id,
+        outcome="success" if document is not None else "not_found",
+        visibility=request.visibility.value,
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return DocumentResponse.from_document(document)
+
+
 @router.get("/{document_id}/chunks", response_model=PaginatedDocumentChunks)
 async def get_document_chunks(
     document_id: uuid.UUID,
@@ -105,20 +142,49 @@ async def get_document_chunks(
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(document_id: uuid.UUID, document_service: DocumentServiceDep) -> None:
+async def delete_document(
+    document_id: uuid.UUID, document_service: DocumentServiceDep, principal: PrincipalDep
+) -> None:
     deleted = await document_service.delete_document(document_id)
+    audit.record(
+        "document.deleted",
+        actor=principal,
+        resource_type="document",
+        resource_id=document_id,
+        outcome="success" if deleted else "not_found",
+    )
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
 
 
-@router.post("/{document_id}/embeddings", response_model=EmbeddingTriggerResponse)
+@router.post(
+    "/{document_id}/embeddings",
+    response_model=EmbeddingTriggerResponse,
+    dependencies=[EMBEDDING_RATE_LIMIT],
+)
 async def trigger_document_embeddings(
-    document_id: uuid.UUID, embedding_service: EmbeddingServiceDep
+    document_id: uuid.UUID, embedding_service: EmbeddingServiceDep, principal: PrincipalDep
 ) -> EmbeddingTriggerResponse:
     # Synchronous for this milestone (no task queue yet — see
     # app.embeddings.service docstring). NotFoundError/DocumentNotReadyError
     # are mapped to HTTP responses by the handlers in app.core.exceptions.
-    result = await embedding_service.embed_document(document_id)
+    try:
+        result = await embedding_service.embed_document(document_id)
+    except NotFoundError:
+        audit.record(
+            "document.embedding_requested",
+            actor=principal,
+            resource_type="document",
+            resource_id=document_id,
+            outcome="not_found",
+        )
+        raise
+    audit.record(
+        "document.embedding_requested",
+        actor=principal,
+        resource_type="document",
+        resource_id=document_id,
+    )
     return EmbeddingTriggerResponse.from_result(result)
 
 

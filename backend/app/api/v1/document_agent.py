@@ -27,6 +27,7 @@ from app.a2a.document_agent import DocumentAgentService
 from app.a2a.schemas import DocumentAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
 from app.config import get_settings
+from app.core.security import AccessScopeDep
 from app.db.repositories.document_repository import DocumentRepository
 from app.dependencies import DBSessionDep
 
@@ -43,8 +44,10 @@ class DocumentTaskRequest(BaseModel):
     document_ids: list[uuid.UUID] = Field(min_length=1, description="Document ids to look up.")
 
 
-def get_document_agent_service(session: DBSessionDep) -> DocumentAgentService:
-    return DocumentAgentService(documents=DocumentRepository(session))
+def get_document_agent_service(
+    session: DBSessionDep, scope: AccessScopeDep
+) -> DocumentAgentService:
+    return DocumentAgentService(documents=DocumentRepository(session, scope))
 
 
 DocumentAgentServiceDep = Annotated[DocumentAgentService, Depends(get_document_agent_service)]

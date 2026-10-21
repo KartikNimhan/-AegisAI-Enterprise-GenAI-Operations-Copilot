@@ -479,6 +479,38 @@ rationale. In brief:
   `st.session_state`) — the only state this frontend keeps, since M8 is
   itself stateless (no `conversation_id`, no server-side persistence).
 
+## Data isolation
+
+Authentication says who is calling; `app.auth.scope.AccessScope` says whose data they may reach.
+It is built from the authenticated principal (`core.security.get_access_scope`) and is a required
+constructor argument of every business repository (documents, chunks, embeddings, conversations,
+messages, retrieval), which apply it in SQL before any `LIMIT`. Services, agent tools, the MCP
+adapters and the A2A specialists are built from those repositories, so the boundary does not depend
+on the model or on request parameters.
+
+- Conversations (and their messages) are visible to their owner only.
+- Documents (and their chunks and embeddings) are visible to their owner, and to the owner's
+  organization when `visibility = 'organization'`. The owner, or an administrator of the
+  organization, may delete or re-share them; an administrator cannot read a private one.
+- A resource outside the scope is a 404, identical to a missing one. Rows with no owner (data from
+  before ownership existed, until `scripts/assign_legacy_data.py` runs) match no scope.
+- Duplicate detection on upload is per owner, and chunk ids derive from the document id.
+- `GET /system/status` is administrator-only. The operations summary counts what a member may read and,
+  for an administrator, the whole organization (aggregate numbers only).
+
+## Rate limits and audit events
+
+`app.core.rate_limit` meters language-model requests, uploads and embedding jobs per signed-in user in
+a sliding window, as a route dependency that runs after authentication. It counts in memory per
+process, and refuses with 503 (never allows) if it cannot enforce. `app.core.audit` writes one
+structured line per sensitive action (upload, sharing, embedding request, deletion, rate-limit
+refusal) with the actor, resource id and outcome, and never any content or credential. See
+[ADR 014](decisions/014-rate-limits-and-audit-events.md) and
+[production readiness](../operations/production-readiness.md).
+
+See [ADR 013](decisions/013-data-isolation.md) for the reasoning, the schema (migrations 0006 and
+0007) and how it was verified.
+
 ## Configuration
 
 All configuration is environment-variable driven via `app/config.py`

@@ -33,6 +33,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.core.security import AccessScopeDep
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.dependencies import DBSessionDep
@@ -53,6 +54,7 @@ from app.documents.validation import (
 )
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
+from app.domain.enums.document_visibility import DocumentVisibility
 from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 from app.storage.base import DocumentStorage
@@ -229,7 +231,7 @@ class DocumentService:
         return [
             DocumentChunk(
                 id=compute_chunk_id(
-                    document_checksum=document.checksum,
+                    document_id=document.id,
                     chunk_size=self._settings.document_chunk_size,
                     chunk_overlap=self._settings.document_chunk_overlap,
                     chunk_index=chunk.chunk_index,
@@ -261,8 +263,25 @@ class DocumentService:
             return None
         return await self._chunks.list_by_document(document_id, limit=limit, offset=offset)
 
+    async def set_visibility(
+        self, document_id: uuid.UUID, visibility: DocumentVisibility
+    ) -> Document | None:
+        """Share a document with its organization, or make it private again. Only its owner, or
+        an administrator of its organization, may; anyone else sees "not found"."""
+        document = await self._documents.set_visibility(document_id, visibility)
+        if document is not None:
+            await self._session.commit()
+            logger.info(
+                "document_visibility_changed",
+                document_id=str(document_id),
+                visibility=visibility.value,
+            )
+        return document
+
     async def delete_document(self, document_id: uuid.UUID) -> bool:
-        document = await self._documents.get(document_id)
+        # Deleting needs management rights (owner, or an administrator of the organization), not
+        # read access: an administrator can remove a member's private document without reading it.
+        document = await self._documents.get_for_management(document_id)
         if document is None:
             return False
 
@@ -295,13 +314,14 @@ def _safe_error_message(exc: Exception) -> str:
 
 def get_document_service(
     session: DBSessionDep,
+    scope: AccessScopeDep,
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[DocumentStorage, Depends(get_document_storage)],
 ) -> DocumentService:
     return DocumentService(
         session=session,
         settings=settings,
-        documents=DocumentRepository(session),
-        chunks=DocumentChunkRepository(session),
+        documents=DocumentRepository(session, scope),
+        chunks=DocumentChunkRepository(session, scope),
         storage=storage,
     )

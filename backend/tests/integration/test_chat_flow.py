@@ -42,6 +42,7 @@ from app.llm.schemas import CompletionResponse, StreamChunk, TokenUsage
 from app.main import app
 
 from ..unit.services.doubles import ScriptedChatGateway
+from .scoping import scope_of
 
 pytestmark = pytest.mark.integration
 
@@ -307,6 +308,6 @@ async def test_failed_turn_is_fully_rolled_back(db_session: AsyncSession) -> Non
 
     assert response.status_code == 504
 
-    repo = ConversationRepository(db_session)
+    repo = ConversationRepository(db_session, scope_of(db_session))
     remaining = await repo.list(limit=50)
     assert not any(c.title == "this will fail" for c in remaining)

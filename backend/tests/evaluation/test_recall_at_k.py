@@ -29,6 +29,7 @@ from app.domain.enums.document_type import DocumentType
 from app.domain.models.chunk_embedding import ChunkEmbedding
 from app.domain.models.document_chunk import DocumentChunk
 from app.embeddings.providers.local import LocalEmbeddingProvider
+from app.evaluation.scope import create_evaluation_scope
 from app.rag.retrieval.repository import RetrievalRepository
 
 from .rag_fixtures import EVAL_CORPUS, EVAL_QUESTIONS
@@ -51,7 +52,8 @@ async def test_recall_at_k_against_the_synthetic_fixture(db_session: AsyncSessio
     settings = get_settings()
     provider = LocalEmbeddingProvider(settings)
 
-    document_repo = DocumentRepository(db_session)
+    scope = await create_evaluation_scope(db_session)
+    document_repo = DocumentRepository(db_session, scope)
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="eval-corpus.txt",
@@ -77,7 +79,7 @@ async def test_recall_at_k_against_the_synthetic_fixture(db_session: AsyncSessio
     await db_session.flush()
 
     vectors = await provider.embed_texts([c.text for c in EVAL_CORPUS])
-    embedding_repo = ChunkEmbeddingRepository(db_session)
+    embedding_repo = ChunkEmbeddingRepository(db_session, scope)
     await embedding_repo.add_all(
         [
             ChunkEmbedding(
@@ -93,7 +95,7 @@ async def test_recall_at_k_against_the_synthetic_fixture(db_session: AsyncSessio
         ]
     )
 
-    retrieval_repository = RetrievalRepository(db_session)
+    retrieval_repository = RetrievalRepository(db_session, scope)
     hits = 0
     per_question_results: list[tuple[str, bool]] = []
 

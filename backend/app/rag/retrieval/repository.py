@@ -18,14 +18,16 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.scope import AccessScope
 from app.domain.models.chunk_embedding import ChunkEmbedding
 from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 
 
 class RetrievalRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: AccessScope) -> None:
         self._session = session
+        self._scope = scope
 
     async def search(
         self,
@@ -42,6 +44,10 @@ class RetrievalRepository:
             .join(DocumentChunk, ChunkEmbedding.document_chunk_id == DocumentChunk.id)
             .join(Document, DocumentChunk.document_id == Document.id)
             .where(
+                # Applied before the top-K limit: only documents the caller may read are ever
+                # ranked. The optional `document_id` below narrows this further; it can never
+                # widen it.
+                self._scope.document_read_filter(Document),
                 ChunkEmbedding.embedding_model == model,
                 ChunkEmbedding.embedding_model_version == model_version,
             )

@@ -63,6 +63,10 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis
       REDIS_URL: redis://localhost:6379/0
+      # The service database role is a superuser, so the migration round-trip tests can create and
+      # drop their own throwaway databases (they never touch the `aegis` database). Locally they
+      # are opt-in; here they run, covering migrations 0005-0007 and the legacy-data assignment.
+      RUN_MIGRATION_ROUNDTRIP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3

@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.scope import AccessScope
 from app.config import Settings
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
@@ -64,6 +65,7 @@ from app.evaluation.report import (
     file_sha256,
     metric_to_summary_entry,
 )
+from app.evaluation.scope import create_evaluation_scope
 from app.rag.context.assembler import ContextAssembler
 from app.rag.retrieval.repository import RetrievalRepository
 from app.rag.retrieval.service import RetrievalService
@@ -90,7 +92,9 @@ async def run_evaluation(
     git_commit = current_git_commit()
 
     try:
-        chunk_id_map, provider, embedding_service = await _seed_corpus(session, settings, dataset)
+        chunk_id_map, provider, embedding_service, scope = await _seed_corpus(
+            session, settings, dataset
+        )
     except Exception as exc:  # noqa: BLE001 - deliberately broad: any seeding failure
         # means NO case can be evaluated, not just one.
         reason = f"could not seed/embed the synthetic corpus: {exc}"
@@ -120,7 +124,7 @@ async def run_evaluation(
             cases=[],
         )
 
-    retrieval_repository = RetrievalRepository(session)
+    retrieval_repository = RetrievalRepository(session, scope)
     strategy = VectorRetrievalStrategy(
         embedding_service=embedding_service, repository=retrieval_repository
     )
@@ -238,7 +242,7 @@ async def run_evaluation(
 
 async def _seed_corpus(
     session: AsyncSession, settings: Settings, dataset: EvalDataset
-) -> tuple[dict[str, str], LocalEmbeddingProvider, EmbeddingService]:
+) -> tuple[dict[str, str], LocalEmbeddingProvider, EmbeddingService, AccessScope]:
     """Inserts the dataset's synthetic corpus as one Document + N
     DocumentChunks + their real embeddings, all within the caller's
     session — never committed (see scripts/evaluate.py: the whole run
@@ -250,7 +254,10 @@ async def _seed_corpus(
     compared directly.
     """
     provider = LocalEmbeddingProvider(settings)
-    document_repo = DocumentRepository(session)
+    # The corpus belongs to a throwaway user created in this same (rolled-back) transaction, and
+    # retrieval is evaluated through that user's scope: the real, scoped code path.
+    scope = await create_evaluation_scope(session)
+    document_repo = DocumentRepository(session, scope)
     document = document_repo.new(
         filename=f"eval-{uuid.uuid4()}.txt",
         original_filename="evaluation-corpus.txt",
@@ -278,7 +285,7 @@ async def _seed_corpus(
     await session.flush()
 
     vectors = await provider.embed_texts([c.text for c in dataset.corpus])
-    embedding_repo = ChunkEmbeddingRepository(session)
+    embedding_repo = ChunkEmbeddingRepository(session, scope)
     await embedding_repo.add_all(
         [
             ChunkEmbedding(
@@ -299,7 +306,7 @@ async def _seed_corpus(
         settings=settings,
         provider=provider,
         documents=document_repo,
-        chunks=DocumentChunkRepository(session),
+        chunks=DocumentChunkRepository(session, scope),
         embeddings=embedding_repo,
     )
-    return chunk_id_map, provider, embedding_service
+    return chunk_id_map, provider, embedding_service, scope

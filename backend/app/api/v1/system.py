@@ -12,6 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.schemas.system import SystemStatusResponse
+from app.core.security import AdminDep
 from app.db.redis import check_redis
 from app.db.session import check_database
 from app.dependencies import SettingsDep
@@ -21,7 +22,9 @@ router = APIRouter(prefix="/system", tags=["system"])
 
 
 @router.get("/status", response_model=SystemStatusResponse)
-async def get_system_status(settings: SettingsDep) -> SystemStatusResponse:
+async def get_system_status(settings: SettingsDep, _admin: AdminDep) -> SystemStatusResponse:
+    # Administrators only: it reveals infrastructure facts (the trusted A2A agent URLs, the
+    # MCP server name, database and Redis state) that ordinary members have no need to see.
     database_ok = await check_database()
     redis_ok = await check_redis()
     return SystemStatusResponse(

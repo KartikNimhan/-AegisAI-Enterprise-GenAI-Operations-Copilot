@@ -21,6 +21,8 @@ from app.domain.enums.document_type import DocumentType
 from app.domain.models.chunk_embedding import EMBEDDING_DIMENSION, ChunkEmbedding
 from app.domain.models.document_chunk import DocumentChunk
 
+from .scoping import scope_of
+
 pytestmark = pytest.mark.integration
 
 
@@ -47,7 +49,7 @@ def _opposite_unit_vector(index: int) -> list[float]:
 
 
 async def _make_document(session: AsyncSession):
-    repo = DocumentRepository(session)
+    repo = DocumentRepository(session, scope_of(session))
     document = repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="report.txt",
@@ -97,7 +99,7 @@ def _make_embedding(
 async def test_add_all_persists_embedding_with_vector(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
     chunk = await _make_chunk(db_session, document.id, index=0)
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
 
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0))])
 
@@ -110,7 +112,7 @@ async def test_get_embedded_chunk_ids_filters_by_model_and_version(
 ) -> None:
     document = await _make_document(db_session)
     chunk = await _make_chunk(db_session, document.id, index=0)
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0), model="model-a")])
 
     same_model = await repo.get_embedded_chunk_ids([chunk.id], model="model-a", model_version="1")
@@ -126,7 +128,7 @@ async def test_count_for_document(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
     chunk_a = await _make_chunk(db_session, document.id, index=0)
     chunk_b = await _make_chunk(db_session, document.id, index=1)
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await repo.add_all(
         [
             _make_embedding(chunk_a.id, _unit_vector(0)),
@@ -140,7 +142,7 @@ async def test_count_for_document(db_session: AsyncSession) -> None:
 async def test_duplicate_chunk_model_version_is_rejected(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
     chunk = await _make_chunk(db_session, document.id, index=0)
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0))])
 
     with pytest.raises(IntegrityError):
@@ -152,7 +154,7 @@ async def test_same_chunk_can_have_embeddings_from_two_different_models(
 ) -> None:
     document = await _make_document(db_session)
     chunk = await _make_chunk(db_session, document.id, index=0)
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
 
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0), model="model-a")])
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0), model="model-b")])
@@ -170,7 +172,7 @@ async def test_similarity_search_orders_by_cosine_distance_ascending(
     orthogonal_chunk = await _make_chunk(db_session, document.id, index=2, content="orthogonal")
     opposite_chunk = await _make_chunk(db_session, document.id, index=3, content="opposite")
 
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await repo.add_all(
         [
             _make_embedding(identical_chunk.id, _unit_vector(0)),
@@ -199,7 +201,7 @@ async def test_similarity_search_only_matches_requested_model_and_version(
 ) -> None:
     document = await _make_document(db_session)
     chunk = await _make_chunk(db_session, document.id, index=0, content="only chunk")
-    repo = ChunkEmbeddingRepository(db_session)
+    repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await repo.add_all([_make_embedding(chunk.id, _unit_vector(0), model="other-model")])
 
     results = await repo.similarity_search(

@@ -12,14 +12,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.api.schemas.operations import OperationsSummaryResponse
+from app.core.security import AccessScopeDep
 from app.db.repositories.document_repository import DocumentRepository
 from app.dependencies import DBSessionDep
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
 
-def get_operations_document_repository(session: DBSessionDep) -> DocumentRepository:
-    return DocumentRepository(session)
+def get_operations_document_repository(
+    session: DBSessionDep, scope: AccessScopeDep
+) -> DocumentRepository:
+    return DocumentRepository(session, scope)
 
 
 OperationsDocumentRepositoryDep = Annotated[

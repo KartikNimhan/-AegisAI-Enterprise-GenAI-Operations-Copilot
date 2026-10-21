@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.exceptions import NotFoundError
+from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
@@ -319,6 +320,7 @@ def _to_rag_source(source: AssembledSource) -> RAGSource:
 
 def get_rag_service(
     session: DBSessionDep,
+    scope: AccessScopeDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
 ) -> RAGService:
@@ -329,7 +331,7 @@ def get_rag_service(
         context_assembler=ContextAssembler(max_context_chars=settings.rag_max_context_chars),
         prompt_builder=RAGPromptBuilder(),
         gateway=gateway,
-        conversations=ConversationRepository(session),
-        messages=MessageRepository(session),
-        documents=DocumentRepository(session),
+        conversations=ConversationRepository(session, scope),
+        messages=MessageRepository(session, scope),
+        documents=DocumentRepository(session, scope),
     )

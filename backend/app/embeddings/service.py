@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.core.exceptions import NotFoundError
+from app.core.security import AccessScopeDep
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
 from app.db.repositories.document_repository import DocumentRepository
@@ -89,8 +90,10 @@ class EmbeddingService:
         return await self._provider.embed_text(text)
 
     async def embed_document(self, document_id: uuid.UUID) -> EmbeddingJobResult:
+        # Embedding spends compute and writes vectors, so it needs management rights (the owner, or
+        # an administrator of the organization) on top of read access to the chunks it embeds.
         document = await self._documents.get(document_id)
-        if document is None:
+        if document is None or await self._documents.get_for_management(document_id) is None:
             raise NotFoundError(f"Document {document_id} not found")
         if document.status != DocumentStatus.PROCESSED:
             raise DocumentNotReadyError(
@@ -278,6 +281,7 @@ class EmbeddingService:
 
 def get_embedding_service(
     session: DBSessionDep,
+    scope: AccessScopeDep,
     settings: Annotated[Settings, Depends(get_settings)],
     provider: Annotated[EmbeddingProvider, Depends(get_local_embedding_provider)],
 ) -> EmbeddingService:
@@ -285,7 +289,7 @@ def get_embedding_service(
         session=session,
         settings=settings,
         provider=provider,
-        documents=DocumentRepository(session),
-        chunks=DocumentChunkRepository(session),
-        embeddings=ChunkEmbeddingRepository(session),
+        documents=DocumentRepository(session, scope),
+        chunks=DocumentChunkRepository(session, scope),
+        embeddings=ChunkEmbeddingRepository(session, scope),
     )

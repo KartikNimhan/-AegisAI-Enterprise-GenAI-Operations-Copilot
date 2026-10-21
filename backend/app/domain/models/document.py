@@ -12,13 +12,25 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum, Integer, String, Text, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
+from app.domain.enums.document_visibility import DocumentVisibility
 
 if TYPE_CHECKING:
     from app.domain.models.document_chunk import DocumentChunk
@@ -26,8 +38,41 @@ if TYPE_CHECKING:
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["owner_user_id", "organization_id"],
+            ["users.id", "users.organization_id"],
+            name="fk_documents_owner_in_organization",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(owner_user_id IS NULL) = (organization_id IS NULL)",
+            name="ck_documents_owner_and_organization_together",
+        ),
+        Index("ix_documents_owner_user_id_checksum", "owner_user_id", "checksum"),
+        Index("ix_documents_organization_id_visibility", "organization_id", "visibility"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    # Ownership (see app.auth.scope). Nullable only until the legacy-data backfill has run
+    # (migration 0007 then makes them NOT NULL); a row with no owner is invisible to every caller.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    visibility: Mapped[DocumentVisibility] = mapped_column(
+        Enum(
+            DocumentVisibility,
+            name="ck_documents_visibility",
+            native_enum=False,
+            length=20,
+            validate_strings=True,
+            create_constraint=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=DocumentVisibility.PRIVATE,
+        server_default=DocumentVisibility.PRIVATE.value,
+    )
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)

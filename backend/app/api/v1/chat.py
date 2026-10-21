@@ -23,6 +23,8 @@ from app.api.schemas.chat import (
     ChatCompletionStreamError,
     ChatCompletionStreamErrorDetail,
 )
+from app.api.streaming import start_stream
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 from app.services.chat_service import ChatService, get_chat_service
 
@@ -33,7 +35,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 
 
-@router.post("/completions", response_model=ChatCompletionResponse)
+@router.post("/completions", response_model=ChatCompletionResponse, dependencies=[LLM_RATE_LIMIT])
 async def create_chat_completion(
     request: ChatCompletionRequest, chat_service: ChatServiceDep
 ) -> ChatCompletionResponse:
@@ -47,7 +49,7 @@ async def create_chat_completion(
     )
 
 
-@router.post("/completions/stream")
+@router.post("/completions/stream", dependencies=[LLM_RATE_LIMIT])
 async def stream_chat_completion(
     request: ChatCompletionRequest, chat_service: ChatServiceDep
 ) -> StreamingResponse:
@@ -78,4 +80,6 @@ async def stream_chat_completion(
             )
             yield f"data: {error_event.model_dump_json()}\n\n"
 
-    return StreamingResponse(event_source(), media_type="text/event-stream")
+    # Run to the first event before the response starts, so a failure while setting the request up
+    # (an unknown or foreign conversation id) is a proper 404, not a committed 200 with no body.
+    return StreamingResponse(await start_stream(event_source()), media_type="text/event-stream")

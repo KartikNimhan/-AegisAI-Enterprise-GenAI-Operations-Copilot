@@ -19,11 +19,13 @@ from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
 from app.domain.models.document_chunk import DocumentChunk
 
+from .scoping import scope_of
+
 pytestmark = pytest.mark.integration
 
 
 async def _make_document(db_session: AsyncSession):
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     document = repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="report.txt",
@@ -40,9 +42,12 @@ async def _make_document(db_session: AsyncSession):
 def _make_chunk(
     document_id: uuid.UUID, *, checksum: str, index: int, content: str
 ) -> DocumentChunk:
+    # `checksum` is kept in the signature so the call sites read as before; chunk ids now derive
+    # from the document id.
+    del checksum
     return DocumentChunk(
         id=compute_chunk_id(
-            document_checksum=checksum, chunk_size=1000, chunk_overlap=100, chunk_index=index
+            document_id=document_id, chunk_size=1000, chunk_overlap=100, chunk_index=index
         ),
         document_id=document_id,
         chunk_index=index,
@@ -53,7 +58,7 @@ def _make_chunk(
 
 async def test_add_all_persists_chunks(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
-    repo = DocumentChunkRepository(db_session)
+    repo = DocumentChunkRepository(db_session, scope_of(db_session))
     chunks = [
         _make_chunk(document.id, checksum=document.checksum, index=0, content="first"),
         _make_chunk(document.id, checksum=document.checksum, index=1, content="second"),
@@ -68,7 +73,7 @@ async def test_add_all_persists_chunks(db_session: AsyncSession) -> None:
 
 async def test_list_by_document_orders_by_chunk_index(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
-    repo = DocumentChunkRepository(db_session)
+    repo = DocumentChunkRepository(db_session, scope_of(db_session))
     # Insert out of order to confirm the query orders by chunk_index, not insertion order.
     chunks = [
         _make_chunk(document.id, checksum=document.checksum, index=2, content="third"),
@@ -84,7 +89,7 @@ async def test_list_by_document_orders_by_chunk_index(db_session: AsyncSession) 
 
 async def test_count_by_document(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
-    repo = DocumentChunkRepository(db_session)
+    repo = DocumentChunkRepository(db_session, scope_of(db_session))
     await repo.add_all(
         [_make_chunk(document.id, checksum=document.checksum, index=0, content="only one")]
     )
@@ -96,7 +101,7 @@ async def test_duplicate_chunk_index_for_same_document_is_rejected(
     db_session: AsyncSession,
 ) -> None:
     document = await _make_document(db_session)
-    repo = DocumentChunkRepository(db_session)
+    repo = DocumentChunkRepository(db_session, scope_of(db_session))
     await repo.add_all(
         [_make_chunk(document.id, checksum=document.checksum, index=0, content="first")]
     )
@@ -109,8 +114,8 @@ async def test_duplicate_chunk_index_for_same_document_is_rejected(
 
 async def test_deleting_document_cascades_to_chunks(db_session: AsyncSession) -> None:
     document = await _make_document(db_session)
-    chunk_repo = DocumentChunkRepository(db_session)
-    document_repo = DocumentRepository(db_session)
+    chunk_repo = DocumentChunkRepository(db_session, scope_of(db_session))
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     await chunk_repo.add_all(
         [_make_chunk(document.id, checksum=document.checksum, index=0, content="x")]
     )

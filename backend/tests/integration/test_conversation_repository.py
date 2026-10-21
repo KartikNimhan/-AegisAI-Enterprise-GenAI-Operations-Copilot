@@ -16,11 +16,13 @@ from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.message_repository import MessageRepository
 from app.domain.enums.message_role import MessageRole
 
+from .scoping import scope_of
+
 pytestmark = pytest.mark.integration
 
 
 async def test_create_and_get_conversation(db_session: AsyncSession) -> None:
-    repo = ConversationRepository(db_session)
+    repo = ConversationRepository(db_session, scope_of(db_session))
 
     created = await repo.create(title="My conversation")
     fetched = await repo.get(created.id)
@@ -33,14 +35,14 @@ async def test_create_and_get_conversation(db_session: AsyncSession) -> None:
 
 
 async def test_get_returns_none_for_unknown_id(db_session: AsyncSession) -> None:
-    repo = ConversationRepository(db_session)
+    repo = ConversationRepository(db_session, scope_of(db_session))
 
     assert await repo.get(uuid.uuid4()) is None
 
 
 async def test_get_with_messages_returns_ordered_messages(db_session: AsyncSession) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation = await conversations.create(title="x")
 
     await messages.add(conversation_id=conversation.id, role=MessageRole.USER, content="first")
@@ -56,7 +58,7 @@ async def test_get_with_messages_returns_ordered_messages(db_session: AsyncSessi
 
 
 async def test_list_orders_by_most_recently_updated(db_session: AsyncSession) -> None:
-    repo = ConversationRepository(db_session)
+    repo = ConversationRepository(db_session, scope_of(db_session))
     first = await repo.create(title="first")
     second = await repo.create(title="second")
     # Windows' clock resolution can be as coarse as ~15ms, so two
@@ -78,8 +80,8 @@ async def test_list_orders_by_most_recently_updated(db_session: AsyncSession) ->
 async def test_delete_removes_conversation_and_cascades_messages(
     db_session: AsyncSession,
 ) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation = await conversations.create(title="to delete")
     await messages.add(conversation_id=conversation.id, role=MessageRole.USER, content="hi")
 
@@ -91,6 +93,6 @@ async def test_delete_removes_conversation_and_cascades_messages(
 
 
 async def test_delete_returns_false_for_unknown_id(db_session: AsyncSession) -> None:
-    repo = ConversationRepository(db_session)
+    repo = ConversationRepository(db_session, scope_of(db_session))
 
     assert await repo.delete(uuid.uuid4()) is False

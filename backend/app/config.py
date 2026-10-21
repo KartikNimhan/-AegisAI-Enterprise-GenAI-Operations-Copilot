@@ -197,6 +197,19 @@ class Settings(BaseSettings):
     # network. 0 disables the circuit breaker.
     auth_jwks_failure_cooldown_seconds: float = 5.0
 
+    # Rate limits (see app/core/rate_limit.py). Per authenticated user, in a sliding window,
+    # enforced in memory PER PROCESS (not shared between workers or replicas). A limit of 0
+    # switches that one bucket off; rate_limit_enabled=false switches all of them off. The
+    # numbers below are starting points for you to review, not recommendations.
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = 60
+    rate_limit_llm_requests: int = 30
+    rate_limit_document_uploads: int = 10
+    rate_limit_embedding_jobs: int = 5
+    # Upper bound on (bucket, user) counters held in memory; if it is reached with every entry still
+    # live the limiter fails closed (503) instead of letting requests through unmetered.
+    rate_limit_max_tracked_keys: int = 100_000
+
     @field_validator("auth_issuer", "auth_audience", "auth_jwks_url", mode="before")
     @classmethod
     def _blank_auth_value_is_unset(cls, value: object) -> object:
@@ -242,6 +255,21 @@ class Settings(BaseSettings):
             # The caller's bearer token is forwarded to these agents.
             for agent_url in self.trusted_a2a_agents:
                 _check_url("TRUSTED_A2A_AGENTS entry", agent_url, require_https=True)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_rate_limits(self) -> Self:
+        if not 1 <= self.rate_limit_window_seconds <= 86_400:
+            raise ValueError("RATE_LIMIT_WINDOW_SECONDS must be between 1 and 86400")
+        for name, value in (
+            ("RATE_LIMIT_LLM_REQUESTS", self.rate_limit_llm_requests),
+            ("RATE_LIMIT_DOCUMENT_UPLOADS", self.rate_limit_document_uploads),
+            ("RATE_LIMIT_EMBEDDING_JOBS", self.rate_limit_embedding_jobs),
+        ):
+            if not 0 <= value <= 1_000_000:
+                raise ValueError(f"{name} must be between 0 (unlimited) and 1000000")
+        if not 1_000 <= self.rate_limit_max_tracked_keys <= 10_000_000:
+            raise ValueError("RATE_LIMIT_MAX_TRACKED_KEYS must be between 1000 and 10000000")
         return self
 
     @property

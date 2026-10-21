@@ -35,6 +35,7 @@ from app.main import app
 
 from ..unit.rag.doubles import ScriptedRAGGateway
 from ..unit.services.embedding_doubles import FakeEmbeddingProvider
+from .scoping import scope_of
 
 pytestmark = pytest.mark.integration
 
@@ -58,7 +59,7 @@ def _opposite_unit_vector(index: int) -> list[float]:
 async def seeded_document(db_session: AsyncSession) -> dict[str, object]:
     """One PROCESSED document with two chunks: one embedded close to the
     query vector (`_unit_vector(0)`), one far from it (opposite)."""
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="Travel Policy.pdf",
@@ -89,7 +90,7 @@ async def seeded_document(db_session: AsyncSession) -> dict[str, object]:
     db_session.add_all([relevant_chunk, irrelevant_chunk])
     await db_session.flush()
 
-    embedding_repo = ChunkEmbeddingRepository(db_session)
+    embedding_repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await embedding_repo.add_all(
         [
             ChunkEmbedding(
@@ -187,7 +188,7 @@ async def test_rag_chat_restricts_to_a_single_document_when_filtered(
 ) -> None:
     # A second, unrelated document with a chunk embedded identically to the
     # query vector — without the document_id filter it would also qualify.
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     other_document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="Other Policy.pdf",
@@ -207,7 +208,7 @@ async def test_rag_chat_restricts_to_a_single_document_when_filtered(
     )
     db_session.add(other_chunk)
     await db_session.flush()
-    await ChunkEmbeddingRepository(db_session).add_all(
+    await ChunkEmbeddingRepository(db_session, scope_of(db_session)).add_all(
         [
             ChunkEmbedding(
                 id=uuid.uuid4(),
@@ -265,7 +266,7 @@ async def test_rag_chat_returns_no_context_when_nothing_qualifies(client: AsyncC
 async def test_malicious_retrieved_content_never_reaches_the_system_message(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="Suspicious.pdf",
@@ -288,7 +289,7 @@ async def test_malicious_retrieved_content_never_reaches_the_system_message(
     )
     db_session.add(malicious_chunk)
     await db_session.flush()
-    await ChunkEmbeddingRepository(db_session).add_all(
+    await ChunkEmbeddingRepository(db_session, scope_of(db_session)).add_all(
         [
             ChunkEmbedding(
                 id=uuid.uuid4(),

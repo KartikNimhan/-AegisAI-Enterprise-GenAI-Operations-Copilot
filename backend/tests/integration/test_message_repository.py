@@ -13,12 +13,14 @@ from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.message_repository import MessageRepository
 from app.domain.enums.message_role import MessageRole
 
+from .scoping import scope_of
+
 pytestmark = pytest.mark.integration
 
 
 async def test_add_persists_all_fields(db_session: AsyncSession) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation = await conversations.create(title="x")
 
     message = await messages.add(
@@ -42,8 +44,8 @@ async def test_add_persists_all_fields(db_session: AsyncSession) -> None:
 
 
 async def test_add_without_optional_fields_defaults_to_none(db_session: AsyncSession) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation = await conversations.create(title="x")
 
     message = await messages.add(
@@ -56,8 +58,8 @@ async def test_add_without_optional_fields_defaults_to_none(db_session: AsyncSes
 
 
 async def test_list_by_conversation_orders_by_created_at(db_session: AsyncSession) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation = await conversations.create(title="x")
 
     for content in ("one", "two", "three"):
@@ -71,8 +73,8 @@ async def test_list_by_conversation_orders_by_created_at(db_session: AsyncSessio
 async def test_list_by_conversation_only_returns_matching_conversation(
     db_session: AsyncSession,
 ) -> None:
-    conversations = ConversationRepository(db_session)
-    messages = MessageRepository(db_session)
+    conversations = ConversationRepository(db_session, scope_of(db_session))
+    messages = MessageRepository(db_session, scope_of(db_session))
     conversation_a = await conversations.create(title="a")
     conversation_b = await conversations.create(title="b")
     await messages.add(conversation_id=conversation_a.id, role=MessageRole.USER, content="in a")

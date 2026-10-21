@@ -37,6 +37,7 @@ from ..unit.agents.doubles import (
     make_tool_call_completion,
 )
 from ..unit.services.embedding_doubles import FakeEmbeddingProvider
+from .scoping import scope_of
 
 pytestmark = pytest.mark.integration
 
@@ -54,7 +55,7 @@ def _unit_vector(index: int) -> list[float]:
 async def seeded_document(db_session: AsyncSession) -> uuid.UUID:
     """One PROCESSED document with a single chunk embedded identically to
     the query vector the fake embedding provider will return."""
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="Travel Policy.pdf",
@@ -77,7 +78,7 @@ async def seeded_document(db_session: AsyncSession) -> uuid.UUID:
     db_session.add(chunk)
     await db_session.flush()
 
-    await ChunkEmbeddingRepository(db_session).add_all(
+    await ChunkEmbeddingRepository(db_session, scope_of(db_session)).add_all(
         [
             ChunkEmbedding(
                 id=uuid.uuid4(),

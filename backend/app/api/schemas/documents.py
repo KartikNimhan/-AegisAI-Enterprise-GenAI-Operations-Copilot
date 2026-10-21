@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
+from app.domain.enums.document_visibility import DocumentVisibility
 from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 
@@ -33,6 +34,7 @@ class DocumentResponse(BaseModel):
     file_size: int
     checksum: str
     status: DocumentStatus
+    visibility: DocumentVisibility = DocumentVisibility.PRIVATE
     error_message: str | None = None
     page_count: int | None = None
     character_count: int | None = None
@@ -51,6 +53,8 @@ class DocumentResponse(BaseModel):
             file_size=document.file_size,
             checksum=document.checksum,
             status=document.status,
+            # Unflushed rows have no value yet; the column's default is private.
+            visibility=document.visibility or DocumentVisibility.PRIVATE,
             error_message=document.error_message,
             page_count=document.page_count,
             character_count=document.character_count,
@@ -59,6 +63,10 @@ class DocumentResponse(BaseModel):
             updated_at=document.updated_at,
             processed_at=document.processed_at,
         )
+
+
+class DocumentVisibilityRequest(BaseModel):
+    visibility: DocumentVisibility
 
 
 class DocumentUploadResponse(DocumentResponse):

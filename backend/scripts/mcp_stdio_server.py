@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 
+from app.auth.scope import AccessScope
 from app.config import get_settings
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
@@ -38,18 +39,22 @@ from app.rag.retrieval.strategy import VectorRetrievalStrategy
 
 async def main() -> None:
     settings = get_settings()
+    # This stdio server is an operator tool run by hand on the machine that hosts the database; it
+    # has no signed-in caller, so it sees every document (as before ownership existed). It is not
+    # reachable through the API, where every repository is built from the caller's own scope.
+    scope = AccessScope.unrestricted_for_operators()
     async with AsyncSessionLocal() as session:
-        documents = DocumentRepository(session)
+        documents = DocumentRepository(session, scope)
         embedding_service = EmbeddingService(
             session=session,
             settings=settings,
             provider=get_local_embedding_provider(),
             documents=documents,
-            chunks=DocumentChunkRepository(session),
-            embeddings=ChunkEmbeddingRepository(session),
+            chunks=DocumentChunkRepository(session, scope),
+            embeddings=ChunkEmbeddingRepository(session, scope),
         )
         strategy = VectorRetrievalStrategy(
-            embedding_service=embedding_service, repository=RetrievalRepository(session)
+            embedding_service=embedding_service, repository=RetrievalRepository(session, scope)
         )
         retrieval = RetrievalService(strategy=strategy, settings=settings)
 

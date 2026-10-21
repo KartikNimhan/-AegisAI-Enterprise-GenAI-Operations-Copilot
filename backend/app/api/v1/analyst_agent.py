@@ -21,6 +21,7 @@ from app.a2a.analyst_agent import AnalystAgentService
 from app.a2a.schemas import AnalystAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
 from app.config import get_settings
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 
@@ -59,7 +60,7 @@ async def get_analyst_agent_card(request: Request) -> JSONResponse:
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
-@router.post("/tasks")
+@router.post("/tasks", dependencies=[LLM_RATE_LIMIT])
 async def submit_analyst_task(
     request: AnalystTaskRequest, agent_service: AnalystAgentServiceDep
 ) -> JSONResponse:

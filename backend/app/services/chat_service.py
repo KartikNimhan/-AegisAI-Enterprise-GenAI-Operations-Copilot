@@ -28,6 +28,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
+from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.message_repository import MessageRepository
 from app.dependencies import DBSessionDep
@@ -183,11 +184,12 @@ def _derive_title(message: str) -> str:
 
 def get_chat_service(
     session: DBSessionDep,
+    scope: AccessScopeDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
 ) -> ChatService:
     return ChatService(
         gateway=gateway,
         session=session,
-        conversations=ConversationRepository(session),
-        messages=MessageRepository(session),
+        conversations=ConversationRepository(session, scope),
+        messages=MessageRepository(session, scope),
     )

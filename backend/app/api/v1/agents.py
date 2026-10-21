@@ -20,6 +20,8 @@ from app.agents.exceptions import AgentTimeoutError
 from app.agents.service import AgentService, get_agent_service
 from app.api.schemas.agents import AgentRunRequest, AgentRunResponse
 from app.api.schemas.chat import ChatCompletionStreamError, ChatCompletionStreamErrorDetail
+from app.api.streaming import start_stream
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 
 logger = structlog.get_logger(__name__)
@@ -29,7 +31,7 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
 
 
-@router.post("/run", response_model=AgentRunResponse)
+@router.post("/run", response_model=AgentRunResponse, dependencies=[LLM_RATE_LIMIT])
 async def run_agent(request: AgentRunRequest, agent_service: AgentServiceDep) -> AgentRunResponse:
     result = await agent_service.run(
         conversation_id=request.conversation_id,
@@ -39,7 +41,7 @@ async def run_agent(request: AgentRunRequest, agent_service: AgentServiceDep) ->
     return AgentRunResponse.from_result(result)
 
 
-@router.post("/run/stream")
+@router.post("/run/stream", dependencies=[LLM_RATE_LIMIT])
 async def run_agent_stream(
     request: AgentRunRequest, agent_service: AgentServiceDep
 ) -> StreamingResponse:
@@ -61,4 +63,6 @@ async def run_agent_stream(
             )
             yield f"event: error\ndata: {error_event.model_dump_json()}\n\n"
 
-    return StreamingResponse(event_source(), media_type="text/event-stream")
+    # Run to the first event before the response starts, so a failure while setting the request up
+    # (an unknown or foreign conversation id) is a proper 404, not a committed 200 with no body.
+    return StreamingResponse(await start_stream(event_source()), media_type="text/event-stream")

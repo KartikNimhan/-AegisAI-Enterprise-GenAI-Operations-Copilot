@@ -35,6 +35,7 @@ from app.llm.schemas import ModelRole
 from app.rag.retrieval.service import RetrievalService
 
 from ..unit.rag.doubles import FakeRetrievalStrategy
+from .scoping import scope_of
 
 pytestmark = [
     pytest.mark.llm_integration,
@@ -52,14 +53,16 @@ async def test_real_model_selects_and_executes_the_calculator_tool(
     gateway = LLMGateway(settings)
     retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=settings)
     tool_registry = await build_tool_registry(
-        documents=DocumentRepository(db_session), retrieval=retrieval, settings=settings
+        documents=DocumentRepository(db_session, scope_of(db_session)),
+        retrieval=retrieval,
+        settings=settings,
     )
     service = AgentService(
         session=db_session,
         settings=settings,
         gateway=gateway,
-        conversations=ConversationRepository(db_session),
-        messages=MessageRepository(db_session),
+        conversations=ConversationRepository(db_session, scope_of(db_session)),
+        messages=MessageRepository(db_session, scope_of(db_session)),
         tool_registry=tool_registry,
     )
 
@@ -81,14 +84,16 @@ async def test_real_model_answers_directly_without_a_tool_when_none_is_needed(
     gateway = LLMGateway(settings)
     retrieval = RetrievalService(strategy=FakeRetrievalStrategy(results=[]), settings=settings)
     tool_registry = await build_tool_registry(
-        documents=DocumentRepository(db_session), retrieval=retrieval, settings=settings
+        documents=DocumentRepository(db_session, scope_of(db_session)),
+        retrieval=retrieval,
+        settings=settings,
     )
     service = AgentService(
         session=db_session,
         settings=settings,
         gateway=gateway,
-        conversations=ConversationRepository(db_session),
-        messages=MessageRepository(db_session),
+        conversations=ConversationRepository(db_session, scope_of(db_session)),
+        messages=MessageRepository(db_session, scope_of(db_session)),
         tool_registry=tool_registry,
     )
 

@@ -301,7 +301,7 @@ earlier working numbering and are not redefined by this table.
   public keys and maps them to an internal user, organization and role stored in
   the database. Every `/api/v1` route is protected by default; see
   [Authentication setup](#authentication-setup) for configuration and for what
-  is still missing (data scoping, a user admin API). Sign-in is in the React
+  is still missing (a user admin API) and for the data-isolation rules. Sign-in is in the React
   app (`frontend/web/src/auth/`) and accounts are linked with
   `scripts/provision_identity.py`.
 - **Evaluation harness** (Milestone 11, `backend/app/evaluation/`,
@@ -651,13 +651,88 @@ exactly. It only adds rows and is safe to repeat; it refuses, rather than change
 a disabled user or organization, a different role or organization for an existing
 email, or an identity already linked to someone else.
 
+**Data isolation and roles**
+
+Conversations and documents have an owner (see
+[ADR 013](docs/architecture/decisions/013-data-isolation.md)):
+
+- A **conversation** (and its messages) is private to its owner. Nobody else can read, continue
+  or delete it, administrators included.
+- A **document** (and its chunks and embeddings) is private to its owner by default. The owner can
+  share it with their organization (`PATCH /api/v1/documents/{id}/visibility` with
+  `{"visibility": "organization"}`) and take it back. Members of the organization can then read
+  and search it, but only its owner, or an **administrator** of the organization, can delete or
+  re-share it. An administrator can remove a member's private document without being able to read it.
+- Nothing is ever visible across organizations, and a resource you may not see is a `404`, the
+  same as one that does not exist.
+- `GET /api/v1/system/status` (infrastructure facts) is for administrators only.
+- `GET /api/v1/operations/summary` counts documents by status: a member's counts cover what they
+  can read; an administrator's cover their whole organization (aggregate numbers only, never titles,
+  owners or content).
+
+*Upgrading a database that already holds data* (created before ownership existed). Back it up
+first. Then, in this order:
+
+```bash
+# 1. the user who should receive the existing data must already be provisioned (above)
+docker compose run --rm migrate alembic upgrade 0006   # adds the owner columns; changes no row
+uv run python scripts/assign_legacy_data.py --email you@example.com --organization "Acme" --dry-run
+uv run python scripts/assign_legacy_data.py --email you@example.com --organization "Acme" --yes
+docker compose run --rm migrate alembic upgrade head   # makes the owner required
+```
+
+Until step 3 the old conversations and documents are invisible to everyone (not exposed).
+`alembic upgrade head` on a database that still has unassigned rows stops safely at revision 0006
+with a message saying how many; nothing is changed. A fresh database needs only `upgrade head`.
+`assign_legacy_data.py` never guesses: you must name both the user (`--email`) and the organization
+(`--organization`), both must exist, be active and agree, or nothing changes. It only fills in a
+*missing* owner and accepts `--expect-conversations N` / `--expect-documents N` to assert what it
+will assign. It has not been run against any database.
+
+**Rate limits and audit events**
+
+Expensive operations are limited per signed-in user in a sliding window (see
+[ADR 014](docs/architecture/decisions/014-rate-limits-and-audit-events.md)): language-model requests
+(chat, RAG, agents, multi-agent, and the Research/Analyst agent tasks), document uploads, and
+embedding jobs. Over the limit a request gets `429` with `Retry-After` and a generic message; it
+never reaches the service. If the limiter itself cannot enforce, the request gets `503` instead of
+being let through.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RATE_LIMIT_ENABLED` | `true` | `false` switches every limit off |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | length of the sliding window (1 to 86400) |
+| `RATE_LIMIT_LLM_REQUESTS` | `30` | model requests per user per window; `0` = unlimited |
+| `RATE_LIMIT_DOCUMENT_UPLOADS` | `10` | uploads per user per window; `0` = unlimited |
+| `RATE_LIMIT_EMBEDDING_JOBS` | `5` | embedding jobs per user per window; `0` = unlimited |
+| `RATE_LIMIT_MAX_TRACKED_KEYS` | `100000` | cap on in-memory counters (see ADR 014) |
+
+The defaults are starting points to review, not recommendations. **Counts are kept in memory per
+process**: with several workers or replicas each keeps its own, so the effective limit is
+(limit x processes). Nothing is shared through Redis. A multi-agent request uses several model
+admissions (the request itself plus each model-backed agent it calls with your own token).
+
+Security-sensitive actions (document upload, sharing, embedding request and deletion, conversation
+deletion, and every rate-limit refusal) write one structured `audit` log line naming the user,
+organization, role, resource id and outcome (`success`, `not_found`, `limited`), and never any
+content, file name, e-mail address or token. These are log lines, not a tamper-evident store.
+
+For what has and has not been verified, the per-milestone evidence, known security limitations,
+the migration order and the remaining work, see
+[docs/operations/production-readiness.md](docs/operations/production-readiness.md).
+
 **What is not available yet**
 
 - **The legacy Streamlit app has no sign-in**, so it cannot call this backend.
 - **No self-service sign-up or invitations, and no admin API for users.**
   Accounts are created with the command above.
-- **No per-user or per-organization data scoping.** Any active user can read and
-  delete all documents and conversations.
+- **Data isolation has not been run against a real database yet.** It is covered by offline tests
+  (the access rules executed as SQL, every repository query, the migrations' rendered SQL, the
+  backfill command, the HTTP error behavior). The database-backed suites that exercise it end to
+  end (`backend/tests/integration/test_data_isolation.py`, and
+  `test_ownership_migration.py` with `RUN_MIGRATION_ROUNDTRIP=1`) are written but have not been
+  executed. There is no API to manage users or roles, and `admin` has no capability beyond
+  deleting or re-sharing documents in its organization and viewing system status.
 - **Silent renewal needs refresh tokens** from your provider; without them a user
   signs in again when the access token expires.
 - **Verification status.** The sign-in flow is covered by unit tests with a mocked
@@ -968,8 +1043,9 @@ they need a live LLM) and the first part of security, **bearer-token
 authentication** and browser sign-in (Milestone 12; see [Authentication
 setup](#authentication-setup)). Not started or not finished, in rough order,
 each as its own milestone: memory beyond conversation history → the rest of
-security/RBAC (role-based authorization, per-user and
-per-organization data scoping, a user admin API) → observability/LLMOps → async workers →
+security/RBAC (further role-based permissions and a user admin API;
+ownership-based data isolation is implemented, see
+[ADR 013](docs/architecture/decisions/013-data-isolation.md)) → observability/LLMOps → async workers →
 multimodal/voice. No document in the repository defines Milestones 11-13
 beyond the code, ADR addenda and evaluation README that mention them.
 

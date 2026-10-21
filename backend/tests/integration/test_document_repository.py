@@ -17,6 +17,8 @@ from app.db.repositories.document_repository import DocumentRepository
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
 
+from .scoping import scope_of
+
 pytestmark = pytest.mark.integration
 
 
@@ -35,7 +37,7 @@ def make_document_kwargs(**overrides: object) -> dict[str, object]:
 
 
 async def test_new_and_flush_assigns_id_and_timestamps(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
 
     document = repo.new(**make_document_kwargs())
     await db_session.flush()
@@ -46,13 +48,13 @@ async def test_new_and_flush_assigns_id_and_timestamps(db_session: AsyncSession)
 
 
 async def test_get_returns_none_for_unknown_id(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
 
     assert await repo.get(uuid.uuid4()) is None
 
 
 async def test_get_by_checksum_finds_matching_document(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     checksum = uuid.uuid4().hex + uuid.uuid4().hex
     document = repo.new(**make_document_kwargs(checksum=checksum))
     await db_session.flush()
@@ -64,7 +66,7 @@ async def test_get_by_checksum_finds_matching_document(db_session: AsyncSession)
 
 
 async def test_get_by_checksum_returns_none_when_no_match(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
 
     assert await repo.get_by_checksum("0" * 64) is None
 
@@ -85,7 +87,7 @@ async def test_list_returns_total_count_and_pagination(db_session: AsyncSession)
     are among the most recent (ordered before any pre-existing document)
     and that the total count increased by exactly 3.
     """
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     _, total_before = await repo.list(limit=1, offset=0)
 
     created_documents = [repo.new(**make_document_kwargs()) for _ in range(3)]
@@ -109,7 +111,7 @@ async def test_list_returns_total_count_and_pagination(db_session: AsyncSession)
 
 
 async def test_delete_removes_document(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     document = repo.new(**make_document_kwargs())
     await db_session.flush()
 
@@ -120,7 +122,7 @@ async def test_delete_removes_document(db_session: AsyncSession) -> None:
 
 
 async def test_delete_returns_false_for_unknown_id(db_session: AsyncSession) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
 
     assert await repo.delete(uuid.uuid4()) is False
 
@@ -128,7 +130,7 @@ async def test_delete_returns_false_for_unknown_id(db_session: AsyncSession) -> 
 async def test_invalid_document_type_is_rejected_by_check_constraint(
     db_session: AsyncSession,
 ) -> None:
-    repo = DocumentRepository(db_session)
+    repo = DocumentRepository(db_session, scope_of(db_session))
     document = repo.new(**make_document_kwargs())
     await db_session.flush()
 

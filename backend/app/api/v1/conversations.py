@@ -13,6 +13,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.schemas.conversations import ConversationDetail, ConversationSummary
+from app.core import audit
+from app.core.security import PrincipalDep
 from app.services.conversation_service import ConversationService, get_conversation_service
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -40,8 +42,17 @@ async def get_conversation(
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
-    conversation_id: uuid.UUID, conversation_service: ConversationServiceDep
+    conversation_id: uuid.UUID,
+    conversation_service: ConversationServiceDep,
+    principal: PrincipalDep,
 ) -> None:
     deleted = await conversation_service.delete_conversation(conversation_id)
+    audit.record(
+        "conversation.deleted",
+        actor=principal,
+        resource_type="conversation",
+        resource_id=conversation_id,
+        outcome="success" if deleted else "not_found",
+    )
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")

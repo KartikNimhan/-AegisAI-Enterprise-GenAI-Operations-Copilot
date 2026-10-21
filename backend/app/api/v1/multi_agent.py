@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends
 
 from app.a2a.client import A2AClient
 from app.api.schemas.multi_agent import MultiAgentRunRequest, MultiAgentRunResponse
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.core.security import BearerTokenDep
 from app.dependencies import SettingsDep
 from app.llm.gateway import LLMGateway, get_llm_gateway
@@ -46,7 +47,7 @@ def get_multi_agent_orchestrator(
 OrchestratorDep = Annotated[MultiAgentOrchestrator, Depends(get_multi_agent_orchestrator)]
 
 
-@router.post("/run", response_model=MultiAgentRunResponse)
+@router.post("/run", response_model=MultiAgentRunResponse, dependencies=[LLM_RATE_LIMIT])
 async def run_multi_agent_workflow(
     request: MultiAgentRunRequest, orchestrator: OrchestratorDep
 ) -> MultiAgentRunResponse:

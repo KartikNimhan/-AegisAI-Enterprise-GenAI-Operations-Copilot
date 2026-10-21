@@ -26,6 +26,8 @@ from app.domain.models.chunk_embedding import ChunkEmbedding
 from app.domain.models.document_chunk import DocumentChunk
 from app.embeddings.providers.local import LocalEmbeddingProvider
 
+from .scoping import scope_of
+
 pytestmark = [
     pytest.mark.embedding_integration,
     pytest.mark.skipif(
@@ -49,7 +51,7 @@ async def test_semantically_related_content_is_retrieved_nearest(
     settings = get_settings()
     provider = LocalEmbeddingProvider(settings)
 
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="corpus.txt",
@@ -77,7 +79,7 @@ async def test_semantically_related_content_is_retrieved_nearest(
     vectors = await provider.embed_texts([text for _topic, text in _CORPUS])
     assert all(len(vector) == provider.dimension for vector in vectors)
 
-    embedding_repo = ChunkEmbeddingRepository(db_session)
+    embedding_repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await embedding_repo.add_all(
         [
             ChunkEmbedding(

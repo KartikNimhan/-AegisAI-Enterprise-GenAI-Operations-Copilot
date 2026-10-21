@@ -39,6 +39,7 @@ from app.rag.retrieval.strategy import VectorRetrievalStrategy
 from app.rag.service import RAGService
 
 from ..unit.rag.doubles import ScriptedRAGGateway
+from .scoping import scope_of
 
 pytestmark = [
     pytest.mark.embedding_integration,
@@ -64,7 +65,7 @@ async def test_full_pipeline_answers_using_the_real_model_and_real_pgvector(
     settings = get_settings()
     provider = LocalEmbeddingProvider(settings)
 
-    document_repo = DocumentRepository(db_session)
+    document_repo = DocumentRepository(db_session, scope_of(db_session))
     document = document_repo.new(
         filename=f"{uuid.uuid4()}.txt",
         original_filename="corpus.txt",
@@ -90,7 +91,7 @@ async def test_full_pipeline_answers_using_the_real_model_and_real_pgvector(
     await db_session.flush()
 
     vectors = await provider.embed_texts([text for _topic, text in _CORPUS])
-    embedding_repo = ChunkEmbeddingRepository(db_session)
+    embedding_repo = ChunkEmbeddingRepository(db_session, scope_of(db_session))
     await embedding_repo.add_all(
         [
             ChunkEmbedding(
@@ -111,10 +112,10 @@ async def test_full_pipeline_answers_using_the_real_model_and_real_pgvector(
         settings=settings,
         provider=provider,
         documents=document_repo,
-        chunks=DocumentChunkRepository(db_session),
+        chunks=DocumentChunkRepository(db_session, scope_of(db_session)),
         embeddings=embedding_repo,
     )
-    retrieval_repository = RetrievalRepository(db_session)
+    retrieval_repository = RetrievalRepository(db_session, scope_of(db_session))
     strategy = VectorRetrievalStrategy(
         embedding_service=embedding_service, repository=retrieval_repository
     )
@@ -133,8 +134,8 @@ async def test_full_pipeline_answers_using_the_real_model_and_real_pgvector(
         context_assembler=ContextAssembler(max_context_chars=settings.rag_max_context_chars),
         prompt_builder=RAGPromptBuilder(),
         gateway=gateway,
-        conversations=ConversationRepository(db_session),
-        messages=MessageRepository(db_session),
+        conversations=ConversationRepository(db_session, scope_of(db_session)),
+        messages=MessageRepository(db_session, scope_of(db_session)),
         documents=document_repo,
     )
 

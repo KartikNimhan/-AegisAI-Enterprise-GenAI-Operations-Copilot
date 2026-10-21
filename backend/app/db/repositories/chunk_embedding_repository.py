@@ -10,13 +10,16 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.scope import AccessScope
 from app.domain.models.chunk_embedding import ChunkEmbedding
+from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 
 
 class ChunkEmbeddingRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: AccessScope) -> None:
         self._session = session
+        self._scope = scope
 
     async def add_all(self, embeddings: list[ChunkEmbedding]) -> None:
         self._session.add_all(embeddings)
@@ -48,8 +51,10 @@ class ChunkEmbeddingRepository:
             select(func.count())
             .select_from(ChunkEmbedding)
             .join(DocumentChunk, ChunkEmbedding.document_chunk_id == DocumentChunk.id)
+            .join(Document, Document.id == DocumentChunk.document_id)
             .where(
                 DocumentChunk.document_id == document_id,
+                self._scope.document_read_filter(Document),
                 ChunkEmbedding.embedding_model == model,
                 ChunkEmbedding.embedding_model_version == model_version,
             )
@@ -67,12 +72,18 @@ class ChunkEmbeddingRepository:
         """Exact (not approximate — no index yet, see ADR 006) cosine
         distance search, filtered to one model/version: mixing vectors
         from different embedding models in one ranking would be comparing
-        incompatible vector spaces, not a meaningful similarity order."""
+        incompatible vector spaces, not a meaningful similarity order.
+
+        Only chunks of documents the caller may read are ranked; the scope is applied
+        in the query itself, before the top-K limit, so another owner's content can
+        neither appear in the results nor push the caller's own out of them."""
         distance = ChunkEmbedding.embedding.cosine_distance(query_vector).label("distance")
         stmt = (
             select(ChunkEmbedding, DocumentChunk, distance)
             .join(DocumentChunk, ChunkEmbedding.document_chunk_id == DocumentChunk.id)
+            .join(Document, Document.id == DocumentChunk.document_id)
             .where(
+                self._scope.document_read_filter(Document),
                 ChunkEmbedding.embedding_model == model,
                 ChunkEmbedding.embedding_model_version == model_version,
             )

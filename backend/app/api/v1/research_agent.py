@@ -28,6 +28,7 @@ from app.a2a.research_agent import ResearchAgentService
 from app.a2a.schemas import ResearchResult
 from app.a2a.tasks import build_task, task_to_dict
 from app.config import get_settings
+from app.core.rate_limit import LLM_RATE_LIMIT
 from app.dependencies import SettingsDep
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
@@ -78,7 +79,7 @@ async def get_research_agent_card(request: Request) -> JSONResponse:
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
-@router.post("/tasks")
+@router.post("/tasks", dependencies=[LLM_RATE_LIMIT])
 async def submit_research_task(
     request: ResearchTaskRequest, agent_service: ResearchAgentServiceDep
 ) -> JSONResponse:

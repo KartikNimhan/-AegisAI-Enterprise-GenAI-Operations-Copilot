@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.config import Settings
+from app.core.security import AccessScopeDep
 from app.dependencies import DBSessionDep, SettingsDep
 from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.rag.retrieval.repository import RetrievalRepository
@@ -63,9 +64,10 @@ class RetrievalService:
 
 def get_retrieval_service(
     session: DBSessionDep,
+    scope: AccessScopeDep,
     settings: SettingsDep,
     embedding_service: Annotated[EmbeddingService, Depends(get_embedding_service)],
 ) -> RetrievalService:
-    repository = RetrievalRepository(session)
+    repository = RetrievalRepository(session, scope)
     strategy = VectorRetrievalStrategy(embedding_service=embedding_service, repository=repository)
     return RetrievalService(strategy=strategy, settings=settings)

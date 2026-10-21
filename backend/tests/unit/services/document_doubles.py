@@ -68,6 +68,15 @@ class FakeDocumentRepository:
     async def get(self, document_id: uuid.UUID) -> Document | None:
         return self.documents.get(document_id)
 
+    async def get_for_management(self, document_id: uuid.UUID) -> Document | None:
+        return self.documents.get(document_id)
+
+    async def set_visibility(self, document_id: uuid.UUID, visibility: Any) -> Document | None:
+        document = self.documents.get(document_id)
+        if document is not None:
+            document.visibility = visibility
+        return document
+
     async def get_by_checksum(self, checksum: str) -> Document | None:
         for document in self.documents.values():
             if document.checksum == checksum:

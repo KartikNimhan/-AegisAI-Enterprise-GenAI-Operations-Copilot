@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 
+from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.dependencies import DBSessionDep
 from app.domain.models.conversation import Conversation
@@ -30,5 +31,5 @@ class ConversationService:
         return await self._conversations.delete(conversation_id)
 
 
-def get_conversation_service(session: DBSessionDep) -> ConversationService:
-    return ConversationService(ConversationRepository(session))
+def get_conversation_service(session: DBSessionDep, scope: AccessScopeDep) -> ConversationService:
+    return ConversationService(ConversationRepository(session, scope))

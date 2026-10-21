@@ -33,6 +33,7 @@ from app.auth.exceptions import (
 )
 from app.auth.jwks import JwksSigningKeyProvider
 from app.auth.principal import Principal
+from app.auth.scope import AccessScope
 from app.auth.service import IdentityService
 from app.auth.tokens import TokenVerifier
 from app.core.exceptions import AuthUnavailableError, ForbiddenError, UnauthorizedError
@@ -40,10 +41,12 @@ from app.db.repositories.identity_repository import IdentityRepository
 from app.dependencies import DBSessionDep, SettingsDep
 
 __all__ = [
+    "AccessScopeDep",
     "AdminDep",
     "BearerTokenDep",
     "Principal",
     "PrincipalDep",
+    "get_access_scope",
     "get_bearer_token",
     "get_current_principal",
     "get_identity_service",
@@ -160,6 +163,15 @@ async def get_current_principal(
 
 PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
 BearerTokenDep = Annotated[str, Depends(get_bearer_token)]
+
+
+def get_access_scope(principal: PrincipalDep) -> AccessScope:
+    """The data the authenticated caller may reach. Every business repository is built from
+    this, so there is no way to obtain one inside a request without a verified principal."""
+    return AccessScope.from_principal(principal)
+
+
+AccessScopeDep = Annotated[AccessScope, Depends(get_access_scope)]
 
 
 def require_admin(principal: PrincipalDep) -> Principal:

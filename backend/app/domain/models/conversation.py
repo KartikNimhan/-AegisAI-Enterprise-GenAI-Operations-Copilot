@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, Index, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -17,8 +17,25 @@ if TYPE_CHECKING:
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["owner_user_id", "organization_id"],
+            ["users.id", "users.organization_id"],
+            name="fk_conversations_owner_in_organization",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(owner_user_id IS NULL) = (organization_id IS NULL)",
+            name="ck_conversations_owner_and_organization_together",
+        ),
+        Index("ix_conversations_owner_user_id_updated_at", "owner_user_id", "updated_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Ownership (see app.auth.scope): a conversation belongs to one user and is private to them.
+    # Nullable only until the legacy-data backfill has run; an unowned row is invisible to everyone.
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # default= (Python-side, evaluated by the ORM) takes precedence over
     # server_default for ORM-driven inserts; server_default remains only as
