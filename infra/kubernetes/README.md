@@ -1,5 +1,9 @@
 # AegisAI — Kubernetes manifests
 
+> **Milestone numbering.** Milestone numbers in this document use the project's earlier
+> working numbering, not the [Official Project Roadmap](../../README.md#official-project-roadmap).
+> They record what was built under that numbering and are not redefined by the roadmap.
+
 A deployment **foundation**, not a managed Helm chart/operator — plain
 `kubectl apply`-able YAML, matching the project's current scale (a
 modular monolith backend + one React frontend; see

@@ -1,8 +1,12 @@
 # System Design
 
+> **Milestone numbering.** Milestone numbers in this document use the project's earlier
+> working numbering, not the [Official Project Roadmap](../../README.md#official-project-roadmap).
+> They record what was built under that numbering and are not redefined by the roadmap.
+
 This describes the system as it exists today. It intentionally does not
 describe unimplemented future capabilities beyond their reserved module
-boundaries — see the roadmap in the [README](../../README.md) and the ADRs
+boundaries — see the [README](../../README.md#implementation-history-and-remaining-work) (remaining work) and the ADRs
 in [decisions/](decisions/) for where those are headed.
 
 ## Overview
@@ -52,7 +56,7 @@ orchestrated via Docker Compose in local development.
 | `a2a/` | Agent2Agent: the Research/Document/Analyst agents and the client that reaches them. `agent_card.py` (`build_research_agent_card`/`document_agent_card`/`analyst_agent_card`, real `a2a.types.AgentCard`), `research_agent.py`/`document_agent.py`/`analyst_agent.py` (each agent's own service — `ResearchAgentService`/`DocumentAgentService`/`AnalystAgentService` — reusing `RetrievalService`/`DocumentRepository`/`CALCULATOR_TOOL`/`LLMGateway` directly), `tasks.py` (`build_generic_task`/`build_task`/`task_to_dict`, real `a2a.types.Task`/`Artifact`), `client.py` (`A2AClient`, the only way any orchestrator reaches a specialist — trusted-agent allowlist, Card validation, `submit_task`/`submit_research_task`), `exceptions.py`. Research Agent implemented in Milestone 7; Document/Analyst Agents and the generalized `submit_task` in Milestone 8. See [ADR 009](decisions/009-mcp-a2a-architecture.md)/[ADR 010](decisions/010-multi-agent-architecture.md). |
 | `multi_agent/` | Multi-agent orchestration: `orchestrator.py` (`MultiAgentOrchestrator` — route, authorize, run tier-1 agents in parallel, run the Analyst sequentially, aggregate), `router.py` (deterministic regex/keyword routing policy), `capabilities.py` (the static agent/capability registry), `policies.py` (allowed workflow transitions, the retryable-exception allowlist), `models.py` (`AgentContext`/`AgentResult`/`WorkflowResult`), `adapters.py` (per-agent A2A adapters that never raise), `aggregation.py` (`ResultAggregator`), `exceptions.py`. Implemented in Milestone 8. See [ADR 010](decisions/010-multi-agent-architecture.md). |
 | `db/` | SQLAlchemy async engine/session, Redis client management, connectivity checks used by `/health/ready`, and `repositories/` (`ConversationRepository`, `MessageRepository`, `DocumentRepository`, `DocumentChunkRepository`, `ChunkEmbeddingRepository`) — the only code that issues SQLAlchemy queries. |
-| `tools/`, `memory/`, `observability/`, `workers/` | Reserved for future milestones (see the README roadmap). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
+| `tools/`, `memory/`, `observability/`, `workers/` | Reserved for future milestones (see the [README](../../README.md#implementation-history-and-remaining-work)). Each is an empty Python package today. (Milestone 6's tool calling lives in `app.agents.tools`, not the top-level `tools/` — see that row above.) |
 
 Dependency direction is one-way: `api` → `services`/`rag`/`agents` →
 `prompts`/`llm`/`documents`/`storage`/`embeddings`/`db`. `domain/` sits

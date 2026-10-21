@@ -1,5 +1,9 @@
 # 10. Multi-Agent Orchestration: Supervisor, Specialists, and Aggregation
 
+> **Milestone numbering.** Milestone numbers in this document use the project's earlier
+> working numbering, not the [Official Project Roadmap](../../../README.md#official-project-roadmap).
+> They record what was built under that numbering and are not redefined by the roadmap.
+
 ## Status
 
 Accepted — 2026-10-07

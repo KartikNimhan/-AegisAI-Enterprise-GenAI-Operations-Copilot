@@ -14,7 +14,8 @@ cited answer. It explicitly does **not** implement LangGraph, agents, MCP,
 A2A, autonomous or multi-agent workflows, a reranker, or a second
 (hybrid/keyword) retrieval backend — this is retrieval-augmented
 *generation*, not an agentic system. Those are reserved for later
-milestones; see the README roadmap.
+milestones; see the README's
+[implementation history and remaining work](../../../README.md#implementation-history-and-remaining-work).
 
 ## Decision
 

@@ -1,5 +1,9 @@
 # AegisAI Evaluation — M11 Phase 1 + Phase 2
 
+> **Milestone numbering.** Milestone numbers in this document use the project's earlier
+> working numbering, not the [Official Project Roadmap](../../../README.md#official-project-roadmap).
+> They record what was built under that numbering and are not redefined by the roadmap.
+
 A reusable, version-controlled RAG evaluation dataset and a CLI runner
 (`scripts/evaluate.py`) that exercises the **real** retrieval pipeline
 against it, a committed baseline to compare against (Phase 2 Step 1),

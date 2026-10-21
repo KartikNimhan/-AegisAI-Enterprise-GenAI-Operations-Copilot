@@ -1,5 +1,9 @@
 # 11. Copilot UI/Dashboard: Frontend Architecture and Backend Boundary
 
+> **Milestone numbering.** Milestone numbers in this document use the project's earlier
+> working numbering, not the [Official Project Roadmap](../../../README.md#official-project-roadmap).
+> They record what was built under that numbering and are not redefined by the roadmap.
+
 ## Status
 
 Accepted — 2026-10-08

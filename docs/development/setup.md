@@ -79,8 +79,8 @@ cd frontend/streamlit
 uv run streamlit run app.py
 ```
 
-It only verifies backend connectivity in this milestone — see the README
-roadmap for what's planned.
+It only verifies backend connectivity in this milestone — see the
+[README](../../README.md#implementation-history-and-remaining-work) for what's planned.
 
 ## Running checks
 
