@@ -21,13 +21,12 @@ import structlog
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
-from app.dependencies import DBSessionDep
+from app.dependencies import DBSessionDep, SettingsDep
 from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.llm.exceptions import LLMError
@@ -359,8 +358,8 @@ def get_rag_service(
     scope: AccessScopeDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    settings: SettingsDep,
 ) -> RAGService:
-    settings = get_settings()
     return RAGService(
         session=session,
         retrieval=retrieval,

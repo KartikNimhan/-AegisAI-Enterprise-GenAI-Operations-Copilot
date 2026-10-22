@@ -226,3 +226,104 @@ describe('CopilotPage (streamed mode)', () => {
     expect(init?.signal?.aborted).toBe(true)
   })
 })
+
+describe('CopilotPage (plain chat and agent modes)', () => {
+  it('plain chat streams from the chat endpoint, with no sources', async () => {
+    const { stream, requests } = installStreamingFetch({ path: '/api/v1/chat/completions/stream' })
+    render(<CopilotPage />)
+    await userEvent.selectOptions(screen.getByLabelText(/answer mode/i), 'chat')
+
+    await ask('hello')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    stream.frame(chunk('Hi there', { is_final: true }))
+    stream.done()
+
+    expect(await screen.findByText('Hi there')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Sources')).not.toBeInTheDocument()
+    expect(requests[0].url).toContain('/api/v1/chat/completions/stream')
+  })
+
+  it('agent mode shows each tool step and then the answer, and keeps the conversation id', async () => {
+    const first = installStreamingFetch({ path: '/api/v1/agents/run/stream' })
+    render(<CopilotPage />)
+    await userEvent.selectOptions(screen.getByLabelText(/answer mode/i), 'agent')
+
+    await ask('what is 250 * 0.18?')
+    await waitFor(() => expect(first.requests).toHaveLength(1))
+    first.stream.event('tool_started', { tool_name: 'calculator' })
+    expect(await screen.findByLabelText('Tools used')).toHaveTextContent('calculator — running')
+    first.stream.event('tool_completed', { tool_name: 'calculator', success: true })
+    await waitFor(() => expect(screen.getByLabelText('Tools used')).toHaveTextContent('calculator — done'))
+    first.stream.event('answer_delta', { delta: 'It is 45.' })
+    first.stream.event('completed', { status: 'completed', conversation_id: 'agent-conv-1' })
+
+    expect(await screen.findByText('It is 45.')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByPlaceholderText(/ask the copilot/i)).toBeEnabled())
+
+    const second = installStreamingFetch({ path: '/api/v1/agents/run/stream' })
+    await ask('and double it?')
+    await waitFor(() => expect(second.requests).toHaveLength(1))
+    expect(second.requests[0].body).toEqual({ message: 'and double it?', conversation_id: 'agent-conv-1' })
+  })
+
+  it('agent mode marks a failed tool and shows a stream error with a retry', async () => {
+    const { stream, requests } = installStreamingFetch({ path: '/api/v1/agents/run/stream' })
+    render(<CopilotPage />)
+    await userEvent.selectOptions(screen.getByLabelText(/answer mode/i), 'agent')
+
+    await ask('question')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    stream.event('tool_started', { tool_name: 'search_knowledge_base' })
+    stream.event('tool_completed', { tool_name: 'search_knowledge_base', success: false })
+    stream.event('error', { error: { code: 'AgentTimeoutError', message: 'The agent took too long.' } })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The agent took too long.')
+    expect(screen.getByLabelText('Tools used')).toHaveTextContent('search_knowledge_base — failed')
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+  })
+})
+
+describe('CopilotPage (continuing a saved conversation)', () => {
+  const CONV = '33333333-3333-3333-3333-333333333333'
+
+  it('loads the saved messages and sends the next message to the same conversation', async () => {
+    const { stream, requests } = installStreamingFetch({
+      others: (url) =>
+        url.endsWith(CONV)
+          ? {
+              status: 200,
+              body: {
+                id: CONV,
+                title: 'Earlier',
+                created_at: '2026-01-01T00:00:00Z',
+                updated_at: '2026-01-01T00:00:00Z',
+                messages: [
+                  { id: 'a', role: 'user', content: 'Earlier question', created_at: '2026-01-01T00:00:00Z' },
+                  { id: 'b', role: 'assistant', content: 'Earlier answer', created_at: '2026-01-01T00:00:01Z' },
+                ],
+              },
+            }
+          : { status: 200, body: {} },
+    })
+    render(<CopilotPage initialConversationId={CONV} />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading conversation')
+    expect(await screen.findByText('Earlier answer')).toBeInTheDocument()
+    expect(screen.getByText('Earlier question')).toBeInTheDocument()
+
+    await ask('follow up')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0].body).toEqual({ message: 'follow up', conversation_id: CONV })
+    stream.done()
+  })
+
+  it('says so when the conversation cannot be opened', async () => {
+    installStreamingFetch({
+      others: () => ({ status: 404, body: { error: { code: 'not_found', message: 'Conversation not found' } } }),
+    })
+    render(<CopilotPage initialConversationId={CONV} />)
+
+    expect(await screen.findByText('Could not open that conversation')).toBeInTheDocument()
+    expect(screen.getByText('Conversation not found')).toBeInTheDocument()
+  })
+})

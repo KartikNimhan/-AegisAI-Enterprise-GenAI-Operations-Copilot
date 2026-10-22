@@ -104,11 +104,13 @@ class LLMGateway:
         )
         usage_recorded = False
         try:
-            async for chunk in self._provider.stream_complete(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+            async for chunk in self._with_deadline(
+                self._provider.stream_complete(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
             ):
                 if chunk.usage is not None and not usage_recorded:
                     # Providers report usage on the final chunk; observing it changes nothing
@@ -138,6 +140,37 @@ class LLMGateway:
                 model_role=model_role.value,
                 duration_ms=round((time.perf_counter() - start) * 1000, 2),
             )
+
+    async def _with_deadline(
+        self, stream: AsyncIterator[StreamChunk]
+    ) -> AsyncIterator[StreamChunk]:
+        """Yields from `stream`, failing with `LLMTimeoutError` once the whole stream has run for
+        `llm_stream_total_timeout_seconds`, however slowly the provider keeps it alive. The wait for
+        each chunk is bounded by what is left of the budget, and the provider stream is closed."""
+        budget = self._settings.llm_stream_total_timeout_seconds
+        deadline = time.monotonic() + budget
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTimeoutError(
+                        f"The model stream exceeded {budget:g} seconds",
+                        provider=self._provider.name,
+                    )
+                try:
+                    chunk = await asyncio.wait_for(anext(stream), timeout=remaining)
+                except StopAsyncIteration:
+                    return
+                except TimeoutError:
+                    raise LLMTimeoutError(
+                        f"The model stream exceeded {budget:g} seconds",
+                        provider=self._provider.name,
+                    ) from None
+                yield chunk
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     def _record_call_end(
         self,

@@ -47,6 +47,7 @@ class FakeSession:
 class FakeDocumentRepository:
     def __init__(self) -> None:
         self.documents: dict[uuid.UUID, Document] = {}
+        self.locked_checksums: list[str] = []
         # Strictly increasing, independent of wall-clock resolution — two
         # uploads in the same test can otherwise complete within the same
         # microsecond and make "most recent first" ordering ambiguous.
@@ -76,6 +77,9 @@ class FakeDocumentRepository:
         if document is not None:
             document.visibility = visibility
         return document
+
+    async def lock_checksum(self, checksum: str) -> None:
+        self.locked_checksums.append(checksum)
 
     async def get_by_checksum(self, checksum: str) -> Document | None:
         for document in self.documents.values():

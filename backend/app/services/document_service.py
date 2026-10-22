@@ -102,6 +102,7 @@ class DocumentService:
 
         checksum = _compute_checksum(content)
 
+        await self._documents.lock_checksum(checksum)
         existing = await self._documents.get_by_checksum(checksum)
         if existing is not None:
             logger.info(

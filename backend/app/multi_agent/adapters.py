@@ -26,7 +26,15 @@ import uuid
 import structlog
 
 from app.a2a.client import A2AClient, parse_research_result
-from app.a2a.exceptions import A2AError
+from app.a2a.exceptions import (
+    A2AConnectionError,
+    A2AError,
+    A2AInvalidCardError,
+    A2AResponseError,
+    A2ATaskFailedError,
+    A2ATimeoutError,
+    A2AUntrustedAgentError,
+)
 from app.config import Settings
 from app.multi_agent.capabilities import (
     AGENT_ANALYST,
@@ -93,7 +101,7 @@ async def call_research_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=result.error or "The research agent reported task failure",
+            error="The research agent reported task failure",
             duration_ms=duration_ms,
         )
     return AgentResult(
@@ -156,7 +164,7 @@ async def call_document_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=_status_error_message(task) or "The document agent reported task failure",
+            error="The document agent reported task failure",
             duration_ms=duration_ms,
         )
 
@@ -221,7 +229,7 @@ async def call_analyst_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=_status_error_message(task) or "The analyst agent reported task failure",
+            error="The analyst agent reported task failure",
             duration_ms=duration_ms,
         )
 
@@ -253,12 +261,47 @@ def _first_artifact_data(task: dict) -> dict | None:
     return None
 
 
-def _status_error_message(task: dict) -> str | None:
-    message = task.get("status", {}).get("message", {})
-    for part in message.get("parts", []):
-        if "text" in part:
-            return part["text"]
-    return None
+_CLIENT_ERRORS: dict[type[Exception], str] = {
+    A2AUntrustedAgentError: "The agent is not a trusted agent.",
+    A2AInvalidCardError: "The agent's identity could not be verified.",
+    A2AConnectionError: "The agent could not be reached.",
+    A2ATimeoutError: "The agent did not respond in time.",
+    A2AResponseError: "The agent returned an unusable response.",
+    A2ATaskFailedError: "The agent reported that the task failed.",
+}
+GENERIC_AGENT_ERROR = "The agent could not complete the task."
+
+
+def client_facing_error(exc: Exception) -> str:
+    """A fixed message per failure class. The exception text (which can carry hostnames, ports or
+    remote-supplied text) goes to the logs only; it never reaches an API response."""
+    return _CLIENT_ERRORS.get(type(exc), GENERIC_AGENT_ERROR)
+
+
+def unexpected_failure(
+    context: AgentContext, *, agent_name: str, capability: str, exc: Exception
+) -> AgentResult:
+    """An adapter raised something that is not an `A2AError` (a bug or a response shape nobody
+    anticipated). It becomes this one agent's failure, never the whole workflow's, and is not
+    retried."""
+    logger.warning(
+        "multi_agent.agent_failed",
+        agent=agent_name,
+        capability=capability,
+        correlation_id=context.correlation_id,
+        error_type=type(exc).__name__,
+        unexpected=True,
+    )
+    return AgentResult(
+        agent_name=agent_name,
+        capability=capability,
+        task_id=context.task_id,
+        status=STATUS_FAILED,
+        answer="",
+        error=GENERIC_AGENT_ERROR,
+        metadata={"retryable": False},
+        duration_ms=0.0,
+    )
 
 
 def _failed(
@@ -279,7 +322,7 @@ def _failed(
         task_id=context.task_id,
         status=STATUS_FAILED,
         answer="",
-        error=str(exc),
+        error=client_facing_error(exc),
         metadata={"retryable": isinstance(exc, RETRYABLE_A2A_EXCEPTIONS)},
         duration_ms=duration_ms,
     )

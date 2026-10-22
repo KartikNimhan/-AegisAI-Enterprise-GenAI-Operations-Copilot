@@ -18,6 +18,8 @@ disproportionate to one small, synchronous Research Agent.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import uuid
 from urllib.parse import SplitResult, urlsplit
@@ -31,6 +33,7 @@ from app.a2a.exceptions import (
     A2AConnectionError,
     A2AError,
     A2AInvalidCardError,
+    A2AResponseError,
     A2ATaskFailedError,
     A2ATimeoutError,
     A2AUntrustedAgentError,
@@ -73,6 +76,68 @@ def _origin(parts: SplitResult) -> tuple[str, str, int]:
     # an explicit 0 into the default), else the scheme's default.
     port = parts.port if parts.port is not None else _DEFAULT_PORTS[parts.scheme]
     return parts.scheme, parts.hostname, port
+
+
+async def _read_json(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    max_bytes: int,
+    error: type[A2AError],
+    json_payload: dict | None = None,
+    headers: dict[str, str] | None = None,
+) -> object:
+    """Sends the request and returns the decoded JSON body, reading at most `max_bytes`.
+
+    The body is consumed incrementally and abandoned as soon as it passes the cap, so a hostile or
+    broken agent cannot make this process buffer an unbounded response. A declared Content-Length
+    that is malformed or already over the cap is refused before any body is read. Every refusal is
+    `error` with fixed text; nothing from the remote body is echoed."""
+    async with client.stream(method, url, json=json_payload, headers=headers) as response:
+        response.raise_for_status()
+        declared = response.headers.get("content-length")
+        if declared is not None:
+            try:
+                declared_size = int(declared)
+            except ValueError:
+                raise error("The agent response had an invalid Content-Length") from None
+            if declared_size < 0 or declared_size > max_bytes:
+                raise error("The agent response is larger than the allowed size")
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > max_bytes:
+                raise error("The agent response is larger than the allowed size")
+    try:
+        return json.loads(bytes(body))
+    except ValueError:  # includes JSONDecodeError and UnicodeDecodeError
+        raise error("The agent response was not valid JSON") from None
+
+
+def validate_task_shape(task: object) -> dict:
+    """The structure every consumer of a task relies on, checked once at the boundary: a task is an
+    object, `status` an object with a string `state`, `artifacts` a list of objects whose `parts`
+    are lists of objects. Anything else is an `A2AResponseError`, not a stray TypeError later."""
+    if not isinstance(task, dict):
+        raise A2AResponseError("The agent returned an unusable task")
+    status = task.get("status", {})
+    if not isinstance(status, dict) or not isinstance(status.get("state", ""), str):
+        raise A2AResponseError("The agent returned an unusable task status")
+    message = status.get("message", {})
+    if not isinstance(message, dict) or not _is_object_list(message.get("parts", [])):
+        raise A2AResponseError("The agent returned an unusable task status")
+    artifacts = task.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        raise A2AResponseError("The agent returned unusable task artifacts")
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or not _is_object_list(artifact.get("parts", [])):
+            raise A2AResponseError("The agent returned unusable task artifacts")
+    return task
+
+
+def _is_object_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, dict) for item in value)
 
 
 class A2AClient:
@@ -123,17 +188,29 @@ class A2AClient:
 
         url = f"{base_url}{card_path}"
         try:
-            async with httpx.AsyncClient(
-                timeout=self._settings.a2a_client_timeout_seconds
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                card = response.json()
-        except httpx.TimeoutException as exc:
-            raise A2ATimeoutError(f"Timed out fetching agent card from {base_url}") from exc
+            async with (
+                asyncio.timeout(self._settings.a2a_total_timeout_seconds),
+                httpx.AsyncClient(timeout=self._settings.a2a_client_timeout_seconds) as client,
+            ):
+                card = await _read_json(
+                    client,
+                    "GET",
+                    url,
+                    max_bytes=self._settings.a2a_max_response_bytes,
+                    error=A2AInvalidCardError,
+                )
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            logger.warning("a2a.card_failed", base_url=base_url, reason="timeout")
+            raise A2ATimeoutError("The agent did not respond in time") from exc
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
-            raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
+            # The exception text can carry URLs and addresses: log only its type.
+            logger.warning(
+                "a2a.card_failed", base_url=base_url, reason="connection", error=type(exc).__name__
+            )
+            raise A2AConnectionError("The agent could not be reached") from exc
 
+        if not isinstance(card, dict):
+            raise A2AInvalidCardError("The agent card is not a JSON object")
         _validate_card(card, expected_name=expected_name, expected_skill_id=expected_skill_id)
         logger.info("a2a.agent_discovered", base_url=base_url, agent_name=card.get("name"))
         self._card_cache[cache_key] = card
@@ -150,7 +227,8 @@ class A2AClient:
         result = parse_research_result(task)
         if result.status != "completed":
             logger.warning("a2a.task_failed", base_url=base_url, reason="task_failed")
-            raise A2ATaskFailedError(result.error or "The remote agent reported task failure")
+            # The remote's own error text is not forwarded (it is untrusted and can name internals).
+            raise A2ATaskFailedError("The remote agent reported task failure")
         return result
 
     async def submit_task(
@@ -183,25 +261,41 @@ class A2AClient:
 
         logger.info("a2a.task_started", run_id=str(run_id), base_url=base_url)
         try:
-            async with httpx.AsyncClient(
-                timeout=self._settings.a2a_client_timeout_seconds
-            ) as client:
+            async with (
+                asyncio.timeout(self._settings.a2a_total_timeout_seconds),
+                httpx.AsyncClient(timeout=self._settings.a2a_client_timeout_seconds) as client,
+            ):
                 # httpx does not follow redirects by default, so the token is
                 # never re-sent to a redirect target; a 3xx fails raise_for_status.
-                response = await client.post(task_url, json=payload, headers=self._auth_headers())
-                response.raise_for_status()
-                task = response.json()
-        except httpx.TimeoutException as exc:
+                task = await _read_json(
+                    client,
+                    "POST",
+                    task_url,
+                    max_bytes=self._settings.a2a_max_response_bytes,
+                    error=A2AResponseError,
+                    json_payload=payload,
+                    headers=self._auth_headers(),
+                )
+        except (httpx.TimeoutException, TimeoutError) as exc:
             logger.warning("a2a.task_failed", run_id=str(run_id), reason="timeout")
-            raise A2ATimeoutError(f"Timed out submitting task to {base_url}") from exc
+            raise A2ATimeoutError("The agent did not respond in time") from exc
+        except A2AResponseError:
+            logger.warning("a2a.task_failed", run_id=str(run_id), reason="bad_response")
+            raise
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             # (`InvalidURL` is not an `HTTPError`; the URL was already validated
             # above, so this is defense in depth and never sent a request.)
-            logger.warning("a2a.task_failed", run_id=str(run_id), reason="connection")
-            raise A2AConnectionError(f"Could not reach agent at {base_url}: {exc}") from exc
+            logger.warning(
+                "a2a.task_failed",
+                run_id=str(run_id),
+                reason="connection",
+                error=type(exc).__name__,
+            )
+            raise A2AConnectionError("The agent could not be reached") from exc
 
+        validated = validate_task_shape(task)
         logger.info("a2a.task_completed", run_id=str(run_id), base_url=base_url)
-        return task
+        return validated
 
     def _auth_headers(self) -> dict[str, str] | None:
         if not self._auth_token:
@@ -258,6 +352,13 @@ def parse_research_result(task: dict) -> ResearchResult:
     is treated as a task failure, not an exception that could crash the
     orchestrator.
     """
+    try:
+        return _parse_research_result(validate_task_shape(task))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise A2AResponseError("The agent returned an unusable research result") from None
+
+
+def _parse_research_result(task: dict) -> ResearchResult:
     status = task.get("status", {})
     state = status.get("state", "")
 

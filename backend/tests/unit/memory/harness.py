@@ -27,6 +27,7 @@ from app.auth.scope import AccessScope
 from app.config import Settings
 from app.db.repositories.agent_memory_repository import AgentMemoryRepository
 from app.domain.models.agent_memory import AgentMemory
+from app.domain.models.user import User
 from app.memory.service import AgentMemoryService
 
 NOW = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
@@ -43,6 +44,8 @@ def make_engine() -> Engine:
         # PostgreSQL's char_length(), used by the table's CHECK constraint.
         dbapi_connection.create_function("char_length", 1, lambda s: len(s) if s else 0)
 
+    # `users` is only read (the owner row lock); SQLite ignores FOR UPDATE.
+    User.__table__.create(engine)  # type: ignore[attr-defined]
     AgentMemory.__table__.create(engine)  # type: ignore[attr-defined]
     return engine
 

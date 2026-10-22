@@ -5,6 +5,8 @@ Uses `ScriptedProvider` (no real Groq client/network call involved).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.config import Settings
@@ -224,3 +226,79 @@ async def test_unexpected_provider_exception_is_recorded_then_reraised() -> None
         assert 'error_type="other"' in text
     finally:
         metrics.reset(enabled=False)
+
+
+class _SlowStream(ScriptedProvider):
+    """Yields one chunk, then trickles forever (each gap far below any per-read timeout)."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.closed = False
+
+    async def stream_complete(self, **kwargs: object):
+        try:
+            yield StreamChunk(delta="first")
+            while True:
+                await asyncio.sleep(0.02)
+                yield StreamChunk(delta=".")
+        finally:
+            self.closed = True
+
+
+async def test_a_stream_that_never_finishes_hits_the_total_deadline() -> None:
+    settings = make_settings()
+    settings.llm_stream_total_timeout_seconds = 0.2
+    provider = _SlowStream()
+    gateway = LLMGateway(settings, provider=provider)
+    received: list[str] = []
+
+    with pytest.raises(LLMTimeoutError, match="exceeded"):
+        async for chunk in gateway.stream_chat_completion(
+            model_role=ModelRole.PRIMARY, messages=MESSAGES
+        ):
+            received.append(chunk.delta)
+
+    assert received[0] == "first"
+    assert provider.closed is True  # the provider stream was closed, not abandoned
+
+
+async def test_a_stalled_stream_is_cut_off_by_the_deadline_not_just_the_chunk_gap() -> None:
+    class Stalled(ScriptedProvider):
+        async def stream_complete(self, **kwargs: object):
+            yield StreamChunk(delta="a")
+            await asyncio.sleep(30)
+            yield StreamChunk(delta="never")
+
+    settings = make_settings()
+    settings.llm_stream_total_timeout_seconds = 0.2
+    gateway = LLMGateway(settings, provider=Stalled([]))
+
+    with pytest.raises(LLMTimeoutError):
+        async for _ in gateway.stream_chat_completion(
+            model_role=ModelRole.PRIMARY, messages=MESSAGES
+        ):
+            pass
+
+
+async def test_a_normal_stream_is_unaffected_by_the_deadline() -> None:
+    chunks = [StreamChunk(delta="a"), StreamChunk(delta="b", is_final=True)]
+    gateway = LLMGateway(make_settings(), provider=ScriptedProvider([chunks]))
+
+    got = [
+        c.delta
+        async for c in gateway.stream_chat_completion(
+            model_role=ModelRole.PRIMARY, messages=MESSAGES
+        )
+    ]
+
+    assert got == ["a", "b"]
+
+
+def test_the_stream_deadline_is_validated() -> None:
+    for bad in (0, -1, 100000):
+        with pytest.raises(ValueError):
+            make_settings_with(llm_stream_total_timeout_seconds=bad)
+
+
+def make_settings_with(**overrides: object) -> Settings:
+    return Settings(_env_file=None, debug=False, **overrides)  # type: ignore[call-arg,arg-type]

@@ -34,7 +34,7 @@ from app.agents.schemas import (
     STATUS_MAX_TOOL_CALLS_EXCEEDED,
     AgentState,
 )
-from app.agents.tools.base import ToolRegistry
+from app.agents.tools.base import ToolRegistry, ToolResult
 from app.agents.tools.research_delegation import RESEARCH_AGENT_TOOL_NAME
 from app.config import Settings
 from app.llm.gateway import LLMGateway
@@ -94,6 +94,22 @@ def build_agent_graph(
     return graph.compile()
 
 
+# Marker for a tool call whose arguments the model produced but that are not a JSON object. The call
+# stays in the transcript (the provider requires every tool call to be answered) and is answered
+# with a validation error instead of crashing the run or executing with guessed arguments.
+_INVALID_ARGUMENTS_KEY = "__invalid_arguments__"
+
+
+def _parse_tool_arguments(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {_INVALID_ARGUMENTS_KEY: True}
+    return parsed if isinstance(parsed, dict) else {_INVALID_ARGUMENTS_KEY: True}
+
+
 def _make_agent_node(*, gateway: LLMGateway, tool_specs: list[ToolSpec], model_role: ModelRole):
     async def agent_node(state: AgentState) -> dict:
         chat_messages = to_chat_messages(state["messages"])
@@ -105,7 +121,7 @@ def _make_agent_node(*, gateway: LLMGateway, tool_specs: list[ToolSpec], model_r
             tool_calls=[
                 {
                     "name": tool_call.name,
-                    "args": json.loads(tool_call.arguments),
+                    "args": _parse_tool_arguments(tool_call.arguments),
                     "id": tool_call.id,
                 }
                 for tool_call in (completion.tool_calls or [])
@@ -138,7 +154,14 @@ def _make_tool_node(tool_registry: ToolRegistry):
             logger.info("agent.capability_selected", tool_name=name, capability=capability)
 
             start = time.perf_counter()
-            result = await tool_registry.execute(name, json.dumps(tool_call["args"]))
+            if tool_call["args"].get(_INVALID_ARGUMENTS_KEY):
+                result = ToolResult(
+                    success=False,
+                    error="Tool arguments were not a valid JSON object",
+                    error_code="validation_error",
+                )
+            else:
+                result = await tool_registry.execute(name, json.dumps(tool_call["args"]))
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
 
             tool_call_count += 1

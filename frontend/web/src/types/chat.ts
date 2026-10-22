@@ -15,4 +15,11 @@ export interface ChatTurn {
   sources?: StreamSource[]
   /** The message this answer replies to, so a failed answer can be retried. */
   retryMessage?: string
+  /** Tools the agent used for this answer, in order (agent mode). */
+  toolSteps?: ToolStep[]
+}
+
+export interface ToolStep {
+  name: string
+  status: 'running' | 'succeeded' | 'failed'
 }

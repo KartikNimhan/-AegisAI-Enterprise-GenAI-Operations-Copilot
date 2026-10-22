@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.scope import AccessScope
@@ -63,6 +63,23 @@ class DocumentRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def lock_checksum(self, checksum: str) -> None:
+        """Serializes concurrent uploads of the same bytes by the same user (PostgreSQL
+        transaction-scoped advisory lock, released at commit/rollback). Without it two simultaneous
+        uploads both pass the duplicate check and store the file twice: `checksum` is indexed but
+        not unique (a unique index needs a data-dependent migration; see ADR 016). Other databases
+        have no such lock, so this does nothing there. Different users, or different content, never
+        wait on each other."""
+        if self._scope.user_id is None:
+            return
+        bind = self._session.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"document-upload:{self._scope.user_id}:{checksum}"},
+        )
 
     async def get_by_checksum(self, checksum: str) -> Document | None:
         """The caller's OWN oldest document with this content. Duplicate detection never

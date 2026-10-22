@@ -8,7 +8,8 @@ from collections.abc import Awaitable, Callable
 import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.observability import metrics
 
@@ -99,3 +100,76 @@ def _record(request: Request, status_code: int, seconds: float) -> None:
         metrics.record_http_request(request.method, template, status_code, seconds)
     except Exception:  # noqa: BLE001 - observability must never break a request
         logger.debug("metrics_recording_failed", exc_info=True)
+
+
+class _BodyTooLargeError(Exception):
+    pass
+
+
+class BodySizeLimitMiddleware:
+    """Refuses a non-upload request body larger than `max_body_bytes` with 413, before the
+    application parses it. Pydantic length limits only apply AFTER a whole JSON body is read into
+    memory; this bounds that read. A declared Content-Length is checked up front; for a body with no
+    (or a false) length the bytes are counted as they arrive. Multipart bodies are exempt: the
+    document upload has its own limit and reads at most that many bytes."""
+
+    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        if headers.get(b"content-type", b"").lower().startswith(b"multipart/"):
+            await self.app(scope, receive, send)
+            return
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                too_large = int(declared) > self.max_body_bytes
+            except ValueError:
+                too_large = False  # the server layer rejects a malformed length itself
+            if too_large:
+                await self._reject(scope, receive, send)
+                return
+
+        received = 0
+        started = False
+
+        async def counting_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    raise _BodyTooLargeError
+            return message
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _BodyTooLargeError:
+            if started:
+                raise  # cannot change a response already begun; the connection is cut
+            await self._reject(scope, receive, send)
+
+    async def _reject(self, scope: Scope, receive: Receive, send: Send) -> None:
+        request_id = scope.get("state", {}).get("request_id")
+        response = JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "code": "payload_too_large",
+                    "message": "The request body is too large",
+                    "request_id": request_id,
+                }
+            },
+        )
+        await response(scope, receive, send)

@@ -10,7 +10,9 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Copilot', icon: 'chat' },
+  { to: '/conversations', label: 'Conversations', icon: 'history' },
   { to: '/documents', label: 'Documents', icon: 'documents' },
+  { to: '/memory', label: 'Memory', icon: 'memory' },
   { to: '/operations', label: 'Operations', icon: 'operations' },
   { to: '/system', label: 'System Status', icon: 'status' },
 ]

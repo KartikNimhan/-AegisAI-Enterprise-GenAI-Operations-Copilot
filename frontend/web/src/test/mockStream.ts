@@ -7,6 +7,8 @@ export interface ControlledStream {
   push: (text: string) => void
   /** A well-formed data frame. */
   frame: (payload: unknown) => void
+  /** A named frame (`event: <name>`), as the agent stream sends. */
+  event: (name: string, payload: unknown) => void
   done: () => void
   /** Ends the body without `[DONE]` (a dropped connection that closes cleanly). */
   close: () => void
@@ -19,6 +21,8 @@ export interface ControlledStream {
  * AbortError, like a real fetch does. */
 export function installStreamingFetch(
   options: {
+    /** The streaming endpoint this mock serves (default: the RAG stream). */
+    path?: string
     status?: number
     errorBody?: unknown
     others?: (url: string, init?: RequestInit) => { status: number; body: unknown }
@@ -29,7 +33,7 @@ export function installStreamingFetch(
 
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString()
-    if (url.includes('/api/v1/rag/chat/stream')) {
+    if (url.includes(options.path ?? '/api/v1/rag/chat/stream')) {
       requests.push({
         url,
         body: init?.body ? JSON.parse(String(init.body)) : undefined,
@@ -74,6 +78,11 @@ export function installStreamingFetch(
   const stream: ControlledStream = {
     push: (text) => controller.enqueue(encoder.encode(text)),
     frame: (payload) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`)),
+    event: (name, payload) =>
+      controller.enqueue(encoder.encode(`event: ${name}
+data: ${JSON.stringify(payload)}
+
+`)),
     done: () => {
       controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       controller.close()

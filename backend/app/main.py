@@ -18,7 +18,7 @@ from app.api.v1.research_agent import well_known_router
 from app.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
-from app.core.middleware import CorrelationIdMiddleware
+from app.core.middleware import BodySizeLimitMiddleware, CorrelationIdMiddleware
 from app.embeddings.providers.local import get_local_embedding_provider
 from app.observability import metrics
 
@@ -73,6 +73,10 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if docs_enabled else None,
     )
 
+    # Innermost of the three, so a 413 still carries the request id and is counted in metrics.
+    application.add_middleware(
+        BodySizeLimitMiddleware, max_body_bytes=settings.max_request_body_bytes
+    )
     application.add_middleware(CorrelationIdMiddleware)
     # Required for any browser-based frontend (the React app, served from
     # its own origin/port) to call this API at all — without it the

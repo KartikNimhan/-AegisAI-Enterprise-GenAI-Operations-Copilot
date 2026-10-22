@@ -8,9 +8,22 @@ const WORKFLOW_NOTE: Record<string, string> = {
   timeout: 'This request timed out.',
 }
 
+const STEP_LABEL = { running: 'running', succeeded: 'done', failed: 'failed' } as const
+
 export function MessageBubble({ turn, onRetry }: { turn: ChatTurn; onRetry?: () => void }) {
   const isUser = turn.role === 'user'
   const waiting = turn.streaming && !turn.content
+  const toolSteps =
+    turn.toolSteps && turn.toolSteps.length > 0 ? (
+      <ul className={styles.toolSteps} aria-label="Tools used">
+        {turn.toolSteps.map((step, index) => (
+          <li key={`${step.name}-${index}`} className={styles[step.status]}>
+            {step.name}
+            <span className={styles.stepStatus}> — {STEP_LABEL[step.status]}</span>
+          </li>
+        ))}
+      </ul>
+    ) : null
 
   return (
     <div className={`${styles.row} ${isUser ? styles.userRow : styles.assistantRow}`}>
@@ -19,9 +32,12 @@ export function MessageBubble({ turn, onRetry }: { turn: ChatTurn; onRetry?: () 
         aria-busy={turn.streaming ? true : undefined}
       >
         {waiting ? (
-          <p className={styles.note} role="status">
-            Thinking…
-          </p>
+          <>
+            <p className={styles.note} role="status">
+              Thinking…
+            </p>
+            {toolSteps}
+          </>
         ) : (
           <>
             {/* Text that arrived before a failure or a stop stays visible. */}
@@ -31,6 +47,7 @@ export function MessageBubble({ turn, onRetry }: { turn: ChatTurn; onRetry?: () 
                 {turn.streaming && <span className={styles.cursor} aria-hidden="true" />}
               </p>
             )}
+            {toolSteps}
             {turn.stopped && <p className={styles.note}>Stopped.</p>}
             {turn.error && (
               <p className={styles.errorText} role="alert">

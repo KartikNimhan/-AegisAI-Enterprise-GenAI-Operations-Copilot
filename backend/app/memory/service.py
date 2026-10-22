@@ -106,6 +106,7 @@ class AgentMemoryService:
         now = self._clock()
         try:
             async with self._session.begin_nested():
+                await self._repository.lock_owner()
                 await self._repository.delete_expired(now=now)
                 existing = await self._repository.get_by_hash(digest)
                 if existing is not None:

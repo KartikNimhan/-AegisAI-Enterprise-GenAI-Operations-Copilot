@@ -11,12 +11,28 @@ tell where a given piece of text came from.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 
 from app.rag.retrieval.schemas import RetrievalResult
 
 _BLOCK_SEPARATOR = "\n\n---\n\n"
+
+# Text from a document that looks like one of OUR markers: `[SOURCE 2]`, `[/SOURCE 2]`, `[S3]`,
+# `[S1, S2]`. Left alone, a document could plant a fake source boundary in the prompt, or write
+# `[S3]` so that a model quoting it makes a citation the sanitizer would accept as valid.
+_MARKER_LOOKALIKE = re.compile(r"\[\s*/?\s*(SOURCE\s*\d+|S\d+(?:\s*,\s*S\d+)*)\s*\]", re.IGNORECASE)
+
+
+def neutralize_markers(text: str) -> str:
+    """Rewrites marker look-alikes in untrusted text as `(S3)` / `(SOURCE 2)`: still readable, but
+    no longer shaped like a source boundary or a citation. Only this exact shape is touched."""
+    return _MARKER_LOOKALIKE.sub(lambda match: f"({match.group(1)})", text)
+
+
+def _single_line(text: str) -> str:
+    return " ".join(neutralize_markers(text).split())
 
 
 @dataclass(frozen=True)
@@ -55,10 +71,10 @@ class ContextAssembler:
 
         for index, result in enumerate(results, start=1):
             source_id = f"S{index}"
-            header_lines = [f"[SOURCE {index}]", f"Document: {result.filename}"]
+            header_lines = [f"[SOURCE {index}]", f"Document: {_single_line(result.filename)}"]
             if result.page_number is not None:
                 header_lines.append(f"Page: {result.page_number}")
-            block = "\n".join(header_lines) + "\n\n" + result.content
+            block = "\n".join(header_lines) + "\n\n" + neutralize_markers(result.content)
 
             separator_len = len(_BLOCK_SEPARATOR) if blocks else 0
             if total_chars + separator_len + len(block) > self._max_context_chars:

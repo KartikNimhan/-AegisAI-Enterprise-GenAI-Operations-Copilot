@@ -32,9 +32,10 @@ from app.multi_agent.adapters import (
     call_document_agent,
     call_research_agent,
     new_task_id,
+    unexpected_failure,
 )
 from app.multi_agent.aggregation import ResultAggregator
-from app.multi_agent.capabilities import AGENT_ANALYST, agent_for_capability
+from app.multi_agent.capabilities import AGENT_ANALYST, CAPABILITY_REGISTRY, agent_for_capability
 from app.multi_agent.exceptions import (
     DelegationLimitExceededError,
     MultiAgentError,
@@ -286,12 +287,22 @@ class MultiAgentOrchestrator:
             )
         return list(results)
 
+    async def _guarded(self, adapter, agent_key: str, context: AgentContext) -> AgentResult:
+        """Runs one agent; anything unexpected it raises becomes that agent's failed result, so a
+        single bad agent cannot fail the workflow or leave its siblings orphaned by `gather`.
+        Cancellation (the workflow deadline) is not an Exception and still propagates."""
+        try:
+            return await adapter(client=self._client, settings=self._settings, context=context)
+        except Exception as exc:
+            capability = next(iter(CAPABILITY_REGISTRY[agent_key].skill_id_by_capability))
+            return unexpected_failure(context, agent_name=agent_key, capability=capability, exc=exc)
+
     async def _call_with_retry(self, agent_key: str, context: AgentContext) -> AgentResult:
         adapter = _ADAPTER_BY_AGENT[agent_key]
         logger.info(
             "multi_agent.agent_started", agent=agent_key, correlation_id=context.correlation_id
         )
-        result = await adapter(client=self._client, settings=self._settings, context=context)
+        result = await self._guarded(adapter, agent_key, context)
         retries_used = 0
         while (
             result.status in (STATUS_FAILED, STATUS_TIMEOUT)
@@ -305,7 +316,7 @@ class MultiAgentOrchestrator:
                 correlation_id=context.correlation_id,
                 attempt=retries_used,
             )
-            result = await adapter(client=self._client, settings=self._settings, context=context)
+            result = await self._guarded(adapter, agent_key, context)
 
         if result.status == STATUS_COMPLETED:
             logger.info(

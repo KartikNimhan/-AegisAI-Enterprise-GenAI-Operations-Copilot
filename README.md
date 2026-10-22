@@ -189,7 +189,8 @@ earlier working numbering and are not redefined by this table.
   ever narrow what the caller may already read). Inline `[S1]` citations are
   checked against the sources that were actually retrieved: an id that was not
   retrieved is removed from the answer (streamed and stored text too) and
-  reported in `invalid_citations`; each returned source says whether the
+  reported in `invalid_citations` (this checks that a source was *retrieved*, not
+  that it *supports* the sentence it follows; it is not fact checking); each returned source says whether the
   answer `cited` it.
 - **Agentic AI** (`backend/app/agents/`) — a single LangGraph-orchestrated
   agent with explicit, controlled tool calling: `AgentService` builds a
@@ -236,7 +237,10 @@ earlier working numbering and are not redefined by this table.
   changes to support MCP. An MCP failure degrades to "no MCP tools,"
   never a broken agent. `scripts/mcp_stdio_server.py` runs the same
   server over the standard stdio transport for an external MCP client
-  (the MCP Inspector, an IDE). See
+  (the MCP Inspector, an IDE). It has no signed-in caller, so it **refuses to
+  start** unless you choose whose data it serves: `MCP_STDIO_USER_ID` +
+  `MCP_STDIO_ORGANIZATION_ID` (one user's data, same ownership rules as the API) or
+  `MCP_STDIO_ALLOW_UNRESTRICTED=true` (every organization's data). See
   [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md).
 - **A2A interoperability** (`backend/app/a2a/`) — one small, specialized
   remote **Research Agent** (`a2a-sdk==1.2.1`), reached only through a
@@ -305,7 +309,14 @@ earlier working numbering and are not redefined by this table.
   agent-execution metrics), and **System Status**
   (`pages/SystemStatusPage.tsx`, live Postgres/Redis checks plus
   configuration facts from `GET /api/v1/system/status`, clearly
-  distinguished from each other). `src/api/` is the one place every
+  distinguished from each other), plus **Conversations**
+  (`pages/ConversationsPage.tsx`: list, read, delete with confirmation, and
+  continue a saved conversation in the Copilot via `/?conversation=<id>`) and
+  **Memory** (`pages/MemoryPage.tsx`: list, add, edit, delete and "forget
+  everything" for the notes the agent keeps, against `/api/v1/memories`). The
+  Copilot's mode selector offers a streamed document answer, plain chat, an
+  agent (each tool it uses is shown as it runs) and the multi-agent workflow.
+  `src/api/` is the one place every
   backend call is made, normalizing every failure into a single
   `BackendError`. The original Streamlit app (`frontend/streamlit/`,
   same four pages, same API contracts) is still in the repo, still
@@ -732,6 +743,10 @@ Application metrics are opt-in (see [docs/operations/observability.md](docs/oper
 |---|---|---|
 | `METRICS_ENABLED` | `false` | `true` mounts `GET /metrics` and starts recording; otherwise nothing is recorded and the route is a 404 |
 | `METRICS_TOKEN` | unset | bearer token a scraper must send; required outside local development, at least 16 characters, no leading/trailing whitespace (a trailing newline from a secret file is rejected); keep it out of version control |
+| `MAX_REQUEST_BODY_BYTES` | `16777216` | largest non-upload request body; larger gets 413 before parsing |
+| `A2A_MAX_RESPONSE_BYTES` / `A2A_TOTAL_TIMEOUT_SECONDS` | `1048576` / `30` | cap on one agent response, and a deadline for the whole exchange (on top of the per-phase timeout) |
+| `LLM_STREAM_TOTAL_TIMEOUT_SECONDS` | `300` | deadline for a whole model stream |
+| `EMBEDDING_DIMENSION` | `384` | must equal the vector column; the API refuses to start otherwise |
 | `CHAT_HISTORY_MAX_MESSAGES` / `CHAT_HISTORY_MAX_CHARS` | `40` / `24000` | conversation history replayed to the model per turn: the newest whole messages within both bounds ([ADR 016](docs/architecture/decisions/016-input-bounds-and-history-limits.md)) |
 | `DOCUMENT_MAX_UNCOMPRESSED_BYTES` / `DOCUMENT_MAX_PDF_PAGES` / `DOCUMENT_MAX_EXTRACTED_CHARS` | `67108864` / `2000` / `20000000` | what an uploaded file may expand to; exceeding one fails that document with a clear message |
 
@@ -781,8 +796,8 @@ cd frontend/web && npm install && npm run dev
 
 Then visit http://localhost:5173 — Vite's dev server, with
 `VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
-backend. The Copilot, Documents, Operations, and System Status pages are
-all in the left sidebar. The Copilot streams its answer over Server-Sent Events
+backend. The Copilot, Conversations, Documents, Memory, Operations, and System Status
+pages are all in the left sidebar. The Copilot streams its answer over Server-Sent Events
 (`POST /api/v1/rag/chat/stream`, read with `fetch` so the bearer token can be sent): text
 appears as it is written, with a Stop button, sources when it finishes, and an explicit
 "Try again" after a failure (there is no automatic reconnect: a retry would repeat a request

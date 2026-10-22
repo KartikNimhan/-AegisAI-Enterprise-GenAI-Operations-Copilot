@@ -94,3 +94,19 @@
   color: var(--text-primary);
   font-weight: 600;
 }
+
+.toolSteps {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.stepStatus {
+  color: var(--text-muted);
+}
+
+.failed {
+  color: var(--danger-500);
+}

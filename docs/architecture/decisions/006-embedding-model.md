@@ -127,6 +127,13 @@ generically here (e.g. via a `jsonb`/variable-length representation) —
 doing so would sacrifice the whole reason to use pgvector (native indexed
 vector distance operators) for a problem this milestone doesn't yet have.
 
+### Versioning and the dimension guard
+
+`EMBEDDING_MODEL_VERSION` is an operator-set label, not something the application can read from the
+model, so it is not claimed to detect changed weights. See the versioning policy in
+[ADR 017](017-open-decisions-and-residual-risks.md). The configured dimension must equal the column
+(384); `create_app` refuses to start otherwise.
+
 ### Similarity search: exact cosine distance, no index yet
 
 `ChunkEmbeddingRepository.similarity_search` uses pgvector's

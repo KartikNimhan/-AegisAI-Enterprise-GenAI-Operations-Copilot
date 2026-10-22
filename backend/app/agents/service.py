@@ -40,13 +40,13 @@ from app.agents.schemas import (
 )
 from app.agents.tools.base import ToolRegistry
 from app.agents.tools.registry import build_tool_registry
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep, BearerTokenDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
-from app.dependencies import DBSessionDep
+from app.dependencies import DBSessionDep, SettingsDep
 from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.llm.gateway import LLMGateway, get_llm_gateway
@@ -410,8 +410,8 @@ async def get_agent_service(
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
     bearer_token: BearerTokenDep,
+    settings: SettingsDep,
 ) -> AgentService:
-    settings = get_settings()
     documents = DocumentRepository(session, scope)
     # The caller's token is forwarded (only to a validated trusted destination)
     # when the agent delegates to the Research Agent over A2A.

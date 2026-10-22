@@ -29,7 +29,14 @@ class A2AConnectionError(A2AError):
 
 
 class A2ATimeoutError(A2AError):
-    """A call exceeded `Settings.a2a_client_timeout_seconds`."""
+    """A call exceeded `Settings.a2a_client_timeout_seconds` (one phase) or
+    `Settings.a2a_total_timeout_seconds` (the whole exchange)."""
+
+
+class A2AResponseError(A2AError):
+    """A response was unusable: not JSON, the wrong shape, or larger than
+    `Settings.a2a_max_response_bytes`. Permanent (never retried). The message is fixed text:
+    nothing from the remote body is ever echoed."""
 
 
 class A2ATaskFailedError(A2AError):

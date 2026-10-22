@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     safety_llm_model: str = "openai/gpt-oss-safeguard-20b"
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
+    # Largest non-upload request body the API will read (bytes). Multipart uploads are exempt (they
+    # have DOCUMENT_MAX_UPLOAD_SIZE_BYTES). The largest legitimate JSON request is analyst evidence.
+    max_request_body_bytes: int = 16 * 1024 * 1024
+    # A stream can trickle for as long as the provider keeps it open; the per-request timeout only
+    # bounds waiting for data. This bounds the whole stream (seconds), then it fails as a timeout.
+    llm_stream_total_timeout_seconds: float = 300.0
 
     # Document ingestion (Milestone 3). Stored outside backend/app on
     # purpose — see app.storage. document_allowed_types holds raw strings
@@ -176,6 +182,11 @@ class Settings(BaseSettings):
     # served by this same application (see ADR 009) — the allowlist still
     # enforces the real A2A trust boundary, not an implementation detail.
     a2a_client_timeout_seconds: float = 15.0
+    # Hard bounds on one exchange with a (trusted, but fallible) agent: the response body is read
+    # incrementally and refused above the byte cap, and the whole exchange (card + task) has a
+    # deadline on top of the per-phase HTTP timeout, which a slow-drip response would never trip.
+    a2a_max_response_bytes: int = 1_048_576
+    a2a_total_timeout_seconds: float = 30.0
     trusted_a2a_agents: list[str] = ["http://localhost:8000"]
     research_agent_name: str = "AegisAI Research Agent"
     document_agent_name: str = "AegisAI Document Agent"
@@ -304,6 +315,26 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_request_body_limit(self) -> Self:
+        if not 1_024 <= self.max_request_body_bytes <= 256 * 1024 * 1024:
+            raise ValueError("MAX_REQUEST_BODY_BYTES must be between 1024 and 268435456")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_stream_deadline(self) -> Self:
+        if not 1 <= self.llm_stream_total_timeout_seconds <= 3600:
+            raise ValueError("LLM_STREAM_TOTAL_TIMEOUT_SECONDS must be between 1 and 3600")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_a2a_limits(self) -> Self:
+        if not 1_024 <= self.a2a_max_response_bytes <= 64 * 1024 * 1024:
+            raise ValueError("A2A_MAX_RESPONSE_BYTES must be between 1024 and 67108864")
+        if not 0 < self.a2a_total_timeout_seconds <= 600:
+            raise ValueError("A2A_TOTAL_TIMEOUT_SECONDS must be greater than 0 and at most 600")
+        return self
+
+    @model_validator(mode="after")
     def _validate_document_limits(self) -> Self:
         for name, value, low, high in (
             ("DOCUMENT_MAX_UNCOMPRESSED_BYTES", self.document_max_uncompressed_bytes, 1_024, 2**32),
@@ -366,7 +397,17 @@ class Settings(BaseSettings):
         """Refuses to let the API start outside local development without
         authentication configured. Called when the application is built;
         deliberately not part of settings loading (see the note in
-        `_validate_auth_settings`)."""
+        `_validate_auth_settings`). Also refuses an embedding dimension the schema cannot store."""
+        # Imported here: the model module imports the database layer, which imports this module.
+        from app.domain.models.chunk_embedding import EMBEDDING_DIMENSION
+
+        if self.embedding_dimension != EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"EMBEDDING_DIMENSION is {self.embedding_dimension} but the chunk_embeddings "
+                f"vector column stores {EMBEDDING_DIMENSION}-dimensional vectors. Every chunk "
+                "write and every retrieval would fail. Changing the dimension needs a new "
+                "migration (a new column or table), not just a new setting."
+            )
         if (
             self.metrics_enabled
             and not self.metrics_token_configured

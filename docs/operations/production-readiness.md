@@ -72,9 +72,10 @@ Known limitations, none of which is fixed:
 
 1. **Database isolation is unproven live.** Everything above about isolation rests on offline tests
    until `test_data_isolation.py` runs against Postgres.
-2. **`backend/scripts/mcp_stdio_server.py`** runs with an explicit unrestricted scope and no
-   authentication. It is an operator tool and is not reachable through the API, but anyone who can
-   run it on the database host sees every document.
+2. **`backend/scripts/mcp_stdio_server.py`** has no authentication. It now refuses to start unless
+   `MCP_STDIO_USER_ID` + `MCP_STDIO_ORGANIZATION_ID` (one user's data) or
+   `MCP_STDIO_ALLOW_UNRESTRICTED=true` (every organization's data) is set, but whoever can run it
+   on the database host chooses the scope. It is not reachable through the API.
 3. **Rate limits are per process.** With several workers or replicas the effective limit multiplies,
    and a restart clears counts. No shared (Redis) limiter exists.
 4. **Audit lines are ordinary logs**, not tamper-evident, and nothing alerts on them.

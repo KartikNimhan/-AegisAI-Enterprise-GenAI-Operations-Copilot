@@ -17,6 +17,8 @@ export type IconName =
   | 'chevron-right'
   | 'plus'
   | 'alert'
+  | 'history'
+  | 'memory'
 
 const PATHS: Record<IconName, string> = {
   chat: 'M4 4h16v11H9l-5 4v-4H4V4z',
@@ -30,6 +32,8 @@ const PATHS: Record<IconName, string> = {
   'chevron-left': 'M14 5l-7 7 7 7',
   'chevron-right': 'M10 5l7 7-7 7',
   plus: 'M12 4v16M4 12h16',
+  history: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4',
+  memory: 'M12 3a6 6 0 0 0-3 11.2V17h6v-2.8A6 6 0 0 0 12 3zM9.5 20h5M10 17v3M14 17v3',
   alert: 'M12 8v5M12 17h.01M10.3 3.9L2.7 17a1.5 1.5 0 0 0 1.3 2.3h16a1.5 1.5 0 0 0 1.3-2.3L13.7 3.9a1.5 1.5 0 0 0-2.6 0z',
 }
 

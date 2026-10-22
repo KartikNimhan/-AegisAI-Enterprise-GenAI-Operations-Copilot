@@ -48,6 +48,19 @@ data:
   RATE_LIMIT_LLM_REQUESTS: "30"
   RATE_LIMIT_DOCUMENT_UPLOADS: "10"
   RATE_LIMIT_EMBEDDING_JOBS: "5"
+  # Input and resource bounds (ADR 016). Defaults shown; the code has the same defaults, so these
+  # lines only matter when you change them. EMBEDDING_DIMENSION is deliberately NOT here: it must
+  # equal the database column (384) and the API refuses to start otherwise.
+  CHAT_HISTORY_MAX_MESSAGES: "40"
+  CHAT_HISTORY_MAX_CHARS: "24000"
+  DOCUMENT_MAX_UNCOMPRESSED_BYTES: "67108864"
+  DOCUMENT_MAX_PDF_PAGES: "2000"
+  DOCUMENT_MAX_EXTRACTED_CHARS: "20000000"
+  MAX_REQUEST_BODY_BYTES: "16777216"
+  A2A_MAX_RESPONSE_BYTES: "1048576"
+  A2A_TOTAL_TIMEOUT_SECONDS: "30"
+  LLM_STREAM_TOTAL_TIMEOUT_SECONDS: "300"
+  AGENT_MEMORY_ENABLED: "true"
   # Metrics (docs/operations/observability.md): OFF by default. To enable, set this to "true" AND
   # add METRICS_TOKEN to the backend Secret (never to this file): the API refuses to start
   # outside local development with metrics enabled and no token.

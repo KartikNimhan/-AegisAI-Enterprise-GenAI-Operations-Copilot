@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.scope import AccessScope
 from app.domain.enums.memory_kind import MemoryKind, MemorySource
 from app.domain.models.agent_memory import AgentMemory
+from app.domain.models.user import User
 
 
 class AgentMemoryRepository:
@@ -75,6 +76,19 @@ class AgentMemoryRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    def lock_statement(self):
+        """`SELECT ... FOR UPDATE` on the owner's user row (PostgreSQL; the clause is ignored by
+        databases without row locks)."""
+        return select(User.id).where(User.id == self._scope.user_id).with_for_update()
+
+    async def lock_owner(self) -> None:
+        """Serializes this user's memory writes until the transaction ends, so two concurrent
+        requests cannot both pass the "is there room?" check. Without a row (or without row
+        locks) it does nothing: the per-user cap is then best effort, as documented."""
+        if self._scope.user_id is None:
+            return
+        await self._session.execute(self.lock_statement())
 
     async def count_active(self, *, now: datetime) -> int:
         result = await self._session.execute(

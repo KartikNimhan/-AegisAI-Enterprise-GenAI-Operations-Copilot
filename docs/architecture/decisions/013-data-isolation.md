@@ -78,8 +78,10 @@ setup", for the exact upgrade sequence.
   deletes no conversation, message or document.
 - The evaluation harness seeds its corpus under a throwaway organization and user, so it measures
   retrieval through the real scoped code path.
-- `scripts/mcp_stdio_server.py` is an operator tool with no signed-in caller and keeps seeing
-  every document; it is not reachable through the API.
+- `scripts/mcp_stdio_server.py` is an operator tool with no signed-in caller. It no longer starts
+  unrestricted by default: the operator must name one user and organization, or set
+  `MCP_STDIO_ALLOW_UNRESTRICTED=true` to knowingly serve every document. It is not reachable
+  through the API.
 - An administrator can delete, but not read, a member's private document, which is deliberate.
 
 ## Alternatives considered

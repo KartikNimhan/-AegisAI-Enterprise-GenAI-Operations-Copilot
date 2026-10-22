@@ -374,6 +374,16 @@ logging discipline).
   framing. This is a known, inherent limitation of prompt-based isolation,
   not something this milestone can fully close.
 
+## Limits of citation checking and of context delimiting
+
+- Citation validation checks that a cited id was one of the retrieved sources. It does not check
+  that the source supports the claim. Do not describe it as factual verification.
+- The `[SOURCE n]` blocks are advisory delimiters: text inside a chunk that looks like a marker is
+  rewritten (`[S3]` becomes `(S3)`), but a document can still try to instruct the model. The
+  system prompt's "context is untrusted data" rule is the defence, and it is not a guarantee.
+- See [ADR 016](016-input-bounds-and-history-limits.md) and
+  [ADR 017](017-open-decisions-and-residual-risks.md).
+
 ## Related
 
 - [002-llm-gateway.md](002-llm-gateway.md) (the `LLMGateway` this milestone
