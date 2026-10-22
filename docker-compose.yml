@@ -49,6 +49,9 @@ services:
       RATE_LIMIT_LLM_REQUESTS: ${RATE_LIMIT_LLM_REQUESTS:-30}
       RATE_LIMIT_DOCUMENT_UPLOADS: ${RATE_LIMIT_DOCUMENT_UPLOADS:-10}
       RATE_LIMIT_EMBEDDING_JOBS: ${RATE_LIMIT_EMBEDDING_JOBS:-5}
+      # Metrics are opt-in (docs/operations/observability.md); the token has no default.
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
     volumes:
       - ./data/uploads:/data/uploads
     depends_on:

@@ -61,6 +61,11 @@ the cluster database, for example through `kubectl port-forward`.
    kubectl create secret generic aegisai-postgres-secret \
      --from-literal=POSTGRES_PASSWORD='<password>'
    ```
+   To enable `/metrics` (`METRICS_ENABLED=true` in the ConfigMap), add
+   `--from-literal=METRICS_TOKEN="$(openssl rand -hex 32)"` to the backend Secret (the command
+   substitution strips the trailing newline; keep the value for your scraper's credentials). Do
+   not create it with `--from-file` or `echo` of a value ending in a newline: the API refuses to
+   start with a token that has leading or trailing whitespace.
 2. If self-hosting Postgres/Redis: `kubectl apply -f postgres-statefulset.yaml -f postgres-service.yaml -f redis-deployment.yaml -f redis-service.yaml`.
    If using managed services instead, point `DATABASE_URL`/`REDIS_URL` at
    them and skip this step.

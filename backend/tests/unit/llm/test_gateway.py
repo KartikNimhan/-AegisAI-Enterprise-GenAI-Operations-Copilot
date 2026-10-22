@@ -166,3 +166,61 @@ async def test_stream_chat_completion_propagates_provider_error() -> None:
     with pytest.raises(LLMTimeoutError):
         async for _ in gateway.stream_chat_completion(model_role=ModelRole.FAST, messages=MESSAGES):
             pass
+
+
+async def test_excessive_retry_after_is_not_slept_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("app.llm.gateway.asyncio.sleep", record_sleep)
+    provider = ScriptedProvider([LLMRateLimitError("slow down", retry_after=3600.0)])
+    gateway = LLMGateway(make_settings(llm_max_retries=3), provider=provider)
+
+    with pytest.raises(LLMRateLimitError):
+        await gateway.chat_completion(model_role=ModelRole.PRIMARY, messages=MESSAGES)
+
+    assert slept == []
+    assert len(provider.calls) == 1
+
+
+async def test_reasonable_retry_after_is_still_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("app.llm.gateway.asyncio.sleep", record_sleep)
+    ok = CompletionResponse(
+        content="ok",
+        model="m",
+        provider="fake",
+        finish_reason="stop",
+        usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+    )
+    provider = ScriptedProvider([LLMRateLimitError("wait", retry_after=10.0), ok])
+    gateway = LLMGateway(make_settings(), provider=provider)
+
+    await gateway.chat_completion(model_role=ModelRole.PRIMARY, messages=MESSAGES)
+
+    assert slept == [10.0]
+
+
+async def test_unexpected_provider_exception_is_recorded_then_reraised() -> None:
+    from app.observability import metrics
+
+    metrics.reset(enabled=True)
+    try:
+        gateway = LLMGateway(
+            make_settings(llm_max_retries=0),
+            provider=ScriptedProvider([RuntimeError("raw sdk failure")]),
+        )
+        with pytest.raises(RuntimeError, match="raw sdk failure") as raised:
+            await gateway.chat_completion(model_role=ModelRole.PRIMARY, messages=MESSAGES)
+        assert type(raised.value) is RuntimeError  # the original, not a wrapper
+        text = metrics.render().decode()
+        assert 'outcome="error"' in text
+        assert 'error_type="other"' in text
+    finally:
+        metrics.reset(enabled=False)

@@ -239,9 +239,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("unhandled_exception")
+        # The outermost ServerErrorMiddleware builds this response, outside CorrelationIdMiddleware,
+        # so the header is set here or a 500 would be the one response without it.
+        request_id = getattr(request.state, "request_id", None)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_payload(
                 request, code="internal_error", message="An unexpected error occurred"
             ),
+            headers={"X-Request-ID": request_id} if request_id else None,
         )

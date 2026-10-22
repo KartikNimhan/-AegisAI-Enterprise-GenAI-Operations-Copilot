@@ -20,7 +20,9 @@ from app.a2a.agent_card import agent_card_to_json_dict, build_analyst_agent_card
 from app.a2a.analyst_agent import AnalystAgentService
 from app.a2a.schemas import AnalystAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
+from app.api.schemas.common import EvidenceText, ExpressionText, OptionalUserMessage
 from app.config import get_settings
+from app.core.limits import MAX_EVIDENCE_ITEMS, MAX_EXPRESSIONS
 from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
@@ -35,12 +37,18 @@ ANALYST_RESULT_ARTIFACT_NAME = "analyst_result"
 
 
 class AnalystTaskRequest(BaseModel):
-    question: str = Field(default="", description="The question to analyze/synthesize.")
-    expressions: list[str] = Field(
-        default_factory=list, description="Arithmetic expressions to evaluate."
+    question: OptionalUserMessage = Field(
+        default="", description="The question to analyze/synthesize."
     )
-    evidence: list[str] = Field(
-        default_factory=list, description="Structured evidence supplied by other agents."
+    expressions: list[ExpressionText] = Field(
+        default_factory=list,
+        max_length=MAX_EXPRESSIONS,
+        description="Arithmetic expressions to evaluate.",
+    )
+    evidence: list[EvidenceText] = Field(
+        default_factory=list,
+        max_length=MAX_EVIDENCE_ITEMS,
+        description="Structured evidence supplied by other agents.",
     )
 
 

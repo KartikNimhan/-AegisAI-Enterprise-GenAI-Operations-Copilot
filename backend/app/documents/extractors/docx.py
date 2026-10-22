@@ -7,17 +7,43 @@ with `ExtractionResult`'s "at least one page" contract.
 
 from __future__ import annotations
 
+import zipfile
 from io import BytesIO
 from typing import Any
 
 from docx import Document as DocxDocument
 
 from app.documents.exceptions import ExtractionError
-from app.documents.extractors.base import DocumentExtractor, ExtractionResult
+from app.documents.extractors.base import DocumentExtractor, ExtractionLimits, ExtractionResult
+
+
+def check_zip_bounds(content: bytes, limits: ExtractionLimits) -> None:
+    """Reads only the zip directory (no decompression) and rejects a container that would expand
+    past the limits. The declared sizes are trustworthy as a ceiling: `zipfile` never yields more
+    than the declared size of an entry."""
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            entries = archive.infolist()
+    except zipfile.BadZipFile as exc:
+        raise ExtractionError(f"Could not read DOCX: {exc}") from exc
+    if len(entries) > limits.max_zip_entries:
+        raise ExtractionError(
+            f"The DOCX contains {len(entries)} parts, over the limit of {limits.max_zip_entries}"
+        )
+    expanded = sum(entry.file_size for entry in entries)
+    if expanded > limits.max_uncompressed_bytes:
+        raise ExtractionError(
+            f"The DOCX expands to {expanded} bytes, over the limit of "
+            f"{limits.max_uncompressed_bytes}"
+        )
 
 
 class DocxExtractor(DocumentExtractor):
+    def __init__(self, limits: ExtractionLimits | None = None) -> None:
+        self._limits = limits or ExtractionLimits()
+
     def extract(self, content: bytes) -> ExtractionResult:
+        check_zip_bounds(content, self._limits)
         try:
             document = DocxDocument(BytesIO(content))
             paragraphs = [p.text for p in document.paragraphs]

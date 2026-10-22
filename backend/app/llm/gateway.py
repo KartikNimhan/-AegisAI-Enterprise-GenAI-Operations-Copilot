@@ -26,11 +26,15 @@ from app.llm.exceptions import (
 )
 from app.llm.providers.groq import GroqProvider
 from app.llm.schemas import ChatMessage, CompletionResponse, ModelRole, StreamChunk, ToolSpec
+from app.observability import metrics
 
 logger = structlog.get_logger(__name__)
 
 _RETRYABLE_EXCEPTIONS = (LLMRateLimitError, LLMTimeoutError, LLMProviderUnavailableError)
 _MAX_BACKOFF_SECONDS = 8.0
+# A provider asking us to wait longer than this (Retry-After) is not retried: sleeping would hold
+# the request open for minutes. The error surfaces immediately instead.
+_MAX_RETRY_WAIT_SECONDS = 20.0
 
 T = TypeVar("T")
 
@@ -98,6 +102,7 @@ class LLMGateway:
             model=model,
             model_role=model_role.value,
         )
+        usage_recorded = False
         try:
             async for chunk in self._provider.stream_complete(
                 model=model,
@@ -105,8 +110,16 @@ class LLMGateway:
                 temperature=temperature,
                 max_tokens=max_tokens,
             ):
+                if chunk.usage is not None and not usage_recorded:
+                    # Providers report usage on the final chunk; observing it changes nothing
+                    # about the chunk or the stream.
+                    metrics.record_llm_tokens(self._provider.name, model_role.value, chunk.usage)
+                    usage_recorded = True
                 yield chunk
         except LLMError as exc:
+            self._record_call_end(
+                model_role, "stream_chat_completion", start, outcome="error", error=exc
+            )
             logger.warning(
                 "llm_stream_failed",
                 provider=self._provider.name,
@@ -117,6 +130,7 @@ class LLMGateway:
             )
             raise
         else:
+            self._record_call_end(model_role, "stream_chat_completion", start, outcome="success")
             logger.info(
                 "llm_stream_completed",
                 provider=self._provider.name,
@@ -124,6 +138,20 @@ class LLMGateway:
                 model_role=model_role.value,
                 duration_ms=round((time.perf_counter() - start) * 1000, 2),
             )
+
+    def _record_call_end(
+        self,
+        model_role: ModelRole,
+        operation: str,
+        start: float,
+        *,
+        outcome: str,
+        error: BaseException | None = None,
+    ) -> None:
+        """Metrics for one finished provider call (labels are bounded; see app.observability)."""
+        name = self._provider.name
+        metrics.record_llm_duration(name, operation, time.perf_counter() - start)
+        metrics.record_llm_request(name, model_role.value, operation, outcome, error)
 
     async def _with_retries(
         self,
@@ -142,7 +170,9 @@ class LLMGateway:
                 result = await call()
             except _RETRYABLE_EXCEPTIONS as exc:
                 duration_ms = round((time.perf_counter() - start) * 1000, 2)
-                if attempt >= max_attempts:
+                delay = _backoff_delay(attempt, exc)
+                if attempt >= max_attempts or delay > _MAX_RETRY_WAIT_SECONDS:
+                    self._record_call_end(model_role, operation, start, outcome="error", error=exc)
                     logger.warning(
                         "llm_request_failed",
                         provider=self._provider.name,
@@ -152,9 +182,13 @@ class LLMGateway:
                         attempt=attempt,
                         error_type=type(exc).__name__,
                         duration_ms=duration_ms,
+                        requested_wait_seconds=delay if delay > _MAX_RETRY_WAIT_SECONDS else None,
                     )
                     raise
-                delay = _backoff_delay(attempt, exc)
+                metrics.record_llm_duration(
+                    self._provider.name, operation, time.perf_counter() - start
+                )
+                metrics.record_llm_retry(self._provider.name, exc)
                 logger.info(
                     "llm_request_retry",
                     provider=self._provider.name,
@@ -168,7 +202,9 @@ class LLMGateway:
                 )
                 await asyncio.sleep(delay)
                 continue
-            except LLMError as exc:
+            except Exception as exc:
+                # LLMError or anything a provider SDK leaks: count the failure, then re-raise.
+                self._record_call_end(model_role, operation, start, outcome="error", error=exc)
                 logger.warning(
                     "llm_request_failed",
                     provider=self._provider.name,
@@ -181,6 +217,10 @@ class LLMGateway:
                 )
                 raise
             else:
+                self._record_call_end(model_role, operation, start, outcome="success")
+                metrics.record_llm_tokens(
+                    self._provider.name, model_role.value, getattr(result, "usage", None)
+                )
                 logger.info(
                     "llm_request_succeeded",
                     provider=self._provider.name,

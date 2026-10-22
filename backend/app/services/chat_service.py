@@ -27,6 +27,7 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
@@ -38,6 +39,7 @@ from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import CompletionResponse, ModelRole, StreamChunk
 from app.prompts.builder import PromptBuilder
+from app.prompts.history import HistoryLimits
 
 _TITLE_MAX_LENGTH = 80
 
@@ -192,4 +194,5 @@ def get_chat_service(
         session=session,
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),
+        prompt_builder=PromptBuilder(history_limits=HistoryLimits.from_settings(get_settings())),
     )

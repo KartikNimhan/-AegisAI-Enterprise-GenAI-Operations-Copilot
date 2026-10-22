@@ -27,6 +27,7 @@ from app.a2a.document_agent import DocumentAgentService
 from app.a2a.schemas import DocumentAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
 from app.config import get_settings
+from app.core.limits import MAX_TASK_ITEMS
 from app.core.security import AccessScopeDep
 from app.db.repositories.document_repository import DocumentRepository
 from app.dependencies import DBSessionDep
@@ -41,7 +42,9 @@ DOCUMENT_RESULT_ARTIFACT_NAME = "document_result"
 
 
 class DocumentTaskRequest(BaseModel):
-    document_ids: list[uuid.UUID] = Field(min_length=1, description="Document ids to look up.")
+    document_ids: list[uuid.UUID] = Field(
+        min_length=1, max_length=MAX_TASK_ITEMS, description="Document ids to look up."
+    )
 
 
 def get_document_agent_service(

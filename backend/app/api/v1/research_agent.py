@@ -27,6 +27,7 @@ from app.a2a.agent_card import agent_card_to_json_dict, build_research_agent_car
 from app.a2a.research_agent import ResearchAgentService
 from app.a2a.schemas import ResearchResult
 from app.a2a.tasks import build_task, task_to_dict
+from app.api.schemas.common import UserMessage
 from app.config import get_settings
 from app.core.rate_limit import LLM_RATE_LIMIT
 from app.dependencies import SettingsDep
@@ -45,7 +46,7 @@ router = APIRouter(prefix="/agents/research", tags=["a2a"])
 
 
 class ResearchTaskRequest(BaseModel):
-    question: str = Field(min_length=1, description="The research question.")
+    question: UserMessage = Field(description="The research question.")
 
 
 def get_research_agent_service(

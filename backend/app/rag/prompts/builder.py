@@ -12,13 +12,19 @@ from __future__ import annotations
 
 from app.domain.models.message import Message
 from app.llm.schemas import ChatMessage, ChatRole
+from app.prompts.history import HistoryLimits, select_recent_history
 from app.prompts.schemas import PromptTemplate
 from app.rag.prompts.templates import AEGIS_RAG_SYSTEM_PROMPT
 
 
 class RAGPromptBuilder:
-    def __init__(self, system_prompt: PromptTemplate = AEGIS_RAG_SYSTEM_PROMPT) -> None:
+    def __init__(
+        self,
+        system_prompt: PromptTemplate = AEGIS_RAG_SYSTEM_PROMPT,
+        history_limits: HistoryLimits | None = None,
+    ) -> None:
         self._system_prompt = system_prompt
+        self._history_limits = history_limits or HistoryLimits()
 
     def build(
         self, *, context_text: str, question: str, history: list[Message]
@@ -26,7 +32,7 @@ class RAGPromptBuilder:
         messages = [ChatMessage(role=ChatRole.SYSTEM, content=self._system_prompt.text)]
         messages.extend(
             ChatMessage(role=ChatRole(persisted.role.value), content=persisted.content)
-            for persisted in history
+            for persisted in select_recent_history(history, self._history_limits)
         )
         messages.append(
             ChatMessage(

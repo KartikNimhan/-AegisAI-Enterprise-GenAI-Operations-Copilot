@@ -18,6 +18,7 @@ ALLOWED_AUTH_ALGORITHMS = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 )
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+MIN_METRICS_TOKEN_CHARS = 16
 
 
 _UNSAFE_URL_CHARS = re.compile(r"[\x00-\x20\x7f\\]")
@@ -88,6 +89,12 @@ class Settings(BaseSettings):
     document_chunk_size: int = 1000  # characters, not tokens — see ADR 005
     document_chunk_overlap: int = 150  # characters
     document_allowed_types: list[str] = ["pdf", "docx", "txt", "markdown"]
+    # What a small file may EXPAND to (the upload limit only bounds the file itself): a DOCX's total
+    # decompressed size, a PDF's page count, and the size of the extracted text of any format.
+    # Exceeding one fails that document with a clear message (ADR 016).
+    document_max_uncompressed_bytes: int = 64 * 1024 * 1024
+    document_max_pdf_pages: int = 2_000
+    document_max_extracted_chars: int = 20_000_000
 
     # Embeddings (Milestone 4). embedding_model_version is an
     # application-level label (not the HF revision hash) — it exists so we
@@ -127,6 +134,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 8
     agent_max_tool_calls: int = 10
     agent_timeout_seconds: float = 60.0
+
+    # Conversation history replayed into prompts (ADR 016): a window of the most recent messages
+    # within BOTH limits (characters stand in for tokens). Older turns stay stored, just not sent.
+    chat_history_max_messages: int = 40
+    chat_history_max_chars: int = 24_000
 
     # Agent memory (ADR 015). Facts and preferences the agent keeps about ONE user across
     # conversations; private to that user, never shared. Every limit is a hard bound:
@@ -222,6 +234,13 @@ class Settings(BaseSettings):
     # live the limiter fails closed (503) instead of letting requests through unmetered.
     rate_limit_max_tracked_keys: int = 100_000
 
+    # Application metrics (app.observability). OFF by default: nothing is recorded or exposed.
+    # When enabled, GET /metrics is served outside the OIDC-protected API and requires
+    # `Authorization: Bearer <METRICS_TOKEN>`; outside local development the API refuses to start
+    # without a token (see `validate_for_serving`). The token is a secret: never log or return it.
+    metrics_enabled: bool = False
+    metrics_token: SecretStr | None = None
+
     @field_validator("auth_issuer", "auth_audience", "auth_jwks_url", mode="before")
     @classmethod
     def _blank_auth_value_is_unset(cls, value: object) -> object:
@@ -285,6 +304,25 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_document_limits(self) -> Self:
+        for name, value, low, high in (
+            ("DOCUMENT_MAX_UNCOMPRESSED_BYTES", self.document_max_uncompressed_bytes, 1_024, 2**32),
+            ("DOCUMENT_MAX_PDF_PAGES", self.document_max_pdf_pages, 1, 100_000),
+            ("DOCUMENT_MAX_EXTRACTED_CHARS", self.document_max_extracted_chars, 1_000, 10**9),
+        ):
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_chat_history(self) -> Self:
+        if not 1 <= self.chat_history_max_messages <= 500:
+            raise ValueError("CHAT_HISTORY_MAX_MESSAGES must be between 1 and 500")
+        if not 1_000 <= self.chat_history_max_chars <= 500_000:
+            raise ValueError("CHAT_HISTORY_MAX_CHARS must be between 1000 and 500000")
+        return self
+
+    @model_validator(mode="after")
     def _validate_agent_memory(self) -> Self:
         for name, value, low, high in (
             ("AGENT_MEMORY_MAX_ITEM_CHARS", self.agent_memory_max_item_chars, 20, 2_000),
@@ -297,6 +335,22 @@ class Settings(BaseSettings):
             if not low <= value <= high:
                 raise ValueError(f"{name} must be between {low} and {high}")
         return self
+
+    @model_validator(mode="after")
+    def _validate_metrics_token(self) -> Self:
+        # Presence is enforced when serving; a token that IS set must not be trivially guessable.
+        token = self.metrics_token.get_secret_value() if self.metrics_token else ""
+        if token and token != token.strip():
+            # A trailing newline from `kubectl create secret --from-file` or `echo` never matches
+            # what a scraper sends, so /metrics would 401 forever with no hint why.
+            raise ValueError("METRICS_TOKEN must not have leading or trailing whitespace")
+        if token and len(token) < MIN_METRICS_TOKEN_CHARS:
+            raise ValueError(f"METRICS_TOKEN must be at least {MIN_METRICS_TOKEN_CHARS} characters")
+        return self
+
+    @property
+    def metrics_token_configured(self) -> bool:
+        return self.metrics_token is not None and bool(self.metrics_token.get_secret_value())
 
     @property
     def auth_configured(self) -> bool:
@@ -313,6 +367,18 @@ class Settings(BaseSettings):
         authentication configured. Called when the application is built;
         deliberately not part of settings loading (see the note in
         `_validate_auth_settings`)."""
+        if (
+            self.metrics_enabled
+            and not self.metrics_token_configured
+            and (self.environment != "local")
+        ):
+            raise ValueError(
+                "METRICS_ENABLED is true but METRICS_TOKEN is not set: /metrics requires a "
+                f"bearer token outside local development (at least {MIN_METRICS_TOKEN_CHARS} "
+                "characters). The API refuses to start without it."
+            )
+        # In local development an enabled endpoint without a token is mounted but answers 401
+        # to everyone (it fails closed; app.main logs this once).
         if self.environment == "local" or self.auth_configured:
             return
         missing = [

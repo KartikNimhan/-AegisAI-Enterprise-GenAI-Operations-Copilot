@@ -33,6 +33,7 @@ from app.domain.models.conversation import Conversation
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole, StreamChunk
+from app.prompts.history import HistoryLimits
 from app.rag.citations import StreamingCitationSanitizer, sanitize_citations
 from app.rag.context.assembler import AssembledSource, ContextAssembler
 from app.rag.prompts.builder import RAGPromptBuilder
@@ -364,7 +365,7 @@ def get_rag_service(
         session=session,
         retrieval=retrieval,
         context_assembler=ContextAssembler(max_context_chars=settings.rag_max_context_chars),
-        prompt_builder=RAGPromptBuilder(),
+        prompt_builder=RAGPromptBuilder(history_limits=HistoryLimits.from_settings(settings)),
         gateway=gateway,
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),

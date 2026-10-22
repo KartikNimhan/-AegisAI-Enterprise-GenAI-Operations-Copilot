@@ -41,7 +41,7 @@ from app.documents.chunk_ids import compute_chunk_id
 from app.documents.chunking.base import Chunker
 from app.documents.chunking.recursive import RecursiveChunker
 from app.documents.exceptions import ExtractionError
-from app.documents.extractors import get_extractor
+from app.documents.extractors import ExtractionLimits, enforce_extracted_size, get_extractor
 from app.documents.metadata import build_document_metadata
 from app.documents.normalization import normalize_text
 from app.documents.validation import (
@@ -200,12 +200,14 @@ class DocumentService:
         await self._session.commit()
 
     async def _extract_normalize_and_chunk(self, document: Document) -> list[DocumentChunk]:
-        extractor = get_extractor(document.document_type)
+        limits = ExtractionLimits.from_settings(self._settings)
+        extractor = get_extractor(document.document_type, limits)
         raw_content = await self._storage.read(key=document.filename)
         # Extraction/chunking are CPU-bound sync code; offload so a large
         # document doesn't block the event loop.
         extraction = await asyncio.to_thread(extractor.extract, raw_content)
 
+        enforce_extracted_size(extraction, limits)
         if extraction.is_empty:
             raise ExtractionError("No extractable text content found in document")
 

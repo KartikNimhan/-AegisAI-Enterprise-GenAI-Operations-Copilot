@@ -18,6 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
+from app.core.limits import MAX_TASK_ITEMS
 from app.multi_agent.capabilities import (
     CAPABILITY_CALCULATION,
     CAPABILITY_DOCUMENT_ANALYSIS,
@@ -89,6 +90,8 @@ def _extract_document_ids(message: str) -> list[uuid.UUID]:
             continue
         if candidate not in seen:
             seen.append(candidate)
+        if len(seen) >= MAX_TASK_ITEMS:
+            break  # the document agent accepts at most this many ids per task
     return seen
 
 

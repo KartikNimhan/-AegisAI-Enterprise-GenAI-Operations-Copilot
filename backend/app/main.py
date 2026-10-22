@@ -13,12 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router, public_api_router
 from app.api.v1 import health
+from app.api.v1 import metrics as metrics_endpoint
 from app.api.v1.research_agent import well_known_router
 from app.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import CorrelationIdMiddleware
 from app.embeddings.providers.local import get_local_embedding_provider
+from app.observability import metrics
 
 settings = get_settings()
 configure_logging(settings)
@@ -89,6 +91,19 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     # Unversioned: liveness/readiness probes, and the A2A well-known Agent
     # Card path (a fixed protocol convention, not an AegisAI API path),
     # are conventionally not versioned.
+    # Metrics are opt-in: nothing is recorded, and /metrics does not exist (404), unless enabled.
+    # The endpoint sits outside the OIDC-protected API and has its own bearer-token guard.
+    metrics.configure(enabled=settings.metrics_enabled)
+    application.state.metrics_settings = settings
+    if settings.metrics_enabled:
+        if not settings.metrics_token_configured:
+            logger.error(
+                "metrics.token_not_configured",
+                detail="METRICS_ENABLED is true but METRICS_TOKEN is unset: /metrics answers "
+                "401 to every request until a token is set (local development only; other "
+                "environments refuse to start)",
+            )
+        application.include_router(metrics_endpoint.router)
     application.include_router(health.router)
     application.include_router(well_known_router)
     # Versioned routes: the three public Agent Cards, then everything else

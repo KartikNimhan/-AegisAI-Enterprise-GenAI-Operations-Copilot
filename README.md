@@ -726,6 +726,15 @@ being let through.
 | `RATE_LIMIT_EMBEDDING_JOBS` | `5` | embedding jobs per user per window; `0` = unlimited |
 | `RATE_LIMIT_MAX_TRACKED_KEYS` | `100000` | cap on in-memory counters (see ADR 014) |
 
+Application metrics are opt-in (see [docs/operations/observability.md](docs/operations/observability.md)):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `METRICS_ENABLED` | `false` | `true` mounts `GET /metrics` and starts recording; otherwise nothing is recorded and the route is a 404 |
+| `METRICS_TOKEN` | unset | bearer token a scraper must send; required outside local development, at least 16 characters, no leading/trailing whitespace (a trailing newline from a secret file is rejected); keep it out of version control |
+| `CHAT_HISTORY_MAX_MESSAGES` / `CHAT_HISTORY_MAX_CHARS` | `40` / `24000` | conversation history replayed to the model per turn: the newest whole messages within both bounds ([ADR 016](docs/architecture/decisions/016-input-bounds-and-history-limits.md)) |
+| `DOCUMENT_MAX_UNCOMPRESSED_BYTES` / `DOCUMENT_MAX_PDF_PAGES` / `DOCUMENT_MAX_EXTRACTED_CHARS` | `67108864` / `2000` / `20000000` | what an uploaded file may expand to; exceeding one fails that document with a clear message |
+
 The defaults are starting points to review, not recommendations. **Counts are kept in memory per
 process**: with several workers or replicas each keeps its own, so the effective limit is
 (limit x processes). Nothing is shared through Redis. A multi-agent request uses several model

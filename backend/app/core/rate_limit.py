@@ -47,6 +47,7 @@ from app.core import audit
 from app.core.exceptions import AppError, ServiceUnavailableError
 from app.core.security import PrincipalDep
 from app.dependencies import SettingsDep
+from app.observability import metrics
 
 logger = structlog.get_logger(__name__)
 
@@ -164,6 +165,7 @@ def rate_limited(bucket: RateLimitBucket) -> Callable[..., Awaitable[None]]:
             retry_after = limiter.check(bucket, str(principal.user_id))
         except Exception as exc:  # noqa: BLE001 - fail closed on ANY limiter failure
             logger.error("rate_limit.unavailable", bucket=bucket.value, error=type(exc).__name__)
+            metrics.record_rate_limiter_unavailable(bucket.value)
             raise ServiceUnavailableError() from exc
         if retry_after is not None:
             audit.record(
@@ -173,6 +175,7 @@ def rate_limited(bucket: RateLimitBucket) -> Callable[..., Awaitable[None]]:
                 resource_id=bucket.value,
                 outcome="limited",
             )
+            metrics.record_rate_limit_refusal(bucket.value)
             raise RateLimitedError(retry_after)
 
     return dependency

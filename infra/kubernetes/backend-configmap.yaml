@@ -48,3 +48,7 @@ data:
   RATE_LIMIT_LLM_REQUESTS: "30"
   RATE_LIMIT_DOCUMENT_UPLOADS: "10"
   RATE_LIMIT_EMBEDDING_JOBS: "5"
+  # Metrics (docs/operations/observability.md): OFF by default. To enable, set this to "true" AND
+  # add METRICS_TOKEN to the backend Secret (never to this file): the API refuses to start
+  # outside local development with metrics enabled and no token.
+  METRICS_ENABLED: "false"

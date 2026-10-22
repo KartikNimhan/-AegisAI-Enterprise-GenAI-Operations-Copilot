@@ -52,6 +52,7 @@ from app.domain.models.conversation import Conversation
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole
 from app.memory.service import AgentMemoryService, build_memory_service, format_for_prompt
+from app.prompts.history import HistoryLimits
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
 
 logger = structlog.get_logger(__name__)
@@ -97,7 +98,7 @@ class AgentService:
         initial_messages: list[BaseMessage] = [
             SystemMessage(content=AEGIS_AGENT_SYSTEM_PROMPT.text),
             *([SystemMessage(content=notes)] if notes else []),
-            *history_to_langchain_messages(history),
+            *history_to_langchain_messages(history, HistoryLimits.from_settings(self._settings)),
             HumanMessage(content=message),
         ]
 

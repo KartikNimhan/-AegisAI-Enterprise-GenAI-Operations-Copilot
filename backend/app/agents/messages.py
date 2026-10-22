@@ -21,6 +21,7 @@ from langchain_core.messages import (
 from app.domain.enums.message_role import MessageRole
 from app.domain.models.message import Message
 from app.llm.schemas import ChatMessage, ChatRole, ToolCall
+from app.prompts.history import HistoryLimits, select_recent_history
 
 
 def to_chat_messages(messages: list[BaseMessage]) -> list[ChatMessage]:
@@ -66,16 +67,19 @@ def _text(message: BaseMessage) -> str:
     return content if isinstance(content, str) else str(content)
 
 
-def history_to_langchain_messages(history: list[Message]) -> list[BaseMessage]:
+def history_to_langchain_messages(
+    history: list[Message], limits: HistoryLimits | None = None
+) -> list[BaseMessage]:
     """Converts persisted conversation history (user/assistant turns only
     — see `app.domain.enums.message_role.MessageRole`, which has no TOOL
     value) into the graph's initial message list. Mirrors
     `app.prompts.builder.PromptBuilder`'s identical history-mapping, kept
     separate because it targets LangChain message types, not
-    `app.llm.schemas.ChatMessage`.
+    `app.llm.schemas.ChatMessage`. Only the recent window within `limits` is replayed
+    (`app.prompts.history`).
     """
     converted: list[BaseMessage] = []
-    for persisted in history:
+    for persisted in select_recent_history(history, limits):
         if persisted.role == MessageRole.USER:
             converted.append(HumanMessage(content=persisted.content))
         elif persisted.role == MessageRole.ASSISTANT:

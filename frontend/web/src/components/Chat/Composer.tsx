@@ -3,6 +3,9 @@ import type { KeyboardEvent } from 'react'
 import { Icon } from '../Icon'
 import styles from './Composer.module.css'
 
+// Mirrors MAX_MESSAGE_CHARS in backend/app/core/limits.py; the API answers 422 above it.
+const MAX_MESSAGE_CHARS = 32_000
+
 export function Composer({
   onSend,
   disabled,
@@ -36,6 +39,7 @@ export function Composer({
         onKeyDown={handleKeyDown}
         disabled={disabled}
         rows={1}
+        maxLength={MAX_MESSAGE_CHARS}
         aria-label="Message"
       />
       <button

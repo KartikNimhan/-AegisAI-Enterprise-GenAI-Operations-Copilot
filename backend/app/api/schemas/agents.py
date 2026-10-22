@@ -13,11 +13,12 @@ import uuid
 from pydantic import BaseModel, Field
 
 from app.agents.schemas import AgentRunResult, AgentSource, ToolUsageSummary
+from app.api.schemas.common import UserMessage
 from app.llm.schemas import ModelRole
 
 
 class AgentRunRequest(BaseModel):
-    message: str = Field(min_length=1, description="The user's request.")
+    message: UserMessage = Field(description="The user's request.")
     conversation_id: uuid.UUID | None = Field(
         default=None, description="Existing conversation to continue. Omit to start a new one."
     )
