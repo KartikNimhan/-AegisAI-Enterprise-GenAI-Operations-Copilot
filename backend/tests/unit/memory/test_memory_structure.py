@@ -215,3 +215,17 @@ def test_the_default_limits_are_valid_and_bounded() -> None:
     assert settings.agent_memory_enabled is True
     assert settings.agent_memory_max_item_chars <= 2000  # the database CHECK's ceiling
     assert settings.agent_memory_max_recalled * settings.agent_memory_max_item_chars >= 1
+
+
+def test_running_alembic_in_process_does_not_disable_the_applications_loggers() -> None:
+    """Regression: env.py's logging config used to disable every existing logger, so any test
+    that rendered migration SQL silenced logging (and the multi-agent observability test, which
+    reads captured log records) for every test that ran after it."""
+    import logging
+
+    logger = logging.getLogger("app.multi_agent.orchestrator")
+    logger.disabled = False
+
+    _sql("up", "0007:0008")
+
+    assert logger.disabled is False
