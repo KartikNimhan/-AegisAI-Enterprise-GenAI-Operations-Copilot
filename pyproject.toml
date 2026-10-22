@@ -34,7 +34,7 @@ dependencies = [
     "pgvector>=0.3",
     "langgraph>=1.2.12",
     "mcp>=2.3.0",
-    "a2a-sdk>=1.2.1",
+    "a2a-sdk>=1.2.3",
     "pyjwt[crypto]>=2.15.1",
     # Application metrics (app.observability): a dedicated registry, no default collectors.
     "prometheus-client>=0.20",
