@@ -32,7 +32,7 @@ dependencies = [
     # why this project never needs the CUDA build.
     "torch",
     "pgvector>=0.3",
-    "langgraph>=1.2.12",
+    "langgraph>=1.2.16",
     "mcp>=2.3.0",
     "a2a-sdk>=1.2.1",
     "pyjwt[crypto]>=2.15.1",
