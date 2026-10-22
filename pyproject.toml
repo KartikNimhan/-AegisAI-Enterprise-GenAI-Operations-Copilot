@@ -43,7 +43,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
-    "ruff>=0.7",
+    "ruff>=0.17.1",
     "pyright>=1.1.385",
 ]
 frontend = [
