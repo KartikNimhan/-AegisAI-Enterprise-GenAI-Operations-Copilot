@@ -1,8 +1,13 @@
 name: Security scanning
 
 # REPORTING ONLY (first stage). Nothing here fails a build: the baseline findings have not been
-# reviewed yet, so no blocking threshold exists. Every scan writes a JSON/SARIF file that is kept
-# as a build artifact and summarised on the run page. See docs/operations/security-scanning.md.
+# reviewed yet, so no blocking threshold exists. Every scan writes a report that is kept as a build
+# artifact and summarised on the run page.
+#
+# A green run is NOT a clean result. Each job records how its scanner ended (exit status files, step
+# outcomes) and the summary step tells apart: a complete scan with findings, a complete scan with
+# none, skipped/unaudited items, a missing or invalid report, and a scanner that failed. See
+# docs/operations/security-scanning.md.
 
 on:
   pull_request:
@@ -26,9 +31,18 @@ concurrency:
 env:
   UV_VERSION: "0.11.2"
   PIP_AUDIT_VERSION: "2.10.1"
+  # An export with fewer pinned packages than this is treated as an INVALID audit, not a clean one
+  # (uv.lock pins well over a hundred).
+  MIN_PACKAGES: "20"
   GITLEAKS_VERSION: "8.30.1"
   # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's published checksums file.
   GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  # Trivy binary, set explicitly (the action's default is older). Reviewed against the advisories
+  # published for aquasecurity/trivy: CVE-2026-33634 (supply-chain compromise of 0.69.4-0.69.6, so
+  # this must not be one of those), CVE-2026-54448 (fixed 0.71.0), CVE-2026-55092 (fixed 0.71.1),
+  # CVE-2026-63328 (fixed 0.72.0). v0.74.0 is an immutable GitHub release newer than all of them.
+  # Dependabot does not track this value: review it when you review the scan results.
+  TRIVY_VERSION: "v0.74.0"
 
 jobs:
   python-audit:
@@ -41,45 +55,132 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
       - run: uv python install 3.12
-      - name: Export the locked requirements
-        # `uv.lock` is the baseline. Option lines (index URLs) are dropped: pip-audit only needs
-        # name==version pairs, and the CPU-only torch index is not PyPI.
+      - name: Export the locked requirements and audit them (reporting only)
+        # `shell: bash` is explicit so the step runs with `-o pipefail`. Each requirement set leaves
+        # a status file: export-failed | too-few:<n> | ok:<n>; an audited set also leaves the
+        # pip-audit exit status. pip-audit exits 0 (no vulnerabilities) or 1 (vulnerabilities, but
+        # also some errors), so the exit code alone is never trusted: the summary cross-checks it
+        # against the report. --no-deps/--disable-pip audit exactly the pinned set (nothing is
+        # resolved or installed). Option lines (index URLs) are dropped: only name==version matters,
+        # and the CPU-only torch index is not PyPI.
+        shell: bash
         run: |
-          uv export --frozen --no-hashes --no-emit-project --no-dev --format requirements-txt | grep -v '^-' > requirements-runtime.txt
-          uv export --frozen --no-hashes --no-emit-project --all-groups --format requirements-txt | grep -v '^-' > requirements-all-groups.txt
-          wc -l requirements-runtime.txt requirements-all-groups.txt
-      - name: Audit (reporting only)
-        # --no-deps/--disable-pip: audit exactly the pinned set, do not resolve or install anything.
-        # A package pip-audit cannot find on PyPI (for example the +cpu torch build) is reported as
-        # skipped, not as safe.
-        run: |
+          set -o pipefail
           for set in runtime all-groups; do
-            uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit -r "requirements-${set}.txt" --no-deps --disable-pip --progress-spinner off -f json -o "pip-audit-${set}.json" || true
+            if [ "$set" = runtime ]; then groups="--no-dev"; else groups="--all-groups"; fi
+            status="requirements-${set}.status"
+            if ! uv export --frozen --no-hashes --no-emit-project $groups --format requirements-txt > "requirements-${set}.raw"; then
+              echo "export-failed" > "$status"
+              continue
+            fi
+            grep -v '^-' "requirements-${set}.raw" > "requirements-${set}.txt" || true
+            count=$(grep -cE '^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^]]*\])?==' "requirements-${set}.txt" || true)
+            if [ "${count:-0}" -lt "$MIN_PACKAGES" ]; then
+              echo "too-few:${count:-0}" > "$status"
+              continue
+            fi
+            echo "ok:${count}" > "$status"
+            code=0
+            uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit -r "requirements-${set}.txt" --no-deps --disable-pip --progress-spinner off -f json -o "pip-audit-${set}.json" || code=$?
+            echo "$code" > "pip-audit-${set}.exit"
           done
-          ls -l pip-audit-*.json || true
       - name: Summarise
         if: always()
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
-          import json
-          print("## Python dependency audit (reporting only)")
-          for name in ("runtime", "all-groups"):
-              path = f"pip-audit-{name}.json"
+          python3 - <<'PY'
+          import json, os
+
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+
+
+          def say(line=""):
+              print(line, file=out)
+
+
+          def warn(message):
+              print(f"::warning title=Python dependency audit::{message}")
+
+
+          def read(path):
               try:
-                  data = json.load(open(path))
+                  with open(path, encoding="utf-8") as handle:
+                      return handle.read().strip()
+              except OSError:
+                  return None
+
+
+          def invalid(name, reason):
+              say(f"- `{name}`: **INVALID AUDIT, NOT a clean result.** {reason}")
+              warn(f"{name}: {reason}")
+
+
+          def summarise(name):
+              status = read(f"requirements-{name}.status")
+              if status is None or status.startswith("export-failed"):
+                  return invalid(name, "The locked requirements could not be exported, so nothing was audited.")
+              if not status.startswith("ok:"):
+                  count = status.split(":", 1)[-1]
+                  return invalid(name, f"Only {count} pinned packages were exported (expected at least {os.environ.get('MIN_PACKAGES', '?')}); the export is incomplete or empty.")
+              exported = int(status.split(":", 1)[1])
+              code_text = read(f"pip-audit-{name}.exit")
+              if code_text is None:
+                  return invalid(name, "pip-audit did not run.")
+              if code_text not in ("0", "1"):
+                  return invalid(name, f"pip-audit failed with exit status {code_text} (it only exits 0 or 1 after a complete audit).")
+              try:
+                  with open(f"pip-audit-{name}.json", encoding="utf-8") as handle:
+                      data = json.load(handle)
+                  deps = data["dependencies"]
+                  if not isinstance(deps, list):
+                      raise TypeError("dependencies is not a list")
               except Exception as exc:
-                  print(f"- `{name}`: **audit did not produce a report** ({type(exc).__name__}); this is NOT a clean result")
-                  continue
-              deps = data.get("dependencies", [])
-              vulnerable = [d for d in deps if d.get("vulns")]
-              skipped = [d for d in deps if d.get("skip_reason")]
-              print(f"- `{name}`: {len(deps)} packages, {len(vulnerable)} with known vulnerabilities, {len(skipped)} skipped (not auditable)")
-              for d in vulnerable[:30]:
-                  for v in d["vulns"]:
-                      fixes = ", ".join(v.get("fix_versions") or []) or "no fix released"
-                      print(f"  - `{d['name']} {d['version']}`: {v['id']} (fix: {fixes})")
-              for d in skipped[:10]:
-                  print(f"  - skipped `{d['name']} {d['version']}`: {d['skip_reason']}")
+                  return invalid(name, f"pip-audit produced no readable report ({type(exc).__name__}).")
+              if not deps:
+                  return invalid(name, "The report lists 0 packages.")
+
+              vulnerable, skipped, unreadable, clean = [], [], 0, 0
+              for entry in deps:
+                  try:
+                      if entry.get("skip_reason"):
+                          skipped.append((str(entry.get("name", "?")), str(entry["skip_reason"])))
+                      elif entry.get("vulns"):
+                          vulnerable.append(entry)
+                      elif "vulns" in entry:
+                          clean += 1
+                      else:
+                          unreadable += 1
+                  except Exception:
+                      unreadable += 1
+
+              if code_text == "1" and not vulnerable:
+                  return invalid(name, "pip-audit exited with status 1 but the report lists no vulnerability: treating the run as failed.")
+              say(f"- `{name}`: {exported} packages exported, {len(deps)} in the report: **{len(vulnerable)} with known vulnerabilities**, {clean} without, **{len(skipped)} skipped (NOT audited)**, {unreadable} unreadable entries")
+              for entry in vulnerable[:30]:
+                  try:
+                      for vuln in entry["vulns"]:
+                          fixes = ", ".join(vuln.get("fix_versions") or []) or "no fix released"
+                          say(f"  - `{entry.get('name', '?')} {entry.get('version', '?')}`: {vuln.get('id', '?')} (fix: {fixes})")
+                  except Exception:
+                      say("  - (one vulnerable entry could not be read)")
+              if len(vulnerable) > 30:
+                  say(f"  - ... and {len(vulnerable) - 30} more in the artifact")
+              for pkg, reason in skipped[:15]:
+                  say(f"  - skipped `{pkg}`: {reason}")
+              if vulnerable:
+                  say("  - Result: **findings reported**")
+              elif skipped or unreadable:
+                  say("  - Result: audit complete for the readable packages, **but the skipped/unreadable ones were NOT audited, so this is NOT a clean result**")
+                  warn(f"{name}: {len(skipped)} skipped and {unreadable} unreadable packages were not audited")
+              else:
+                  say("  - Result: audit complete, no known vulnerabilities in the pinned packages (known advisories only)")
+
+
+          say("## Python dependency audit (reporting only)")
+          for name in ("runtime", "all-groups"):
+              try:
+                  summarise(name)
+              except Exception as exc:
+                  invalid(name, f"The summary itself failed ({type(exc).__name__}).")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -87,7 +188,9 @@ jobs:
           name: pip-audit-reports
           path: |
             pip-audit-*.json
+            pip-audit-*.exit
             requirements-*.txt
+            requirements-*.status
           if-no-files-found: warn
 
   npm-audit:
@@ -105,33 +208,82 @@ jobs:
       - name: Install from the lockfile without running scripts
         run: npm ci --ignore-scripts
       - name: Audit (reporting only)
-        # Two passes: what ships (runtime) and everything including build/test tooling.
+        # Two passes: what ships (runtime) and everything including build/test tooling. `npm audit`
+        # exits non-zero both for findings and for failures (for example no network), so the exit
+        # status is saved and cross-checked against the report by the summary.
         run: |
-          npm audit --omit=dev --json > npm-audit-runtime.json || true
-          npm audit --json > npm-audit-all.json || true
-          ls -l npm-audit-*.json || true
+          for set in runtime all; do
+            if [ "$set" = runtime ]; then flags="--omit=dev"; else flags=""; fi
+            code=0
+            npm audit $flags --json > "npm-audit-${set}.json" || code=$?
+            echo "$code" > "npm-audit-${set}.exit"
+          done
       - name: Summarise
         if: always()
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
-          import json
-          print("## npm dependency audit (reporting only)")
-          for name in ("runtime", "all"):
-              path = f"npm-audit-{name}.json"
+          python3 - <<'PY'
+          import json, os
+
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+
+
+          def say(line=""):
+              print(line, file=out)
+
+
+          def read(path):
               try:
-                  data = json.load(open(path))
-                  counts = data["metadata"]["vulnerabilities"]
+                  with open(path, encoding="utf-8") as handle:
+                      return handle.read().strip()
+              except OSError:
+                  return None
+
+
+          def invalid(name, reason):
+              say(f"- `{name}`: **INVALID AUDIT, NOT a clean result.** {reason}")
+              print(f"::warning title=npm dependency audit::{name}: {reason}")
+
+
+          def summarise(name):
+              code_text = read(f"npm-audit-{name}.exit")
+              if code_text is None:
+                  return invalid(name, "npm audit did not run.")
+              try:
+                  with open(f"npm-audit-{name}.json", encoding="utf-8") as handle:
+                      data = json.load(handle)
               except Exception as exc:
-                  print(f"- `{name}`: **audit did not produce a report** ({type(exc).__name__}); this is NOT a clean result")
-                  continue
+                  return invalid(name, f"npm audit produced no readable report ({type(exc).__name__}).")
+              if not isinstance(data, dict) or "error" in data:
+                  return invalid(name, "npm audit reported an error instead of results (for example the registry was unreachable).")
+              try:
+                  counts = data["metadata"]["vulnerabilities"]
+                  total_vulns = int(counts.get("total", sum(int(v) for v in counts.values())))
+                  packages = int(data["metadata"]["dependencies"]["total"])
+              except Exception as exc:
+                  return invalid(name, f"The report has no vulnerability counts ({type(exc).__name__}).")
+              if packages <= 0:
+                  return invalid(name, "The report covers 0 packages.")
+              if code_text != "0" and total_vulns == 0:
+                  return invalid(name, f"npm audit exited with status {code_text} but reported no vulnerability: treating the run as failed.")
               shown = ", ".join(f"{k}: {counts.get(k, 0)}" for k in ("critical", "high", "moderate", "low", "info"))
-              print(f"- `{name}` dependencies: {shown}")
+              result = "**findings reported**" if total_vulns else "audit complete, no known vulnerabilities (known advisories only)"
+              say(f"- `{name}` dependencies ({packages} packages): {shown}. Result: {result}")
+
+
+          say("## npm dependency audit (reporting only)")
+          for name in ("runtime", "all"):
+              try:
+                  summarise(name)
+              except Exception as exc:
+                  invalid(name, f"The summary itself failed ({type(exc).__name__}).")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: npm-audit-reports
-          path: frontend/web/npm-audit-*.json
+          path: |
+            frontend/web/npm-audit-*.json
+            frontend/web/npm-audit-*.exit
           if-no-files-found: warn
 
   secret-scan:
@@ -148,32 +300,83 @@ jobs:
           echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
       - name: Scan history (reporting only)
-        # --redact: secret values are replaced in the log AND in the report. --exit-code 0: findings
-        # do not fail the job (a tool error is also tolerated, but the summary then says so).
+        # --redact: secret values are replaced in the log AND in the report. --exit-code 0 makes
+        # FINDINGS exit 0, so any non-zero status means gitleaks itself failed (gitleaks 8.30.1
+        # still writes a report after a partial scan, then exits 1). The status is saved for the
+        # summary; an empty report is never taken as proof of a clean scan.
         run: |
-          ./gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 0 --report-format sarif --report-path gitleaks.sarif || echo "gitleaks exited with status $?"
+          code=0
+          ./gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 0 --report-format sarif --report-path gitleaks.sarif || code=$?
+          echo "$code" > gitleaks.exit
+          echo "gitleaks exit status: $code"
       - name: Summarise (rule, file, line and commit only; never the matched text)
         if: always()
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
-          import json
-          print("## Secret scan (reporting only)")
+          python3 - <<'PY'
+          import json, os
+
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+
+
+          def say(line=""):
+              print(line, file=out)
+
+
+          def read(path):
+              try:
+                  with open(path, encoding="utf-8") as handle:
+                      return handle.read().strip()
+              except OSError:
+                  return None
+
+
+          def fail(reason):
+              say(f"**{reason} This is NOT a clean result.**")
+              print(f"::warning title=Secret scan::{reason}")
+
+
+          say("## Secret scan (reporting only)")
+          code = read("gitleaks.exit")
+          results = None
           try:
-              results = json.load(open("gitleaks.sarif"))["runs"][0].get("results", [])
+              with open("gitleaks.sarif", encoding="utf-8") as handle:
+                  runs = json.load(handle)["runs"]
+              if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0].get("results"), list):
+                  raise ValueError("unexpected SARIF layout")
+              results = runs[0]["results"]
           except Exception as exc:
-              print(f"**The scan did not produce a report** ({type(exc).__name__}); this is NOT a clean result.")
+              report_problem = type(exc).__name__
           else:
-              print(f"{len(results)} potential secret(s) found in the full history (values redacted).")
-              for r in results[:50]:
-                  loc = r["locations"][0]["physicalLocation"]
-                  commit = (r.get("partialFingerprints") or {}).get("commitSha", "")[:10]
-                  print(f"- `{r['ruleId']}` in `{loc['artifactLocation']['uri']}:{loc['region']['startLine']}` (commit `{commit}`)")
+              report_problem = None
+
+          if code is None:
+              fail("gitleaks did not run (no exit status was recorded).")
+          elif code != "0":
+              fail(f"gitleaks FAILED or the scan is INCOMPLETE (exit status {code}); the report, if any, covers only part of the history.")
+              if results:
+                  say(f"Partial findings so far: {len(results)}.")
+          elif report_problem is not None:
+              fail(f"gitleaks exited 0 but produced no valid report ({report_problem}).")
+          else:
+              if results:
+                  say(f"Scan complete: {len(results)} potential secret(s) found in the full history (values redacted). **Findings reported.**")
+              else:
+                  say("Scan complete: no potential secrets matched the configured rules in the full history (this is not proof that none exist).")
+              for result in results[:50]:
+                  try:
+                      location = result["locations"][0]["physicalLocation"]
+                      commit = (result.get("partialFingerprints") or {}).get("commitSha", "")[:10]
+                      say(f"- `{result.get('ruleId', '?')}` in `{location['artifactLocation']['uri']}:{location['region']['startLine']}` (commit `{commit}`)")
+                  except Exception:
+                      say("- (one finding could not be read; see the artifact)")
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: gitleaks-report
-          path: gitleaks.sarif
+          path: |
+            gitleaks.sarif
+            gitleaks.exit
           if-no-files-found: warn
 
   image-scan:
@@ -186,7 +389,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # Every build and scan step is independent (`continue-on-error`): one failure must not stop the
+      # others, and the summary step reads each step's real `outcome`, so a failure stays visible.
       - name: Build backend image (not pushed)
+        id: build_backend
+        continue-on-error: true
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -195,6 +402,8 @@ jobs:
           load: true
           tags: aegisai-backend:scan
       - name: Build React frontend image (not pushed)
+        id: build_frontend
+        continue-on-error: true
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: frontend/web
@@ -203,6 +412,8 @@ jobs:
           load: true
           tags: aegisai-frontend:scan
       - name: Build Streamlit frontend image (not pushed)
+        id: build_streamlit
+        continue-on-error: true
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -211,27 +422,39 @@ jobs:
           load: true
           tags: aegisai-frontend-streamlit:scan
       - name: Scan backend image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        id: scan_backend
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: aegisai-backend:scan
+          version: ${{ env.TRIVY_VERSION }}
           format: sarif
           output: trivy-backend.sarif
           scanners: vuln
           ignore-unfixed: true
           exit-code: "0" # reporting only
       - name: Scan React frontend image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        id: scan_frontend
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: aegisai-frontend:scan
+          version: ${{ env.TRIVY_VERSION }}
           format: sarif
           output: trivy-frontend.sarif
           scanners: vuln
           ignore-unfixed: true
           exit-code: "0" # reporting only
       - name: Scan Streamlit frontend image
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        id: scan_streamlit
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: aegisai-frontend-streamlit:scan
+          version: ${{ env.TRIVY_VERSION }}
           format: sarif
           output: trivy-streamlit.sarif
           scanners: vuln
@@ -239,38 +462,80 @@ jobs:
           exit-code: "0" # reporting only
       - name: Summarise
         if: always()
+        env:
+          BUILD_BACKEND: ${{ steps.build_backend.outcome }}
+          BUILD_FRONTEND: ${{ steps.build_frontend.outcome }}
+          BUILD_STREAMLIT: ${{ steps.build_streamlit.outcome }}
+          SCAN_BACKEND: ${{ steps.scan_backend.outcome }}
+          SCAN_FRONTEND: ${{ steps.scan_frontend.outcome }}
+          SCAN_STREAMLIT: ${{ steps.scan_streamlit.outcome }}
         run: |
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
-          import collections, json
-          print("## Container image scan (reporting only; unfixed vulnerabilities are ignored)")
-          for name in ("backend", "frontend", "streamlit"):
-              path = f"trivy-{name}.sarif"
+          python3 - <<'PY'
+          import collections, json, os
+
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+
+
+          def say(line=""):
+              print(line, file=out)
+
+
+          def problem(name, reason):
+              say(f"- `{name}`: **{reason} This is NOT a clean result.**")
+              print(f"::warning title=Container image scan::{name}: {reason}")
+
+
+          def summarise(name, build, scan):
+              if build != "success":
+                  return problem(name, f"The image build did not succeed (outcome: {build}), so the image was not scanned.")
+              if scan != "success":
+                  return problem(name, f"The Trivy scan step did not succeed (outcome: {scan}); any report is incomplete.")
               try:
-                  results = json.load(open(path))["runs"][0].get("results", [])
+                  with open(f"trivy-{name}.sarif", encoding="utf-8") as handle:
+                      runs = json.load(handle)["runs"]
+                  if not isinstance(runs, list) or not runs or not isinstance(runs[0].get("results"), list):
+                      raise ValueError("unexpected SARIF layout")
+                  results = runs[0]["results"]
               except Exception as exc:
-                  print(f"- `{name}`: **no report** ({type(exc).__name__}); this is NOT a clean result")
-                  continue
-              levels = collections.Counter(r.get("level", "none") for r in results)
-              print(f"- `{name}`: {len(results)} finding(s) " + ", ".join(f"{k}: {v}" for k, v in sorted(levels.items())))
+                  return problem(name, f"The scan step succeeded but left no valid report ({type(exc).__name__}).")
+              levels = collections.Counter(str(r.get("level", "none")) if isinstance(r, dict) else "unreadable" for r in results)
+              if results:
+                  detail = ", ".join(f"{key}: {value}" for key, value in sorted(levels.items()))
+                  say(f"- `{name}`: scan complete, **{len(results)} finding(s)** ({detail}; SARIF levels: error = critical/high, warning = medium, note = low). Unfixed vulnerabilities are not reported by design.")
+              else:
+                  say(f"- `{name}`: scan complete, no fixable vulnerabilities reported at scan time (known advisories only; unfixed ones are hidden by design).")
+
+
+          say("## Container image scan (reporting only)")
+          for name, build_var, scan_var in (
+              ("backend", "BUILD_BACKEND", "SCAN_BACKEND"),
+              ("frontend", "BUILD_FRONTEND", "SCAN_FRONTEND"),
+              ("streamlit", "BUILD_STREAMLIT", "SCAN_STREAMLIT"),
+          ):
+              try:
+                  summarise(name, os.environ.get(build_var, "missing"), os.environ.get(scan_var, "missing"))
+              except Exception as exc:
+                  problem(name, f"The summary itself failed ({type(exc).__name__}).")
           PY
       - name: Offer SARIF to GitHub code scanning (backend)
         # Code scanning may not be enabled for this repository (or plan); that must not fail the run.
+        # Only a report from a scan that succeeded is offered.
         uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
-        if: always() && hashFiles('trivy-backend.sarif') != ''
+        if: always() && steps.scan_backend.outcome == 'success' && hashFiles('trivy-backend.sarif') != ''
         continue-on-error: true
         with:
           sarif_file: trivy-backend.sarif
           category: trivy-backend
       - name: Offer SARIF to GitHub code scanning (frontend)
         uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
-        if: always() && hashFiles('trivy-frontend.sarif') != ''
+        if: always() && steps.scan_frontend.outcome == 'success' && hashFiles('trivy-frontend.sarif') != ''
         continue-on-error: true
         with:
           sarif_file: trivy-frontend.sarif
           category: trivy-frontend
       - name: Offer SARIF to GitHub code scanning (streamlit)
         uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
-        if: always() && hashFiles('trivy-streamlit.sarif') != ''
+        if: always() && steps.scan_streamlit.outcome == 'success' && hashFiles('trivy-streamlit.sarif') != ''
         continue-on-error: true
         with:
           sarif_file: trivy-streamlit.sarif

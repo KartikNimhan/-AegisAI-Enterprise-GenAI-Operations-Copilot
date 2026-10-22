@@ -15,7 +15,7 @@ The existing `.github/workflows/ci.yml` is unchanged.
 | `python-audit` | `pip-audit` (version pinned in the workflow) | The Python packages pinned in `uv.lock`, exported twice: runtime only, and all groups (dev tools and the Streamlit group). Looks up known advisories; does not install anything. | `pip-audit-*.json` artifact, run summary |
 | `npm-audit` | `npm audit` | `frontend/web/package-lock.json`: runtime dependencies only, and everything including build and test tooling. | `npm-audit-*.json` artifact, run summary |
 | `secret-scan` | `gitleaks` (pinned release, checksum-verified) | The **whole Git history** and working tree, with the default rules plus `.gitleaks.toml`. Run with `--redact`: secret values are replaced in the log and the report. | `gitleaks.sarif` artifact, run summary (rule, file, line, commit only) |
-| `image-scan` | Trivy | The three images built in the job (backend, React, Streamlit): operating-system and library vulnerabilities that have a fix available. | `trivy-*.sarif` artifact, run summary, and SARIF offered to GitHub code scanning |
+| `image-scan` | Trivy (see below) | The three images built in the job (backend, React, Streamlit): operating-system and library vulnerabilities that have a fix available. | `trivy-*.sarif` artifact, run summary, and SARIF offered to GitHub code scanning |
 
 Triggers: pull requests and pushes to `main`, a weekly schedule (Mondays 04:17 UTC, because new
 advisories appear without code changes) and manual dispatch. Dependabot (`dependabot.yml`) opens
@@ -26,9 +26,27 @@ merges nothing.
 
 - Every job has `continue-on-error: true`, every scan command tolerates a non-zero exit, and Trivy
   and gitleaks run with `exit-code 0`. A finding never fails a run.
-- **A green run is not a clean result.** Each summary says explicitly when a report is missing
-  ("this is NOT a clean result"). Check the summary, not the colour.
+- **A green run is not a clean result.** Check the summary, not the colour.
 - No blocking threshold is set on purpose: the existing baseline must be understood first.
+
+## How outcomes are told apart
+
+Each scan step saves how its tool ended (an `.exit` file, or the Trivy step's recorded `outcome`),
+and each job's summary step cross-checks that against the report. The summary never crashes on a
+bad entry, and a problem is also raised as a run annotation (`::warning`). The meanings:
+
+| What the summary says | What happened | Is it a clean result? |
+|---|---|---|
+| `audit complete, no known vulnerabilities` / `Scan complete: no potential secrets` / `scan complete, no fixable vulnerabilities` | The tool finished, the report is valid and lists nothing. | Only in the sense "no known advisory or configured rule matched"; never proof that nothing exists. |
+| `findings reported` (gitleaks: `Findings reported`) / `N finding(s)` | The tool finished and lists findings (ids, files and lines, never secret values). | No: triage them. |
+| `N skipped (NOT audited)` (pip-audit) | A package could not be looked up (for example the `+cpu` torch build). It is listed with pip-audit's reason. | **No.** Skipped packages were not audited. |
+| `INVALID AUDIT` | The input was unusable: the requirements export failed, listed fewer than `MIN_PACKAGES` pinned packages (empty or truncated), the report lists 0 packages, or the report is missing, unreadable or contradicts the exit status (for example pip-audit exited 1 but lists no vulnerability). | **No.** Nothing trustworthy was audited. |
+| `FAILED or the scan is INCOMPLETE` (gitleaks) | gitleaks exited non-zero. With `--exit-code 0`, findings exit 0, so non-zero means the tool itself failed; gitleaks 8.30.1 still writes a report after a partial scan, so an empty report is **not** evidence of a clean scan. | **No.** |
+| `did not run` / `no valid report` / `no report` | The status file or report is missing or malformed. | **No.** |
+| `The image build did not succeed` / `The Trivy scan step did not succeed (outcome: ...)` | The build or scan step failed or was skipped. The three images are independent, so one failure does not stop the others, and a report from a failed step is not trusted. | **No.** |
+
+Every "not clean" line contains the exact words `NOT a clean result` (or `INVALID AUDIT`). The
+exit-status and requirement files are kept in the artifacts next to the reports.
 
 ## Where to read the results
 
@@ -43,6 +61,24 @@ merges nothing.
 Workflow default: `contents: read`. Only `image-scan` also has `security-events: write`, to offer
 SARIF. No job uses repository secrets (only the automatic token), and no scan sends repository
 content to a third-party service: advisory and database lookups are read-only downloads.
+
+## Trivy version (reviewed, pinned explicitly)
+
+- **Action:** `aquasecurity/trivy-action` v0.36.0, pinned by commit SHA. In March 2026 the Trivy
+  supply chain was compromised (GHSA-69fq-xp46-6x23 / CVE-2026-33634): a malicious Trivy v0.69.4,
+  and every `trivy-action` release before 0.35.0 replaced with malicious code. v0.36.0 is after the
+  fix, is an immutable GitHub release on a signed commit, and pins `setup-trivy` v0.2.6 (the patched
+  version named in that advisory).
+- **Binary:** `TRIVY_VERSION: v0.74.0`, passed through the action's `version:` input instead of the
+  action's older default. It is an immutable release published after the fixes for the advisories
+  published for `aquasecurity/trivy`: CVE-2026-54448 (0.71.0), CVE-2026-55092 (0.71.1) and
+  CVE-2026-63328 (0.72.0). It is not one of the compromised 0.69.4 to 0.69.6.
+- **Compatibility:** every Trivy option the action passes (`format`, `output`, `exit-code`,
+  `scanners`, `ignore-unfixed`, cache directory) exists in Trivy v0.74.0's source and v0.36.0 has the
+  same inputs as v0.35.0. This was read from the sources, **not run**.
+- **Maintenance:** Dependabot does not track the `version:` input. Re-check upstream advisories when
+  reviewing scan results and update it deliberately.
+- **Not independently verified:** the cryptographic signatures of the Trivy release files.
 
 ## Known limitations and expected noise
 
