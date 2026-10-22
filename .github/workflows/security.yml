@@ -1,0 +1,283 @@
+name: Security scanning
+
+# REPORTING ONLY (first stage). Nothing here fails a build: the baseline findings have not been
+# reviewed yet, so no blocking threshold exists. Every scan writes a JSON/SARIF file that is kept
+# as a build artifact and summarised on the run page. See docs/operations/security-scanning.md.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # New advisories appear without code changes: scan weekly (Mondays, 04:17 UTC).
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# Least privilege: read-only by default. Only `image-scan` adds `security-events: write`
+# (to offer SARIF to GitHub code scanning, which may not be enabled for this repository).
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.2"
+  PIP_AUDIT_VERSION: "2.10.1"
+  GITLEAKS_VERSION: "8.30.1"
+  # sha256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's published checksums file.
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  python-audit:
+    name: Python dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: ${{ env.UV_VERSION }}
+      - run: uv python install 3.12
+      - name: Export the locked requirements
+        # `uv.lock` is the baseline. Option lines (index URLs) are dropped: pip-audit only needs
+        # name==version pairs, and the CPU-only torch index is not PyPI.
+        run: |
+          uv export --frozen --no-hashes --no-emit-project --no-dev --format requirements-txt | grep -v '^-' > requirements-runtime.txt
+          uv export --frozen --no-hashes --no-emit-project --all-groups --format requirements-txt | grep -v '^-' > requirements-all-groups.txt
+          wc -l requirements-runtime.txt requirements-all-groups.txt
+      - name: Audit (reporting only)
+        # --no-deps/--disable-pip: audit exactly the pinned set, do not resolve or install anything.
+        # A package pip-audit cannot find on PyPI (for example the +cpu torch build) is reported as
+        # skipped, not as safe.
+        run: |
+          for set in runtime all-groups; do
+            uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit -r "requirements-${set}.txt" --no-deps --disable-pip --progress-spinner off -f json -o "pip-audit-${set}.json" || true
+          done
+          ls -l pip-audit-*.json || true
+      - name: Summarise
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import json
+          print("## Python dependency audit (reporting only)")
+          for name in ("runtime", "all-groups"):
+              path = f"pip-audit-{name}.json"
+              try:
+                  data = json.load(open(path))
+              except Exception as exc:
+                  print(f"- `{name}`: **audit did not produce a report** ({type(exc).__name__}); this is NOT a clean result")
+                  continue
+              deps = data.get("dependencies", [])
+              vulnerable = [d for d in deps if d.get("vulns")]
+              skipped = [d for d in deps if d.get("skip_reason")]
+              print(f"- `{name}`: {len(deps)} packages, {len(vulnerable)} with known vulnerabilities, {len(skipped)} skipped (not auditable)")
+              for d in vulnerable[:30]:
+                  for v in d["vulns"]:
+                      fixes = ", ".join(v.get("fix_versions") or []) or "no fix released"
+                      print(f"  - `{d['name']} {d['version']}`: {v['id']} (fix: {fixes})")
+              for d in skipped[:10]:
+                  print(f"  - skipped `{d['name']} {d['version']}`: {d['skip_reason']}")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: pip-audit-reports
+          path: |
+            pip-audit-*.json
+            requirements-*.txt
+          if-no-files-found: warn
+
+  npm-audit:
+    name: npm dependency audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: frontend/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Install from the lockfile without running scripts
+        run: npm ci --ignore-scripts
+      - name: Audit (reporting only)
+        # Two passes: what ships (runtime) and everything including build/test tooling.
+        run: |
+          npm audit --omit=dev --json > npm-audit-runtime.json || true
+          npm audit --json > npm-audit-all.json || true
+          ls -l npm-audit-*.json || true
+      - name: Summarise
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import json
+          print("## npm dependency audit (reporting only)")
+          for name in ("runtime", "all"):
+              path = f"npm-audit-{name}.json"
+              try:
+                  data = json.load(open(path))
+                  counts = data["metadata"]["vulnerabilities"]
+              except Exception as exc:
+                  print(f"- `{name}`: **audit did not produce a report** ({type(exc).__name__}); this is NOT a clean result")
+                  continue
+              shown = ", ".join(f"{k}: {counts.get(k, 0)}" for k in ("critical", "high", "moderate", "low", "info"))
+              print(f"- `{name}` dependencies: {shown}")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: npm-audit-reports
+          path: frontend/web/npm-audit-*.json
+          if-no-files-found: warn
+
+  secret-scan:
+    name: Secret scan (gitleaks, redacted)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the whole history: a secret removed in a later commit is still leaked
+      - name: Download gitleaks (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Scan history (reporting only)
+        # --redact: secret values are replaced in the log AND in the report. --exit-code 0: findings
+        # do not fail the job (a tool error is also tolerated, but the summary then says so).
+        run: |
+          ./gitleaks git . --config .gitleaks.toml --redact --no-banner --exit-code 0 --report-format sarif --report-path gitleaks.sarif || echo "gitleaks exited with status $?"
+      - name: Summarise (rule, file, line and commit only; never the matched text)
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import json
+          print("## Secret scan (reporting only)")
+          try:
+              results = json.load(open("gitleaks.sarif"))["runs"][0].get("results", [])
+          except Exception as exc:
+              print(f"**The scan did not produce a report** ({type(exc).__name__}); this is NOT a clean result.")
+          else:
+              print(f"{len(results)} potential secret(s) found in the full history (values redacted).")
+              for r in results[:50]:
+                  loc = r["locations"][0]["physicalLocation"]
+                  commit = (r.get("partialFingerprints") or {}).get("commitSha", "")[:10]
+                  print(f"- `{r['ruleId']}` in `{loc['artifactLocation']['uri']}:{loc['region']['startLine']}` (commit `{commit}`)")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+          if-no-files-found: warn
+
+  image-scan:
+    name: Container image scan (Trivy)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write # only to offer SARIF to code scanning; the artifact is the fallback
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build backend image (not pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: aegisai-backend:scan
+      - name: Build React frontend image (not pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: frontend/web
+          file: frontend/web/Dockerfile
+          push: false
+          load: true
+          tags: aegisai-frontend:scan
+      - name: Build Streamlit frontend image (not pushed)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: frontend/streamlit/Dockerfile
+          push: false
+          load: true
+          tags: aegisai-frontend-streamlit:scan
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: aegisai-backend:scan
+          format: sarif
+          output: trivy-backend.sarif
+          scanners: vuln
+          ignore-unfixed: true
+          exit-code: "0" # reporting only
+      - name: Scan React frontend image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: aegisai-frontend:scan
+          format: sarif
+          output: trivy-frontend.sarif
+          scanners: vuln
+          ignore-unfixed: true
+          exit-code: "0" # reporting only
+      - name: Scan Streamlit frontend image
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: aegisai-frontend-streamlit:scan
+          format: sarif
+          output: trivy-streamlit.sarif
+          scanners: vuln
+          ignore-unfixed: true
+          exit-code: "0" # reporting only
+      - name: Summarise
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import collections, json
+          print("## Container image scan (reporting only; unfixed vulnerabilities are ignored)")
+          for name in ("backend", "frontend", "streamlit"):
+              path = f"trivy-{name}.sarif"
+              try:
+                  results = json.load(open(path))["runs"][0].get("results", [])
+              except Exception as exc:
+                  print(f"- `{name}`: **no report** ({type(exc).__name__}); this is NOT a clean result")
+                  continue
+              levels = collections.Counter(r.get("level", "none") for r in results)
+              print(f"- `{name}`: {len(results)} finding(s) " + ", ".join(f"{k}: {v}" for k, v in sorted(levels.items())))
+          PY
+      - name: Offer SARIF to GitHub code scanning (backend)
+        # Code scanning may not be enabled for this repository (or plan); that must not fail the run.
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        if: always() && hashFiles('trivy-backend.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
+      - name: Offer SARIF to GitHub code scanning (frontend)
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        if: always() && hashFiles('trivy-frontend.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend
+      - name: Offer SARIF to GitHub code scanning (streamlit)
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        if: always() && hashFiles('trivy-streamlit.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: trivy-streamlit.sarif
+          category: trivy-streamlit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: trivy-reports
+          path: trivy-*.sarif
+          if-no-files-found: warn

@@ -1,0 +1,22 @@
+# Gitleaks configuration (see docs/operations/security-scanning.md).
+#
+# The default rules stay ON. The allowlists below are deliberately tiny: each entry names ONE
+# tracked file that is a placeholder template by design, with the reason. Source directories and
+# test directories are NOT allowlisted: a test fixture that looks like a secret should be fixed
+# or allowlisted individually, with a reason, after the first scan shows it.
+title = "AegisAI gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Environment template: variable names with empty or placeholder values (a real .env is gitignored and never committed)."
+paths = ['''^\.env\.example$''']
+
+[[allowlists]]
+description = "Kubernetes Secret template: placeholder values only; infra/kubernetes/validate_manifests.py rejects real-looking values in CI."
+paths = ['''^infra/kubernetes/backend-secret\.example\.yaml$''']
+
+[[allowlists]]
+description = "Kubernetes Secret template: placeholder values only; infra/kubernetes/validate_manifests.py rejects real-looking values in CI."
+paths = ['''^infra/kubernetes/postgres-secret\.example\.yaml$''']
