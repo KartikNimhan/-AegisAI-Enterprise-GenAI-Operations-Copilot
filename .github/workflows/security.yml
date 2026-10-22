@@ -182,7 +182,7 @@ jobs:
               except Exception as exc:
                   invalid(name, f"The summary itself failed ({type(exc).__name__}).")
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: pip-audit-reports
@@ -277,7 +277,7 @@ jobs:
               except Exception as exc:
                   invalid(name, f"The summary itself failed ({type(exc).__name__}).")
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: npm-audit-reports
@@ -370,7 +370,7 @@ jobs:
                   except Exception:
                       say("- (one finding could not be read; see the artifact)")
           PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: gitleaks-report
@@ -540,7 +540,7 @@ jobs:
         with:
           sarif_file: trivy-streamlit.sarif
           category: trivy-streamlit
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: trivy-reports
