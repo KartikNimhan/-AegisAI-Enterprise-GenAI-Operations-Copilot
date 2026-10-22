@@ -13,7 +13,7 @@
 # left in place, just no longer wired into the default stack.
 
 # ---- builder -------------------------------------------------------------
-FROM node:22-slim AS builder
+FROM node:25-slim AS builder
 
 WORKDIR /srv
 
