@@ -12,7 +12,7 @@ from typing import Any
 
 from app.llm.gateway import LLMGateway
 from app.llm.schemas import ChatMessage, CompletionResponse, ModelRole, StreamChunk
-from app.rag.retrieval.schemas import RetrievalResult
+from app.rag.retrieval.schemas import RetrievalFilters, RetrievalResult
 from app.rag.retrieval.strategy import RetrievalStrategy
 
 
@@ -70,9 +70,16 @@ class FakeRetrievalStrategy(RetrievalStrategy):
         return self._embedding_model_version
 
     async def search(
-        self, *, query: str, top_k: int, document_id: uuid.UUID | None
+        self, *, query: str, top_k: int, filters: RetrievalFilters
     ) -> list[RetrievalResult]:
-        self.calls.append({"query": query, "top_k": top_k, "document_id": document_id})
+        self.calls.append(
+            {
+                "query": query,
+                "top_k": top_k,
+                "document_id": filters.document_id,
+                "filters": filters,
+            }
+        )
         return self._results[:top_k]
 
 

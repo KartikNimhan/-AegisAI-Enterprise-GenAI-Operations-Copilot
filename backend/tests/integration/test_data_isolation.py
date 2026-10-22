@@ -25,6 +25,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ from app.llm.gateway import get_llm_gateway
 from app.llm.schemas import CompletionResponse, TokenUsage
 from app.main import app
 from app.rag.retrieval.repository import RetrievalRepository
+from app.rag.retrieval.schemas import RetrievalFilters
 from app.storage.local import LocalFileStorage, get_document_storage
 
 from ..document_fixtures import make_txt_bytes
@@ -473,12 +475,14 @@ async def _document_with_chunk(
     *,
     visibility: DocumentVisibility = DocumentVisibility.PRIVATE,
     text: str = "content",
+    document_type: DocumentType = DocumentType.TXT,
+    original_filename: str = "doc.txt",
 ) -> tuple[uuid.UUID, uuid.UUID]:
     document = DocumentRepository(db_session, owner.scope).new(
         filename=f"{uuid.uuid4()}.txt",
-        original_filename="doc.txt",
+        original_filename=original_filename,
         content_type="text/plain",
-        document_type=DocumentType.TXT,
+        document_type=document_type,
         file_size=10,
         checksum=uuid.uuid4().hex + uuid.uuid4().hex,
         status=DocumentStatus.PROCESSED,
@@ -675,3 +679,41 @@ async def test_system_status_is_for_administrators_only(client: AsyncClient, wor
         assert (await as_user(client, member, "GET", "/api/v1/system/status")).status_code == 403
     for admin in (world.ada, world.bea):
         assert (await as_user(client, admin, "GET", "/api/v1/system/status")).status_code == 200
+
+
+async def test_metadata_filters_narrow_within_the_callers_own_documents(
+    world: World, db_session: AsyncSession
+) -> None:
+    query = _vector(1.0)
+    _, pdf_chunk = await _document_with_chunk(
+        db_session, world.alice, query, document_type=DocumentType.PDF, original_filename="a.pdf"
+    )
+    _, txt_chunk = await _document_with_chunk(
+        db_session, world.alice, query, document_type=DocumentType.TXT, original_filename="b.txt"
+    )
+    scope = world.alice.scope
+
+    by_type = RetrievalFilters(document_types=frozenset({DocumentType.PDF}))
+    by_name = RetrievalFilters(filename="b.txt")
+    both = RetrievalFilters(document_types=frozenset({DocumentType.PDF}), filename="b.txt")
+    future = RetrievalFilters(created_after=datetime.now(UTC) + timedelta(days=1))
+    past = RetrievalFilters(created_before=datetime.now(UTC) + timedelta(days=1))
+
+    assert await _search(db_session, scope, query, filters=by_type) == [pdf_chunk]
+    assert await _search(db_session, scope, query, filters=by_name) == [txt_chunk]
+    assert await _search(db_session, scope, query, filters=both) == []
+    assert await _search(db_session, scope, query, filters=future) == []
+    assert set(await _search(db_session, scope, query, filters=past)) == {pdf_chunk, txt_chunk}
+
+
+async def test_metadata_filters_never_reach_other_peoples_documents(
+    world: World, db_session: AsyncSession
+) -> None:
+    query = _vector(1.0)
+    _, alice_chunk = await _document_with_chunk(
+        db_session, world.alice, query, document_type=DocumentType.PDF, original_filename="a.pdf"
+    )
+    matching = RetrievalFilters(document_types=frozenset({DocumentType.PDF}), filename="a.pdf")
+
+    for stranger in (world.alan, world.ada, world.bob, world.bea):
+        assert alice_chunk not in await _search(db_session, stranger.scope, query, filters=matching)

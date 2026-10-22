@@ -67,6 +67,7 @@ DATA_PREFIXES = (
     "/api/v1/chat",
     "/api/v1/rag",
     "/api/v1/agents/run",
+    "/api/v1/memories",
     "/api/v1/operations",
     "/api/v1/agents/research/tasks",
     "/api/v1/agents/document/tasks",
@@ -91,6 +92,7 @@ def test_the_data_operation_list_covers_the_known_surface() -> None:
     assert ("PATCH", "/api/v1/documents/{document_id}/visibility") in operations
     assert ("DELETE", "/api/v1/conversations/{conversation_id}") in operations
     assert ("POST", "/api/v1/rag/chat") in operations
+    assert ("DELETE", "/api/v1/memories/{memory_id}") in operations
     assert ("POST", "/api/v1/agents/document/tasks") in operations
     assert len(operations) >= 18
 

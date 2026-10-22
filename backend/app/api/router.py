@@ -19,7 +19,8 @@ two specialized A2A agents) and `multi_agent` (the orchestrator endpoint)
 in Milestone 8; `operations` (a read-only document-status summary) and
 `system` (a read-only status aggregation reusing `/health/ready`'s own
 checks) in Milestone 9, added for the Copilot UI's dashboard/status pages;
-`auth` (the caller's own identity) in Milestone 12.
+`auth` (the caller's own identity) in Milestone 12; `memories` (the caller's own agent-memory
+notes) with ADR 015.
 Admin endpoints are reserved for a later security phase and are
 intentionally not wired up here yet. Health/readiness live outside this
 router (see `app.api.v1.health`) since they are mounted at the root path,
@@ -36,6 +37,7 @@ from app.api.v1 import (
     conversations,
     document_agent,
     documents,
+    memories,
     operations,
     rag,
     system,
@@ -58,6 +60,7 @@ api_router.include_router(conversations.router)
 api_router.include_router(documents.router)
 api_router.include_router(rag.router)
 api_router.include_router(agents.router)
+api_router.include_router(memories.router)
 api_router.include_router(research_agent_module.router)
 api_router.include_router(document_agent.router)
 api_router.include_router(analyst_agent.router)

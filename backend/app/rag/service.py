@@ -33,8 +33,10 @@ from app.domain.models.conversation import Conversation
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole, StreamChunk
+from app.rag.citations import StreamingCitationSanitizer, sanitize_citations
 from app.rag.context.assembler import AssembledSource, ContextAssembler
 from app.rag.prompts.builder import RAGPromptBuilder
+from app.rag.retrieval.schemas import RetrievalFilters
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
 from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
 
@@ -76,15 +78,15 @@ class RAGService:
         model_role: ModelRole,
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
+        filters: RetrievalFilters | None = None,
     ) -> RAGAnswer:
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        await self._validate_document_filter(document_id)
+        applied = (filters or RetrievalFilters()).with_document_id(document_id)
+        await self._validate_document_filter(applied.document_id)
         history = await self._messages.list_by_conversation(conversation.id)
 
         start = time.perf_counter()
-        outcome = await self._retrieval.retrieve(
-            query=message, top_k=top_k, document_id=document_id
-        )
+        outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
 
         await self._messages.add(
             conversation_id=conversation.id, role=MessageRole.USER, content=message
@@ -119,6 +121,7 @@ class RAGService:
                     embedding_provider=outcome.embedding_provider,
                     embedding_model=outcome.embedding_model,
                     embedding_model_version=outcome.embedding_model_version,
+                    filters=outcome.filters.describe(),
                 ),
             )
 
@@ -127,11 +130,21 @@ class RAGService:
             context_text=assembled.text, question=message, history=history
         )
         completion = await self._gateway.chat_completion(model_role=model_role, messages=prompt)
+        # Only ids that were really retrieved may stay in the text (and in the stored message).
+        checked = sanitize_citations(
+            completion.content, (source.source_id for source in assembled.sources)
+        )
+        if checked.report.removed:
+            logger.warning(
+                "rag_invalid_citations_removed",
+                conversation_id=str(conversation.id),
+                removed=list(checked.report.removed),
+            )
 
         await self._messages.add(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
-            content=completion.content,
+            content=checked.text,
             model=completion.model,
             provider=completion.provider,
             finish_reason=completion.finish_reason,
@@ -158,9 +171,12 @@ class RAGService:
 
         return RAGAnswer(
             conversation_id=conversation.id,
-            answer=completion.content,
+            answer=checked.text,
             has_context=True,
-            sources=[_to_rag_source(source) for source in assembled.sources],
+            sources=[
+                _to_rag_source(source, cited=source.source_id in checked.report.cited)
+                for source in assembled.sources
+            ],
             retrieval=RAGRetrievalMetadata(
                 top_k=outcome.top_k,
                 similarity_threshold=outcome.similarity_threshold,
@@ -170,12 +186,14 @@ class RAGService:
                 embedding_provider=outcome.embedding_provider,
                 embedding_model=outcome.embedding_model,
                 embedding_model_version=outcome.embedding_model_version,
+                filters=outcome.filters.describe(),
             ),
             model=completion.model,
             provider=completion.provider,
             usage=completion.usage,
             finish_reason=completion.finish_reason,
             request_id=completion.request_id,
+            invalid_citations=checked.report.removed,
         )
 
     async def answer_stream(
@@ -186,6 +204,7 @@ class RAGService:
         model_role: ModelRole,
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
+        filters: RetrievalFilters | None = None,
     ) -> AsyncIterator[tuple[uuid.UUID, StreamChunk, list[RAGSource] | None]]:
         """Yields `(conversation_id, chunk, sources)` — `sources` is `None`
         on every chunk except the final one, mirroring how `StreamChunk.usage`
@@ -193,12 +212,11 @@ class RAGService:
         never from the LLM — the model is never asked to produce them.
         """
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        await self._validate_document_filter(document_id)
+        applied = (filters or RetrievalFilters()).with_document_id(document_id)
+        await self._validate_document_filter(applied.document_id)
         history = await self._messages.list_by_conversation(conversation.id)
 
-        outcome = await self._retrieval.retrieve(
-            query=message, top_k=top_k, document_id=document_id
-        )
+        outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
 
         await self._messages.add(
             conversation_id=conversation.id, role=MessageRole.USER, content=message
@@ -229,7 +247,7 @@ class RAGService:
         prompt = self._prompt_builder.build(
             context_text=assembled.text, question=message, history=history
         )
-        sources = [_to_rag_source(source) for source in assembled.sources]
+        citations = StreamingCitationSanitizer(source.source_id for source in assembled.sources)
 
         accumulated_content = ""
         final_model: str | None = None
@@ -243,7 +261,11 @@ class RAGService:
             async for chunk in self._gateway.stream_chat_completion(
                 model_role=model_role, messages=prompt
             ):
-                accumulated_content += chunk.delta
+                # What is sent to the client, and what is stored, is the validated text.
+                delta = citations.feed(chunk.delta)
+                if chunk.is_final:
+                    delta += citations.finish()
+                accumulated_content += delta
                 final_model = chunk.model or final_model
                 request_id = chunk.request_id or request_id
                 if chunk.finish_reason:
@@ -252,11 +274,15 @@ class RAGService:
                     input_tokens = chunk.usage.input_tokens
                     output_tokens = chunk.usage.output_tokens
                     total_tokens = chunk.usage.total_tokens
-                yield (
-                    conversation.id,
-                    chunk,
-                    sources if chunk.is_final else None,
+                sources = (
+                    [
+                        _to_rag_source(source, cited=source.source_id in citations.report.cited)
+                        for source in assembled.sources
+                    ]
+                    if chunk.is_final
+                    else None
                 )
+                yield conversation.id, chunk.model_copy(update={"delta": delta}), sources
         except LLMError:
             # Mirrors ChatService.stream_message: the API layer catches
             # LLMError to emit a clean terminal SSE event instead of
@@ -267,6 +293,14 @@ class RAGService:
             await self._session.rollback()
             raise
 
+        # Normally a no-op (the final chunk released it); covers a stream with no final chunk.
+        accumulated_content += citations.finish()
+        if citations.report.removed:
+            logger.warning(
+                "rag_invalid_citations_removed",
+                conversation_id=str(conversation.id),
+                removed=list(citations.report.removed),
+            )
         await self._messages.add(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
@@ -306,7 +340,7 @@ def _derive_title(message: str) -> str:
     return stripped[: _TITLE_MAX_LENGTH - 1].rstrip() + "…"
 
 
-def _to_rag_source(source: AssembledSource) -> RAGSource:
+def _to_rag_source(source: AssembledSource, *, cited: bool = False) -> RAGSource:
     return RAGSource(
         source_id=source.source_id,
         chunk_id=source.chunk_id,
@@ -315,6 +349,7 @@ def _to_rag_source(source: AssembledSource) -> RAGSource:
         chunk_index=source.chunk_index,
         page_number=source.page_number,
         similarity=source.similarity,
+        cited=cited,
     )
 
 

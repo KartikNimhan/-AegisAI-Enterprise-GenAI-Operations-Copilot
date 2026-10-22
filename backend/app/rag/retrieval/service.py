@@ -20,7 +20,7 @@ from app.core.security import AccessScopeDep
 from app.dependencies import DBSessionDep, SettingsDep
 from app.embeddings.service import EmbeddingService, get_embedding_service
 from app.rag.retrieval.repository import RetrievalRepository
-from app.rag.retrieval.schemas import RetrievalOutcome
+from app.rag.retrieval.schemas import RetrievalFilters, RetrievalOutcome
 from app.rag.retrieval.strategy import RetrievalStrategy, VectorRetrievalStrategy
 
 
@@ -36,7 +36,9 @@ class RetrievalService:
         top_k: int | None = None,
         similarity_threshold: float | None = None,
         document_id: uuid.UUID | None = None,
+        filters: RetrievalFilters | None = None,
     ) -> RetrievalOutcome:
+        applied = (filters or RetrievalFilters()).with_document_id(document_id)
         # The hard ceiling always applies, even to a caller-supplied top_k —
         # never let a client request an unbounded number of chunks.
         resolved_top_k = min(top_k or self._settings.rag_top_k, self._settings.rag_max_results)
@@ -46,9 +48,7 @@ class RetrievalService:
             else self._settings.rag_similarity_threshold
         )
 
-        candidates = await self._strategy.search(
-            query=query, top_k=resolved_top_k, document_id=document_id
-        )
+        candidates = await self._strategy.search(query=query, top_k=resolved_top_k, filters=applied)
         results = [c for c in candidates if c.similarity >= resolved_threshold]
 
         return RetrievalOutcome(
@@ -56,6 +56,7 @@ class RetrievalService:
             results=results,
             top_k=resolved_top_k,
             similarity_threshold=resolved_threshold,
+            filters=applied,
             embedding_provider=self._strategy.embedding_provider,
             embedding_model=self._strategy.embedding_model,
             embedding_model_version=self._strategy.embedding_model_version,

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_principal
 from app.db.session import AsyncSessionLocal, check_database
+from app.domain.models.agent_memory import AgentMemory
 from app.domain.models.conversation import Conversation
 from app.domain.models.document import Document
 from app.domain.models.organization import Organization
@@ -32,9 +33,11 @@ from .scoping import TestUser, create_user
 
 
 async def _remove_organizations(session: AsyncSession, organizations: set[uuid.UUID]) -> None:
-    """Deletes these organizations with everything they own: documents (their chunks and embeddings
-    cascade in the database), conversations (and messages), then users, then the organizations.
+    """Deletes these organizations with everything they own: agent memories, documents (their
+    chunks and embeddings cascade in the database), conversations (and messages), then users,
+    then the organizations.
     Only ever called with organizations a test itself created."""
+    await session.execute(delete(AgentMemory).where(AgentMemory.organization_id.in_(organizations)))
     await session.execute(delete(Document).where(Document.organization_id.in_(organizations)))
     await session.execute(
         delete(Conversation).where(Conversation.organization_id.in_(organizations))

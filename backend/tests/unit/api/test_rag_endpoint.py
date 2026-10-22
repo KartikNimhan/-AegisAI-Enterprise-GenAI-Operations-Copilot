@@ -82,6 +82,7 @@ class FakeRAGService(RAGService):
         model_role: Any,
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
+        filters: Any = None,
     ) -> RAGAnswer:
         self.calls.append(
             {
@@ -90,6 +91,7 @@ class FakeRAGService(RAGService):
                 "model_role": model_role,
                 "top_k": top_k,
                 "document_id": document_id,
+                "filters": filters,
             }
         )
         if self._answer_error is not None:
@@ -105,6 +107,7 @@ class FakeRAGService(RAGService):
         model_role: Any,
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
+        filters: Any = None,
     ) -> AsyncIterator[tuple[uuid.UUID, StreamChunk, list[RAGSource] | None]]:
         self.calls.append(
             {
@@ -113,6 +116,7 @@ class FakeRAGService(RAGService):
                 "model_role": model_role,
                 "top_k": top_k,
                 "document_id": document_id,
+                "filters": filters,
             }
         )
         if self._stream_error is not None:

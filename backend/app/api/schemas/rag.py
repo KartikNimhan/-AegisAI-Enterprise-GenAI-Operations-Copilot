@@ -10,10 +10,14 @@ chunks even if the two limits are ever changed independently.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.domain.enums.document_type import DocumentType
 from app.llm.schemas import ModelRole, TokenUsage
+from app.rag.retrieval.schemas import RetrievalFilters
 from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
 
 
@@ -32,6 +36,52 @@ class RAGChatRequest(BaseModel):
     document_id: uuid.UUID | None = Field(
         default=None, description="Restrict retrieval to a single document."
     )
+    document_types: list[DocumentType] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=len(DocumentType),
+        description="Restrict retrieval to documents of these types.",
+    )
+    filename: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Restrict retrieval to documents with exactly this original file name.",
+    )
+    created_after: datetime | None = Field(
+        default=None,
+        description="Only documents uploaded at or after this time (timezone required).",
+    )
+    created_before: datetime | None = Field(
+        default=None,
+        description="Only documents uploaded at or before this time (timezone required).",
+    )
+
+    @field_validator("created_after", "created_before")
+    @classmethod
+    def _require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("must include a timezone offset, e.g. 2026-01-01T00:00:00Z")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_range(self) -> RAGChatRequest:
+        if (
+            self.created_after is not None
+            and self.created_before is not None
+            and self.created_after > self.created_before
+        ):
+            raise ValueError("created_after must not be later than created_before")
+        return self
+
+    def to_filters(self) -> RetrievalFilters:
+        """The metadata filters other than `document_id` (which is passed on its own)."""
+        return RetrievalFilters(
+            document_types=frozenset(self.document_types) if self.document_types else None,
+            filename=self.filename,
+            created_after=self.created_after,
+            created_before=self.created_before,
+        )
 
 
 class RAGSourceResponse(BaseModel):
@@ -41,6 +91,7 @@ class RAGSourceResponse(BaseModel):
     chunk_index: int
     page: int | None = None
     similarity: float
+    cited: bool = False
 
     @classmethod
     def from_source(cls, source: RAGSource) -> RAGSourceResponse:
@@ -51,6 +102,7 @@ class RAGSourceResponse(BaseModel):
             chunk_index=source.chunk_index,
             page=source.page_number,
             similarity=source.similarity,
+            cited=source.cited,
         )
 
 
@@ -63,6 +115,7 @@ class RAGRetrievalMetadataResponse(BaseModel):
     embedding_provider: str
     embedding_model: str
     embedding_model_version: str
+    filters: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_metadata(cls, metadata: RAGRetrievalMetadata) -> RAGRetrievalMetadataResponse:
@@ -75,6 +128,7 @@ class RAGRetrievalMetadataResponse(BaseModel):
             embedding_provider=metadata.embedding_provider,
             embedding_model=metadata.embedding_model,
             embedding_model_version=metadata.embedding_model_version,
+            filters=metadata.filters,
         )
 
 
@@ -89,6 +143,10 @@ class RAGChatResponse(BaseModel):
     usage: TokenUsage | None = None
     finish_reason: str | None = None
     request_id: str | None = None
+    invalid_citations: list[str] = Field(
+        default_factory=list,
+        description="Citation ids the model wrote that were not retrieved sources (removed).",
+    )
 
     @classmethod
     def from_answer(cls, result: RAGAnswer) -> RAGChatResponse:
@@ -103,6 +161,7 @@ class RAGChatResponse(BaseModel):
             usage=result.usage,
             finish_reason=result.finish_reason,
             request_id=result.request_id,
+            invalid_citations=list(result.invalid_citations),
         )
 
 

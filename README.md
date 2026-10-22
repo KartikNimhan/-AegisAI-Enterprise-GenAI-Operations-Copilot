@@ -81,8 +81,9 @@ that these manifests have not been applied to a real cluster). See
 the original reasoning, including exactly what was and wasn't validated
 given this environment's own Docker/Kubernetes limitations.
 `infra/terraform/` is an empty placeholder — no Terraform has been
-written; nothing there is deployable. Memory beyond plain conversation
-history is **not** implemented yet — see [Implementation history and remaining work](#implementation-history-and-remaining-work) below.
+written; nothing there is deployable. Agent memory beyond plain conversation
+history is implemented (per-user, bounded, see [ADR 015](docs/architecture/decisions/015-agent-memory-and-rag-hardening.md))
+but its migration (0008) has not been applied to any database by this work.
 
 ## Official Project Roadmap
 
@@ -182,7 +183,14 @@ earlier working numbering and are not redefined by this table.
   [ADR 007](docs/architecture/decisions/007-rag-pipeline.md).
 - `POST /api/v1/rag/chat` and `POST /api/v1/rag/chat/stream` — ask a
   question grounded in ingested documents, with structured source
-  citations and retrieval metadata in the response.
+  citations and retrieval metadata in the response. Retrieval can be
+  narrowed with validated metadata filters on top of `document_id`
+  (`document_types`, `filename`, `created_after`, `created_before`; they only
+  ever narrow what the caller may already read). Inline `[S1]` citations are
+  checked against the sources that were actually retrieved: an id that was not
+  retrieved is removed from the answer (streamed and stored text too) and
+  reported in `invalid_citations`; each returned source says whether the
+  answer `cited` it.
 - **Agentic AI** (`backend/app/agents/`) — a single LangGraph-orchestrated
   agent with explicit, controlled tool calling: `AgentService` builds a
   `StateGraph` where an `agent` node asks the (extended) `LLMGateway`
@@ -200,6 +208,17 @@ earlier working numbering and are not redefined by this table.
   runaway loop with a controlled response (checked before acting, not
   after), and `AGENT_TIMEOUT_SECONDS` is a wall-clock backstop. See
   [ADR 008](docs/architecture/decisions/008-agent-architecture.md).
+- **Agent memory** (`backend/app/memory/`) — short notes the agent keeps
+  about one user across conversations (`save_memory` tool, notes recalled into
+  the prompt as labelled untrusted data). Private to the owning user (not
+  shared with the organization or administrators), bounded (length, count per
+  user, writes per run, prompt size, expiry) and fully user-controlled:
+  `GET/POST /api/v1/memories`, `PATCH/DELETE /api/v1/memories/{id}`,
+  `DELETE /api/v1/memories` (forget everything). Settings: `AGENT_MEMORY_ENABLED`
+  (`true`), `AGENT_MEMORY_MAX_ITEM_CHARS` (`500`), `AGENT_MEMORY_MAX_ITEMS_PER_USER`
+  (`200`), `AGENT_MEMORY_MAX_WRITES_PER_RUN` (`3`; `0` disables the tool),
+  `AGENT_MEMORY_MAX_RECALLED` (`8`), `AGENT_MEMORY_MAX_PROMPT_CHARS` (`2000`),
+  `AGENT_MEMORY_TTL_DAYS` (`90`). Needs migration 0008.
 - `POST /api/v1/agents/run` and `POST /api/v1/agents/run/stream` — ask the
   agent a question; the response includes the final answer, a per-tool
   usage summary, knowledge-base sources when used, and run status. The
@@ -415,7 +434,7 @@ backend/app/
                      validation, task submission/parsing (submit_task is
                      the generic form Milestone 8 uses for all 3 agents)
     exceptions.py    typed A2AError hierarchy
-  memory/         agent memory beyond conversation history (reserved)
+  memory/         agent memory (per-user notes, bounded; ADR 015)
   auth/           authentication (M12 Phase 1a): tokens.py verifies OIDC bearer
                    tokens, jwks.py looks up signing keys (cache + circuit breaker),
                    service.py maps a verified token to an internal Principal
@@ -754,7 +773,11 @@ cd frontend/web && npm install && npm run dev
 Then visit http://localhost:5173 — Vite's dev server, with
 `VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
 backend. The Copilot, Documents, Operations, and System Status pages are
-all in the left sidebar. Signing in needs `VITE_OIDC_AUTHORITY` and
+all in the left sidebar. The Copilot streams its answer over Server-Sent Events
+(`POST /api/v1/rag/chat/stream`, read with `fetch` so the bearer token can be sent): text
+appears as it is written, with a Stop button, sources when it finishes, and an explicit
+"Try again" after a failure (there is no automatic reconnect: a retry would repeat a request
+that costs model tokens). The previous multi-agent workflow remains selectable. Signing in needs `VITE_OIDC_AUTHORITY` and
 `VITE_OIDC_CLIENT_ID` (see [Authentication setup](#authentication-setup)).
 
 **Streamlit (legacy).** Not supported against an authentication-enabled backend
@@ -1042,7 +1065,7 @@ Since then: a retrieval-level **evaluation harness** (Milestone 11, see
 they need a live LLM) and the first part of security, **bearer-token
 authentication** and browser sign-in (Milestone 12; see [Authentication
 setup](#authentication-setup)). Not started or not finished, in rough order,
-each as its own milestone: memory beyond conversation history → the rest of
+each as its own milestone: the rest of
 security/RBAC (further role-based permissions and a user admin API;
 ownership-based data isolation is implemented, see
 [ADR 013](docs/architecture/decisions/013-data-isolation.md)) → observability/LLMOps → async workers →

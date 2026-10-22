@@ -1,1 +1,1 @@
-"""Reserved for the agent/conversation memory milestone. Not implemented yet."""
+"""Agent memory: notes the agent keeps about one user across conversations (ADR 015)."""

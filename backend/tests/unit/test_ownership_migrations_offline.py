@@ -53,8 +53,8 @@ def _statements(sql: str) -> list[str]:
     return [s.strip() for s in cleaned.split(";") if s.strip()]
 
 
-def test_there_is_a_single_head_and_it_is_0007() -> None:
-    assert ScriptDirectory.from_config(_config()).get_heads() == ["0007"]
+def test_there_is_a_single_head_and_it_is_0008() -> None:
+    assert ScriptDirectory.from_config(_config()).get_heads() == ["0008"]
 
 
 def test_the_chain_continues_from_the_identity_migration() -> None:

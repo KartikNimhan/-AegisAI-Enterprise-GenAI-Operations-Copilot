@@ -13,6 +13,7 @@ from app.db.base import Base
 
 # Imported so Base.metadata is complete for autogenerate support.
 from app.domain.models import (  # noqa: F401
+    AgentMemory,
     ChunkEmbedding,
     Conversation,
     Document,

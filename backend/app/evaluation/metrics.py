@@ -150,5 +150,29 @@ def no_answer_abstention_rate(abstained: list[bool]) -> MetricResult:
     )
 
 
+def citation_validity_rate(answers: list[tuple[int, int]]) -> MetricResult:
+    """Over answers that contain at least one citation: the fraction of cited ids (counted per
+    answer) that referred to a source that was really retrieved. `answers` holds
+    `(valid_count, invalid_count)` per answer, e.g. from `app.rag.citations.sanitize_citations`.
+
+    Unlike `citation_precision` this needs no judgement about whether a citation *supports* the
+    claim, so it is deterministic and can be scored offline against scripted answers; it measures
+    only the "no citation of evidence that was never provided" property. Answers with no citation
+    are ignored (a lack of citations is a different failure); with none at all it is skipped.
+    """
+    scored = [(valid, invalid) for valid, invalid in answers if valid + invalid > 0]
+    if not scored:
+        return MetricResult(
+            name="citation_validity_rate",
+            status="skipped",
+            reason="no answer contained a citation",
+        )
+    valid_total = sum(valid for valid, _ in scored)
+    cited_total = sum(valid + invalid for valid, invalid in scored)
+    return MetricResult(
+        name="citation_validity_rate", status="computed", value=valid_total / cited_total
+    )
+
+
 def skipped_metric(name: str, reason: str) -> MetricResult:
     return MetricResult(name=name, status="skipped", reason=reason)

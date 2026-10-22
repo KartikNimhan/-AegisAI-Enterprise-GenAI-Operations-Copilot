@@ -128,6 +128,18 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 10
     agent_timeout_seconds: float = 60.0
 
+    # Agent memory (ADR 015). Facts and preferences the agent keeps about ONE user across
+    # conversations; private to that user, never shared. Every limit is a hard bound:
+    # per item (chars), per user (rows), per run (writes), per prompt (items and chars), and a
+    # time-to-live after which an unused note is no longer recalled and is purged on next write.
+    agent_memory_enabled: bool = True
+    agent_memory_max_item_chars: int = 500
+    agent_memory_max_items_per_user: int = 200
+    agent_memory_max_writes_per_run: int = 3
+    agent_memory_max_recalled: int = 8
+    agent_memory_max_prompt_chars: int = 2000
+    agent_memory_ttl_days: int = 90
+
     # MCP (Milestone 7). The in-process MCP server's capabilities are
     # exposed to the agent only through an explicit allowlist — a
     # discovered tool is never trusted just because the server returned
@@ -270,6 +282,20 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} must be between 0 (unlimited) and 1000000")
         if not 1_000 <= self.rate_limit_max_tracked_keys <= 10_000_000:
             raise ValueError("RATE_LIMIT_MAX_TRACKED_KEYS must be between 1000 and 10000000")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_agent_memory(self) -> Self:
+        for name, value, low, high in (
+            ("AGENT_MEMORY_MAX_ITEM_CHARS", self.agent_memory_max_item_chars, 20, 2_000),
+            ("AGENT_MEMORY_MAX_ITEMS_PER_USER", self.agent_memory_max_items_per_user, 1, 10_000),
+            ("AGENT_MEMORY_MAX_WRITES_PER_RUN", self.agent_memory_max_writes_per_run, 0, 20),
+            ("AGENT_MEMORY_MAX_RECALLED", self.agent_memory_max_recalled, 1, 50),
+            ("AGENT_MEMORY_MAX_PROMPT_CHARS", self.agent_memory_max_prompt_chars, 100, 20_000),
+            ("AGENT_MEMORY_TTL_DAYS", self.agent_memory_ttl_days, 1, 3_650),
+        ):
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
         return self
 
     @property

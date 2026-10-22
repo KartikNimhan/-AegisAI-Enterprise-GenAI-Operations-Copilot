@@ -17,11 +17,13 @@ from app.agents.tools.base import ToolRegistry
 from app.agents.tools.calculator import CALCULATOR_TOOL
 from app.agents.tools.document_metadata import build_document_metadata_tool
 from app.agents.tools.knowledge_base import build_knowledge_base_tool
+from app.agents.tools.memory import build_save_memory_tool
 from app.agents.tools.research_delegation import build_research_delegation_tool
 from app.config import Settings
 from app.db.repositories.document_repository import DocumentRepository
 from app.mcp.client import discover_mcp_tool_definitions
 from app.mcp.server import build_mcp_server
+from app.memory.service import AgentMemoryService
 from app.rag.retrieval.service import RetrievalService
 
 
@@ -31,12 +33,20 @@ async def build_tool_registry(
     retrieval: RetrievalService,
     settings: Settings,
     auth_token: str | None = None,
+    memory: AgentMemoryService | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(CALCULATOR_TOOL)
     registry.register(build_document_metadata_tool(documents))
     registry.register(build_knowledge_base_tool(retrieval))
     registry.register(build_research_delegation_tool(settings, auth_token))
+    # Writing memory is opt-in per request and off when the feature is disabled or has no budget.
+    if memory is not None and memory.enabled and settings.agent_memory_max_writes_per_run > 0:
+        registry.register(
+            build_save_memory_tool(
+                memory, max_writes_per_run=settings.agent_memory_max_writes_per_run
+            )
+        )
 
     mcp_server = build_mcp_server(documents=documents, retrieval=retrieval)
     mcp_tools = await discover_mcp_tool_definitions(server=mcp_server, settings=settings)

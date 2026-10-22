@@ -51,6 +51,7 @@ from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole
+from app.memory.service import AgentMemoryService, build_memory_service, format_for_prompt
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
 
 logger = structlog.get_logger(__name__)
@@ -68,8 +69,10 @@ class AgentService:
         conversations: ConversationRepository,
         messages: MessageRepository,
         tool_registry: ToolRegistry,
+        memory: AgentMemoryService | None = None,
     ) -> None:
         self._session = session
+        self._memory = memory
         self._settings = settings
         self._conversations = conversations
         self._messages = messages
@@ -83,8 +86,17 @@ class AgentService:
         conversation = await self._get_or_create_conversation(conversation_id, message)
         history = await self._messages.list_by_conversation(conversation.id)
 
+        # Notes this user saved earlier (never anyone else's: the repository is scoped to the
+        # caller). A failure here means no notes this time, not a failed run.
+        notes = (
+            format_for_prompt(await self._memory.recall_safely(message))
+            if self._memory is not None
+            else None
+        )
+
         initial_messages: list[BaseMessage] = [
             SystemMessage(content=AEGIS_AGENT_SYSTEM_PROMPT.text),
+            *([SystemMessage(content=notes)] if notes else []),
             *history_to_langchain_messages(history),
             HumanMessage(content=message),
         ]
@@ -402,8 +414,13 @@ async def get_agent_service(
     documents = DocumentRepository(session, scope)
     # The caller's token is forwarded (only to a validated trusted destination)
     # when the agent delegates to the Research Agent over A2A.
+    memory = build_memory_service(session, scope, settings)
     tool_registry = await build_tool_registry(
-        documents=documents, retrieval=retrieval, settings=settings, auth_token=bearer_token
+        documents=documents,
+        retrieval=retrieval,
+        settings=settings,
+        auth_token=bearer_token,
+        memory=memory,
     )
     return AgentService(
         session=session,
@@ -412,4 +429,5 @@ async def get_agent_service(
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),
         tool_registry=tool_registry,
+        memory=memory,
     )

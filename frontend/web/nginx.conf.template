@@ -49,6 +49,9 @@ server {
         client_max_body_size 21m;
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;
+        # Server-sent events (the streaming chat endpoints) must reach the browser as they are
+        # produced; buffering would hold the whole answer until it is complete.
+        proxy_buffering off;
     }
 
     # Client-side routing (react-router): any path that isn't a real

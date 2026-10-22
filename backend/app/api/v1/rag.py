@@ -43,6 +43,7 @@ async def rag_chat(request: RAGChatRequest, rag_service: RAGServiceDep) -> RAGCh
         model_role=request.model_role,
         top_k=request.top_k,
         document_id=request.document_id,
+        filters=request.to_filters(),
     )
     return RAGChatResponse.from_answer(result)
 
@@ -57,6 +58,7 @@ async def rag_chat_stream(request: RAGChatRequest, rag_service: RAGServiceDep) -
                 model_role=request.model_role,
                 top_k=request.top_k,
                 document_id=request.document_id,
+                filters=request.to_filters(),
             ):
                 event = RAGChatStreamChunk(
                     conversation_id=conversation_id,

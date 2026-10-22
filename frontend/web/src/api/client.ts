@@ -36,7 +36,7 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
-function buildUrl(path: string, params?: RequestOptions['params']): string {
+export function buildUrl(path: string, params?: RequestOptions['params']): string {
   const url = new URL(path, getApiBaseUrl())
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -46,7 +46,7 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return url.toString()
 }
 
-async function parseErrorResponse(response: Response): Promise<BackendError> {
+export async function parseErrorResponse(response: Response): Promise<BackendError> {
   try {
     const payload = await response.json()
     const detail = (payload && typeof payload === 'object' ? payload.error : null) ?? {}

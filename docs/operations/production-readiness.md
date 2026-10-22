@@ -11,7 +11,7 @@ earlier working numbering, which this page does not use.
 | Label | Meaning here |
 |---|---|
 | **Offline-verified** | A test that ran and passed without Docker, a database or the network (fakes, mocks, executed SQL on SQLite, rendered migration SQL). It proves logic, **not** that a live system behaves the same. |
-| **Database-backed** | Needs PostgreSQL + pgvector. The suites exist (`backend/tests/integration/`, 111 tests, plus 4 in `backend/tests/evaluation/`) but **none has been run in this work**. CI runs them against a Postgres service; its first run is the real test. |
+| **Database-backed** | Needs PostgreSQL + pgvector. The suites exist (`backend/tests/integration/`, 119 tests, plus 4 in `backend/tests/evaluation/`) but **none has been run in this work**. CI runs them against a Postgres service; its first run is the real test. |
 | **Live** | Needs a running stack, a real identity provider, or an external model API. Not done. |
 
 ## Verification record (offline, this work)
@@ -20,12 +20,12 @@ earlier working numbering, which this page does not use.
 |---|---|
 | `ruff check` / `ruff format --check` (whole repository) | clean / clean |
 | `pyright` | 0 errors |
-| Backend unit suite (`backend/tests/unit`) | **1083 passed, 1 skipped** (the skip is an older test that the HTTP client cannot even execute) |
-| Frontend (`vitest`, `tsc --noEmit`, `oxlint`) | 53 passed; types clean; style warnings only, in pages unrelated to security |
+| Backend unit suite (`backend/tests/unit`) | **1194 passed, 1 skipped** (the skip is an older test that the HTTP client cannot even execute) |
+| Frontend (`vitest`, `tsc --noEmit`, `oxlint`) | 71 passed; types clean; 3 pre-existing style warnings, in files not touched by M5/M6/M8 |
 | Streamlit UI tests | 27 passed |
 | Kubernetes manifest validator | 15 documents pass structural checks |
-| Migrations 0006 and 0007 | rendered SQL checked offline: only `ALTER TABLE`/`CREATE INDEX` plus version bookkeeping |
-| Database-backed suites | **115 collected, 0 run** |
+| Migrations 0006 to 0008 | rendered SQL checked offline: 0006/0007 only `ALTER TABLE`/`CREATE INDEX`; 0008 only `CREATE TABLE agent_memories` + one index, plus version bookkeeping. **None applied by this work** |
+| Database-backed suites | **123 collected, 2 passed (no database needed), 121 skipped because Postgres was unreachable; none of the database-backed assertions ran** |
 
 Mocked tests are labelled as such in their docstrings. `test_indirect_access_paths.py` and
 `test_scoped_repositories.py` prove structure and delegation, **not** that a database hides another
@@ -38,15 +38,15 @@ Status vocabulary: `implemented and verified`, `partially verified`, `blocked`, 
 
 | # | Milestone | Status | Evidence | Not verified / gap |
 |---|---|---|---|---|
-| M0 | Foundation & Architecture | partially verified | FastAPI app, typed settings with validators (`app/config.py`), JSON logging with request ids (`app/core/logging.py`, `middleware.py`), Dockerfile + Compose, Alembic chain 0001 to 0007; unit tests across all packages | PostgreSQL and Docker were not exercised in this work (not permitted); the Compose stack was seen healthy in an earlier session only |
+| M0 | Foundation & Architecture | partially verified | FastAPI app, typed settings with validators (`app/config.py`), JSON logging with request ids (`app/core/logging.py`, `middleware.py`), Dockerfile + Compose, Alembic chain 0001 to 0008; unit tests across all packages | PostgreSQL and Docker were not exercised in this work (not permitted); the Compose stack was seen healthy in an earlier session only |
 | M1 | LLM Gateway | partially verified | provider-neutral gateway with Groq provider, model roles (`primary`/`fast`/`safety`), retries, streaming (`app/llm/`); 24 gateway tests plus service tests with scripted gateways | no live Groq call (no key, no network) |
 | M2 | Conversational AI | partially verified | chat service, prompt builder, persisted history, SSE streaming (now returns a proper 404 before streaming starts), token usage stored per message; `tests/unit/services`, `prompts`, `api` | the database-backed chat flow tests (`test_chat_flow.py`) have not run |
 | M3 | Document Intelligence | partially verified | PDF/DOCX/TXT/Markdown extractors, normalization, recursive chunking, local file storage; 66 document tests run the real extractors | persistence of documents/chunks needs the database suites |
 | M4 | Embeddings | partially verified | Sentence Transformers provider, pgvector column, batching, model/version fields, similarity search (scoped); unit tests with a fake provider | exact search only (no ANN index, by design in ADR 006); the real model and pgvector queries are exercised only by opt-in/database tests |
-| M5 | Production RAG | partially verified | retrieval service, top-K and similarity threshold, context assembly with citations, untrusted-context prompt, no-fabrication response; 38 RAG tests; the retrieval SQL carries the access scope before `LIMIT` | metadata filtering is `document_id` only; no live retrieval run |
-| M6 | Agentic AI | partially verified, with a gap | LangGraph agent graph, tool registry and calling, step/time limits, streaming; 93 agent tests | **memory beyond conversation history is not implemented** (`app/memory/` is empty) |
+| M5 | Production RAG | partially verified | retrieval service, top-K and similarity threshold, context assembly with citations, untrusted-context prompt, no-fabrication response; metadata filters (document id, types, file name, date range) as bound parameters after the access scope; inline citations validated against retrieved source ids (streamed and non-streamed), offline citation-validity metric; ADR 015 | no live retrieval or live-model run; filter/cross-user behavior on PostgreSQL is in unrun database tests; validation proves a cited id exists, not that it supports the claim |
+| M6 | Agentic AI | partially verified | LangGraph agent graph, tool registry and calling, step/time limits, streaming; per-user agent memory (`save_memory` tool, recall into the prompt, `/api/v1/memories`, TTL, bounds, savepoint failure isolation; ADR 015) tested with the real repository over SQLite | **migration 0008 not applied; PostgreSQL constraints and concurrency untested**; recall is word-overlap ranking, not semantic; memory is not in the React UI; memory-poisoning risk is mitigated, not eliminated |
 | M7 | MCP + A2A Multi-Agent | partially verified | in-process MCP server/client, A2A agent cards and tasks, trusted-agent allowlist, deterministic multi-agent orchestrator; 27 + 125 + 48 tests; the caller's own token is forwarded only to allowlisted agents | no live multi-agent run; the stdio MCP script is an unauthenticated operator tool (see below) |
-| M8 | GenAI UI + APIs | implemented and verified (UI level) | React app (chat, documents, operations, system status) and the legacy Streamlit UI; SSE endpoints; 53 + 27 UI tests pass, types clean | live backend + browser sign-in not run; **no WebSockets** (SSE only); no control in the UI for sharing a document or for hiding admin-only pages |
+| M8 | GenAI UI + APIs | implemented and verified (UI level) | React app (chat, documents, operations, system status) and the legacy Streamlit UI; the Copilot streams over SSE (incremental text, loading, stop, error with partial text, explicit retry, abort on leave); 71 + 27 UI tests pass, types clean | live backend + browser sign-in not run; streaming through nginx/real browser not run; no automatic reconnect (by design); **no WebSockets** (SSE only); no control in the UI for sharing a document or for hiding admin-only pages |
 | M9 | Production / MLOps / Responsible AI | gap remains | Dockerfiles and Kubernetes manifests (structurally validated, never applied); CI pipeline (`.github/workflows/ci.yml`, never run here); retrieval evaluation harness with a stored baseline; OIDC authentication, roles, ownership-based isolation, rate limits, audit events (ADRs 013 and 014); readiness documentation | **no metrics or tracing** (no Prometheus/OpenTelemetry integration); no centralized alerting; evaluation is retrieval-level (answer quality needs a live model); no dependency-vulnerability, secret or image scanning in CI; no model-use or data-retention policy document; manifests need a cluster to be proven |
 
 ## Security model: what is enforced, and where it is not
@@ -91,7 +91,7 @@ Known limitations, none of which is fixed:
 
 ## Migration readiness
 
-*Fresh install.* `alembic upgrade head` runs 0001 to 0007 straight through (0007 passes because no row
+*Fresh install.* `alembic upgrade head` runs 0001 to 0008 straight through (0007 passes because no row
 is unowned). Then provision the first user (`scripts/provision_identity.py`).
 
 *Existing database* (this project's own database was last seen at 0004 with one conversation and two
@@ -103,7 +103,7 @@ messages; nothing has been migrated or assigned by this work):
 4. `alembic upgrade 0006` (adds nullable owner columns, visibility, constraints; changes no row).
 5. `scripts/assign_legacy_data.py --email <user> --organization "<name>" --dry-run`, check the counts,
    then `--yes`. It requires both names, validates both, and only fills in missing owners.
-6. `alembic upgrade head` (0007 makes the owner required; it refuses while any row is unowned).
+6. `alembic upgrade head` (0007 makes the owner required, refusing while any row is unowned; 0008 then creates the `agent_memories` table, additive, no existing row touched; its downgrade drops that table and the memories in it).
 
 What the SQL previews establish: the migrations only add structure, name their objects consistently
 with the models, the downgrade drops only what 0006 added, and 0007 refuses while rows are unowned.
@@ -139,7 +139,7 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
 8. A user-management API and UI (create/disable users, change roles) with its own audit events.
 9. UI: hide admin-only pages from members; a sharing control for documents.
 10. Review CORS, TLS, secrets handling, backup/restore and data retention for the target environment.
-11. M6 memory (beyond conversation history) and any further M9 governance documents the project wants
+11. A React UI for viewing/deleting agent memory, semantic memory recall if wanted, and any further M9 governance documents the project wants
     (model-use policy, responsible-AI review).
 
 ## Troubleshooting

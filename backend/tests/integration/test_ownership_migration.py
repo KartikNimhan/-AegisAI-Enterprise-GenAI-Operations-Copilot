@@ -241,7 +241,9 @@ async def test_ownership_migrations_and_backfill_in_a_throwaway_database() -> No
 
             # -- 0007 now succeeds ----------------------------------------------------------
             _alembic(url, "upgrade", "head")
-            assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0007"
+            # head is 0008 (agent memories); 0007 was applied on the way
+            assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0008"
+            assert await _scalar(url, "SELECT count(*) FROM agent_memories") == 0
             assert await _nullable(url, "conversations", "owner_user_id") == "NO"
             assert await _nullable(url, "documents", "organization_id") == "NO"
 
@@ -270,6 +272,17 @@ async def test_ownership_migrations_and_backfill_in_a_throwaway_database() -> No
                 )
             with pytest.raises(IntegrityError):  # a visibility that does not exist
                 await _sql(url, "UPDATE documents SET visibility = 'public'")
+
+            with pytest.raises(IntegrityError):  # a memory whose owner is outside its organization
+                await _sql(
+                    url,
+                    "INSERT INTO agent_memories (id, owner_user_id, organization_id, kind, source, "
+                    "content, content_hash, expires_at) VALUES (:m, :u, :o, 'fact', 'agent', 'x', "
+                    "'h', now())",
+                    m=uuid.uuid4(),
+                    u=ids["user"],
+                    o=other_org,
+                )
 
             # -- a user who owns data cannot be deleted out from under it ---------------------
             with pytest.raises(IntegrityError):

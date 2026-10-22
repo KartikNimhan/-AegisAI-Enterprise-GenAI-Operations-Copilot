@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.llm.schemas import TokenUsage
 
@@ -20,6 +21,8 @@ class RAGSource:
     chunk_index: int
     page_number: int | None
     similarity: float
+    # True when the (validated) answer text cites this source inline.
+    cited: bool = False
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,8 @@ class RAGRetrievalMetadata:
     embedding_provider: str
     embedding_model: str
     embedding_model_version: str
+    # The metadata filters that were applied (document id, type, filename, date range).
+    filters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -49,3 +54,5 @@ class RAGAnswer:
     usage: TokenUsage | None = None
     finish_reason: str | None = None
     request_id: str | None = None
+    # Citation ids the model wrote that were not among the retrieved sources; removed from `answer`.
+    invalid_citations: tuple[str, ...] = ()

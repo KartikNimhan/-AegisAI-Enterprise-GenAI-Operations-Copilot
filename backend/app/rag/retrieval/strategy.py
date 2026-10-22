@@ -11,14 +11,13 @@ no registry — just the seam the brief asked for.
 
 from __future__ import annotations
 
-import uuid
 from abc import ABC, abstractmethod
 
 from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 from app.embeddings.service import EmbeddingService
 from app.rag.retrieval.repository import RetrievalRepository
-from app.rag.retrieval.schemas import RetrievalResult
+from app.rag.retrieval.schemas import RetrievalFilters, RetrievalResult
 
 
 class RetrievalStrategy(ABC):
@@ -42,7 +41,7 @@ class RetrievalStrategy(ABC):
 
     @abstractmethod
     async def search(
-        self, *, query: str, top_k: int, document_id: uuid.UUID | None
+        self, *, query: str, top_k: int, filters: RetrievalFilters
     ) -> list[RetrievalResult]:
         """Returns up to `top_k` candidates ordered by relevance
         (best first), unfiltered by any similarity threshold — that's
@@ -78,7 +77,7 @@ class VectorRetrievalStrategy(RetrievalStrategy):
         return self._embedding_service.model_version
 
     async def search(
-        self, *, query: str, top_k: int, document_id: uuid.UUID | None
+        self, *, query: str, top_k: int, filters: RetrievalFilters
     ) -> list[RetrievalResult]:
         query_vector = await self._embedding_service.embed_query(query)
         rows = await self._repository.search(
@@ -86,7 +85,7 @@ class VectorRetrievalStrategy(RetrievalStrategy):
             model=self._embedding_service.model_name,
             model_version=self._embedding_service.model_version,
             top_k=top_k,
-            document_id=document_id,
+            filters=filters,
         )
         return [
             _to_result(chunk, document, distance) for _embedding, chunk, document, distance in rows

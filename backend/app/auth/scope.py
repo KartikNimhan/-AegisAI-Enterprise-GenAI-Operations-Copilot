@@ -5,6 +5,7 @@ Rules (see docs/architecture/decisions/013-data-isolation.md):
 
 - **Conversations** (and so their messages) belong to one user. Only that user
   may read, continue or delete them. Administrators have no special access.
+- **Agent memories** belong to one user and are never shared with anyone.
 - **Documents** (and so their chunks and embeddings) belong to one user inside one
   organization. They are readable by the owner and, when their visibility is
   `organization`, by members of that organization; never across organizations.
@@ -33,6 +34,7 @@ from app.domain.enums.document_visibility import DocumentVisibility
 
 if TYPE_CHECKING:
     from app.auth.principal import Principal
+    from app.domain.models.agent_memory import AgentMemory
     from app.domain.models.conversation import Conversation
     from app.domain.models.document import Document
 
@@ -71,6 +73,17 @@ class AccessScope:
         if self.user_id is None:
             return false()
         return model.owner_user_id == self.user_id
+
+    def memory_filter(self, model: type[AgentMemory]) -> ColumnElement[bool]:
+        """Agent memories belong to exactly one user and are never shared: not with the
+        organization, and not with administrators."""
+        if self.unrestricted:
+            return true()
+        if self.user_id is None or self.organization_id is None:
+            return false()
+        return and_(
+            model.owner_user_id == self.user_id, model.organization_id == self.organization_id
+        )
 
     def document_read_filter(self, model: type[Document]) -> ColumnElement[bool]:
         """Rows the caller may read: their own, or organization-visible ones in
