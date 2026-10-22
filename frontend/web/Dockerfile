@@ -34,7 +34,7 @@ RUN npm run build
 # Docker-Content-Digest header, and the SHA-256 of the index body itself).
 # The tag stays for readability. To update, resolve the new tag's index digest
 # from the registry and replace both together.
-FROM nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
+FROM nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e AS runtime
 
 # The build steps below need root; the final USER drops back to 101.
 USER root
