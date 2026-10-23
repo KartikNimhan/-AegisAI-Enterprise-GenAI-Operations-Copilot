@@ -83,7 +83,9 @@ class RAGService:
         conversation = await self._get_or_create_conversation(conversation_id, message)
         applied = (filters or RetrievalFilters()).with_document_id(document_id)
         await self._validate_document_filter(applied.document_id)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
 
         start = time.perf_counter()
         outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
@@ -214,7 +216,9 @@ class RAGService:
         conversation = await self._get_or_create_conversation(conversation_id, message)
         applied = (filters or RetrievalFilters()).with_document_id(document_id)
         await self._validate_document_filter(applied.document_id)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
 
         outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
 

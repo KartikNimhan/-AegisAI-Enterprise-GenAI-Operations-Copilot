@@ -24,6 +24,10 @@ class PromptBuilder:
         self._system_prompt = system_prompt
         self._history_limits = history_limits or HistoryLimits()
 
+    @property
+    def history_limits(self) -> HistoryLimits:
+        return self._history_limits
+
     def build(self, *, history: list[Message], user_message: str) -> list[ChatMessage]:
         messages = [ChatMessage(role=ChatRole.SYSTEM, content=self._system_prompt.text)]
         messages.extend(

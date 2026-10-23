@@ -144,3 +144,21 @@ async def test_tool_executor_returns_structured_validation_error() -> None:
     result = await CALCULATOR_TOOL.executor(args)
     assert result.success is False
     assert result.error_code == "validation_error"
+
+
+@pytest.mark.parametrize("expression", ["(-8) ** 0.5", "(-8) ** (1/3)", "(-1) ** 0.5"])
+def test_a_non_real_result_is_an_error_not_a_complex_answer(expression: str) -> None:
+    with pytest.raises(CalculatorError, match="not a real number"):
+        evaluate_expression(expression)
+
+
+async def test_the_tool_reports_a_non_real_result_as_a_failure() -> None:
+    result = await CALCULATOR_TOOL.executor(CalculatorArgs(expression="(-8) ** 0.5"))
+
+    assert result.success is False
+    assert "j" not in (result.error or "")  # no complex number leaks into the answer
+
+
+def test_real_powers_still_work() -> None:
+    assert evaluate_expression("2 ** 0.5") == pytest.approx(1.41421356)
+    assert evaluate_expression("(-2) ** 3") == -8

@@ -26,6 +26,8 @@ from mcp.client.stdio import StdioServerParameters
 
 from app.db.session import check_database
 
+from .requirements import service_unavailable
+
 pytestmark = [
     pytest.mark.mcp_integration,
     pytest.mark.skipif(
@@ -38,7 +40,9 @@ pytestmark = [
 @pytest.fixture
 async def stdio_params() -> StdioServerParameters:
     if not await check_database(timeout=2.0):
-        pytest.skip("Postgres is not reachable — start it via `docker compose up -d postgres`")
+        service_unavailable(
+            "Postgres is not reachable — start it via `docker compose up -d postgres`"
+        )
     # The server refuses to start without an explicit choice of whose data it serves.
     return StdioServerParameters(
         command=sys.executable,

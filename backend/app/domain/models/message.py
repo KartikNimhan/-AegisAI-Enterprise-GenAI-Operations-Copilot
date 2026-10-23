@@ -10,9 +10,20 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, Uuid, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    case,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -74,3 +85,15 @@ class Message(Base):
     )
 
     conversation: Mapped[Conversation] = relationship("Conversation", back_populates="messages")
+
+
+def message_order() -> list[Any]:
+    """The chronological order of a conversation's messages.
+
+    `created_at` alone is not enough: its server default is PostgreSQL's `now()`, the start of the
+    TRANSACTION, and one turn stores the user's message and the reply in the same transaction, so
+    rows written before `MessageRepository` set timestamps itself share one value. For those, the
+    user's message comes before the reply; `id` makes the order total, so it never depends on
+    the database's row order.
+    """
+    return [Message.created_at, case((Message.role == MessageRole.USER, 0), else_=1), Message.id]

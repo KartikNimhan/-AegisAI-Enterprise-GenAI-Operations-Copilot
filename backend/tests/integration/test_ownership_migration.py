@@ -34,6 +34,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
 
+from .requirements import service_unavailable
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
@@ -159,7 +161,9 @@ async def test_ownership_migrations_and_backfill_in_a_throwaway_database() -> No
             async with admin_engine.connect() as conn:
                 await conn.execute(text(f'CREATE DATABASE "{name}"'))
         except DBAPIError as exc:
-            pytest.skip(f"cannot create a throwaway database with this role: {type(exc).__name__}")
+            service_unavailable(
+                f"cannot create a throwaway database with this role: {type(exc).__name__}"
+            )
 
         url = base_url.set(database=name).render_as_string(hide_password=False)
         try:

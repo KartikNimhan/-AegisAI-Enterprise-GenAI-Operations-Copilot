@@ -105,3 +105,36 @@ def test_settings_env_override(monkeypatch, clear_settings_cache) -> None:
 
 def test_get_settings_is_cached() -> None:
     assert get_settings() is get_settings()
+
+
+def test_a_wildcard_cors_origin_is_refused_outside_local_development() -> None:
+    import pytest as _pytest
+
+    issuer = "https://idp.example.test/realms/aegis"
+    production = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        environment="production",
+        cors_origins=["*"],
+        auth_issuer=issuer,
+        auth_audience="aegisai-api",
+        auth_jwks_url=f"{issuer}/protocol/openid-connect/certs",
+    )
+
+    with _pytest.raises(ValueError, match="CORS_ORIGINS contains"):
+        production.validate_for_serving()
+
+
+def test_explicit_origins_and_local_wildcards_are_accepted() -> None:
+    issuer = "https://idp.example.test/realms/aegis"
+    explicit = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        environment="production",
+        cors_origins=["https://copilot.example.test"],
+        auth_issuer=issuer,
+        auth_audience="aegisai-api",
+        auth_jwks_url=f"{issuer}/protocol/openid-connect/certs",
+    )
+    explicit.validate_for_serving()  # does not raise
+
+    local = Settings(_env_file=None, environment="local", cors_origins=["*"])  # type: ignore[call-arg]
+    local.validate_for_serving()  # local development is unaffected

@@ -29,6 +29,7 @@ from app.domain.models.organization import Organization
 from app.domain.models.user import User
 from app.main import app
 
+from .requirements import service_unavailable
 from .scoping import TestUser, create_user
 
 
@@ -57,7 +58,9 @@ async def _remove_everything_owned_by(session: AsyncSession, owner: TestUser) ->
 @pytest.fixture
 async def db_session(request: pytest.FixtureRequest) -> AsyncIterator[AsyncSession]:
     if not await check_database(timeout=2.0):
-        pytest.skip("Postgres is not reachable — start it via `docker compose up -d postgres`")
+        service_unavailable(
+            "Postgres is not reachable — start it via `docker compose up -d postgres`"
+        )
     async with AsyncSessionLocal() as session:
         owner = await create_user(session)
         session.info["test_user"] = owner

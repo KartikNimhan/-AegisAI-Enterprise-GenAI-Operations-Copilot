@@ -743,7 +743,7 @@ Application metrics are opt-in (see [docs/operations/observability.md](docs/oper
 |---|---|---|
 | `METRICS_ENABLED` | `false` | `true` mounts `GET /metrics` and starts recording; otherwise nothing is recorded and the route is a 404 |
 | `METRICS_TOKEN` | unset | bearer token a scraper must send; required outside local development, at least 16 characters, no leading/trailing whitespace (a trailing newline from a secret file is rejected); keep it out of version control |
-| `MAX_REQUEST_BODY_BYTES` | `16777216` | largest non-upload request body; larger gets 413 before parsing |
+| `MAX_REQUEST_BODY_BYTES` | `16777216` | largest request body, whatever its Content-Type. A request that declares a larger `Content-Length` gets 413 before its body is read; a chunked request without a declared length is cut off once it passes the limit, so the read stays bounded, but it may get 400 instead of 413. The upload route allows `DOCUMENT_MAX_UPLOAD_SIZE_BYTES` + 1 MiB |
 | `A2A_MAX_RESPONSE_BYTES` / `A2A_TOTAL_TIMEOUT_SECONDS` | `1048576` / `30` | cap on one agent response, and a deadline for the whole exchange (on top of the per-phase timeout) |
 | `LLM_STREAM_TOTAL_TIMEOUT_SECONDS` | `300` | deadline for a whole model stream |
 | `EMBEDDING_DIMENSION` | `384` | must equal the vector column; the API refuses to start otherwise |
@@ -979,6 +979,14 @@ uv run ruff check .
 uv run ruff format .
 uv run pyright
 ```
+
+**The integration suites use whatever database `DATABASE_URL` names.** They create and delete
+their own organizations and users there (and the opt-in migration round trip creates and drops
+throwaway databases), so point `DATABASE_URL` at a disposable database before running the full
+suite, or run only `backend/tests/unit`. In CI the Postgres and Redis service containers are part of
+the `test` job, and `AEGIS_REQUIRE_SERVICES=1` makes an unreachable service **fail** the
+integration tests instead of skipping them (see `backend/tests/integration/requirements.py`); the
+job also passes `-rs`, so every skip is listed with its reason.
 
 Run the opt-in real Groq tests explicitly with (covers plain chat and the
 agent's real tool-selection behavior):

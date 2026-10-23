@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: no job here writes to the repository, so the token is read-only.
+permissions:
+  contents: read
+
 env:
   UV_VERSION: "0.11.2"
 
@@ -13,8 +17,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -26,8 +30,8 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -67,16 +71,22 @@ jobs:
       # drop their own throwaway databases (they never touch the `aegis` database). Locally they
       # are opt-in; here they run, covering migrations 0005-0007 and the legacy-data assignment.
       RUN_MIGRATION_ROUNDTRIP: "1"
+      # The services above are part of this job, so an unreachable Postgres or Redis FAILS the
+      # integration tests instead of skipping them (otherwise a broken service container would
+      # leave every isolation, repository and migration test skipped and the job green). See
+      # backend/tests/integration/requirements.py.
+      AEGIS_REQUIRE_SERVICES: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --all-groups
       - run: cd backend && uv run alembic upgrade head
-      - run: uv run pytest -v
+      # -rs lists every skipped test with its reason, so a skip is visible in the log.
+      - run: uv run pytest -v -rs
 
   # The default UI as of the React migration (see docker-compose.yml's
   # `frontend` service and README) — npm install/lint/build/test for
@@ -87,8 +97,8 @@ jobs:
       run:
         working-directory: frontend/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: "npm"
@@ -105,8 +115,8 @@ jobs:
   frontend-streamlit-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -125,24 +135,24 @@ jobs:
     # Never pushes anywhere — no registry is configured for this project.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build backend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile
           push: false
           tags: aegisai-backend:ci
       - name: Build React frontend image (default UI)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: frontend/web
           file: frontend/web/Dockerfile
           push: false
           tags: aegisai-frontend:ci
       - name: Build Streamlit frontend image (legacy UI)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: frontend/streamlit/Dockerfile
@@ -158,8 +168,8 @@ jobs:
     # `kubectl apply --dry-run`, is what runs here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true

@@ -1,12 +1,16 @@
 # Security scanning
 
-**Status: configured, reporting-only, and never run.** The workflow, configuration and tests exist.
-No scan has executed yet, so there is **no baseline of known findings**, and this document does not
-claim the repository is free of vulnerabilities or secrets. The first workflow run is the first
-evidence.
+**Status: configured, reporting-only, has run, findings not yet reviewed.** GitHub's public run list
+shows the workflow completing on `main` (run #37, commit `5d30825`, 2026-10-22). Because every job is
+reporting-only, "completed successfully" only means the jobs finished: the findings are in the run
+summaries and artifacts, which need a signed-in GitHub account and **have not been reviewed**. So there
+is still **no reviewed baseline**, and this document does not claim the repository is free of
+vulnerabilities or secrets. When a scan should start blocking is open decision D-9 in
+[ADR 017](../architecture/decisions/017-open-decisions-and-residual-risks.md).
 
 Files: `.github/workflows/security.yml`, `.github/dependabot.yml`, `.gitleaks.toml`, `SECURITY.md`.
-The existing `.github/workflows/ci.yml` is unchanged.
+`.github/workflows/ci.yml` is not a scanner; it now pins its actions to the same commit SHAs this
+workflow reviewed and runs with a read-only token (`backend/tests/unit/test_ci_workflow.py`).
 
 ## What runs, and what it covers
 

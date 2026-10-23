@@ -78,8 +78,9 @@ class Settings(BaseSettings):
     safety_llm_model: str = "openai/gpt-oss-safeguard-20b"
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
-    # Largest non-upload request body the API will read (bytes). Multipart uploads are exempt (they
-    # have DOCUMENT_MAX_UPLOAD_SIZE_BYTES). The largest legitimate JSON request is analyst evidence.
+    # Largest request body the API will read (bytes), whatever its Content-Type. The one
+    # exception is the document upload route: DOCUMENT_MAX_UPLOAD_SIZE_BYTES plus 1 MiB of
+    # multipart framing. The largest legitimate JSON request is analyst evidence.
     max_request_body_bytes: int = 16 * 1024 * 1024
     # A stream can trickle for as long as the provider keeps it open; the per-request timeout only
     # bounds waiting for data. This bounds the whole stream (seconds), then it fails as a timeout.
@@ -407,6 +408,14 @@ class Settings(BaseSettings):
                 f"vector column stores {EMBEDDING_DIMENSION}-dimensional vectors. Every chunk "
                 "write and every retrieval would fail. Changing the dimension needs a new "
                 "migration (a new column or table), not just a new setting."
+            )
+        if self.environment != "local" and "*" in self.cors_origins:
+            # The API allows credentials on cross-origin requests, and Starlette answers a "*"
+            # list with the caller's own origin, so "*" would let ANY site make credentialed
+            # calls. Outside local development the origins must be listed explicitly.
+            raise ValueError(
+                "CORS_ORIGINS contains '*': list the frontend origins explicitly outside local "
+                "development (credentials are allowed on cross-origin requests)."
             )
         if (
             self.metrics_enabled

@@ -18,7 +18,11 @@ from app.api.v1.research_agent import well_known_router
 from app.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
-from app.core.middleware import BodySizeLimitMiddleware, CorrelationIdMiddleware
+from app.core.middleware import (
+    MULTIPART_OVERHEAD_BYTES,
+    BodySizeLimitMiddleware,
+    CorrelationIdMiddleware,
+)
 from app.embeddings.providers.local import get_local_embedding_provider
 from app.observability import metrics
 
@@ -43,8 +47,16 @@ async def _warm_up_embedding_model() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    asyncio.create_task(_warm_up_embedding_model())
-    yield
+    # The event loop keeps only a weak reference to a task, so a fire-and-forget task can be
+    # garbage-collected before it finishes. Keep it on the app, and cancel it on shutdown if the
+    # model is still loading, instead of leaving a pending task behind.
+    warm_up = asyncio.create_task(_warm_up_embedding_model())
+    app.state.embedding_warm_up = warm_up
+    try:
+        yield
+    finally:
+        if not warm_up.done():
+            warm_up.cancel()
 
 
 def create_app(app_settings: Settings | None = None) -> FastAPI:
@@ -75,7 +87,13 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
 
     # Innermost of the three, so a 413 still carries the request id and is counted in metrics.
     application.add_middleware(
-        BodySizeLimitMiddleware, max_body_bytes=settings.max_request_body_bytes
+        BodySizeLimitMiddleware,
+        max_body_bytes=settings.max_request_body_bytes,
+        # The document upload is the only route with a bigger body: the file limit plus framing.
+        upload_limits={
+            f"{settings.api_v1_prefix}/documents": settings.document_max_upload_size_bytes
+            + MULTIPART_OVERHEAD_BYTES
+        },
     )
     application.add_middleware(CorrelationIdMiddleware)
     # Required for any browser-based frontend (the React app, served from

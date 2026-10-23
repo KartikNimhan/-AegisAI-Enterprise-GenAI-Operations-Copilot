@@ -29,6 +29,9 @@ spec:
         app.kubernetes.io/name: aegisai-redis
         app.kubernetes.io/part-of: aegisai
     spec:
+      # No pod here talks to the Kubernetes API, so none gets a service-account token: a
+      # compromised container then has no cluster credential to use.
+      automountServiceAccountToken: false
       containers:
         - name: redis
           # Pinned, not `:latest` — matches docker-compose.yml.

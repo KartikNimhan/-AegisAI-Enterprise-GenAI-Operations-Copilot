@@ -103,6 +103,10 @@ def _evaluate(node: ast.AST) -> float:
             result = operator_fn(left, right)
         except OverflowError as exc:
             raise CalculatorError("The result is too large to represent") from exc
+        if isinstance(result, complex):
+            # e.g. (-8) ** 0.5: Python returns a complex number, which is not an answer to
+            # business arithmetic and used to be reported as a successful result.
+            raise CalculatorError("The result is not a real number")
         _check_operand_magnitude(result)
         return result
 

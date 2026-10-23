@@ -44,8 +44,16 @@ An end-to-end review found places where one request could cause unbounded work o
 
 ### Added in the gap-remediation pass
 
-- **Request bodies** larger than `MAX_REQUEST_BODY_BYTES` (16 MiB) are refused with 413 before
-  parsing (`BodySizeLimitMiddleware`); multipart uploads are exempt and keep their own limit.
+- **Request bodies** larger than `MAX_REQUEST_BODY_BYTES` (16 MiB) are refused by
+  `BodySizeLimitMiddleware`, whatever their Content-Type. A request that declares a larger
+  `Content-Length` gets 413 before its body is read. A chunked request without a declared length is
+  cut off as soon as it passes the limit, so at most the limit (plus the chunk that crossed it) is
+  read; on routes where FastAPI reads the body itself, FastAPI reports that interruption as 400
+  ("There was an error parsing the body") rather than 413. The document upload route
+  (`POST /api/v1/documents`) has its own limit, `DOCUMENT_MAX_UPLOAD_SIZE_BYTES` plus 1 MiB of
+  multipart framing, so no more than that of an upload is ever read or spooled to disk. (An earlier
+  version exempted any request labelled `multipart/…`, which let a client skip the limit on every
+  route.)
 - **Streams** have a total deadline, `LLM_STREAM_TOTAL_TIMEOUT_SECONDS` (300 s). The per-request
   timeout only bounds waiting for data, so a stream that trickled forever was never cut off.
 - **A2A responses** are read incrementally and refused above `A2A_MAX_RESPONSE_BYTES` (1 MiB); a

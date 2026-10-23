@@ -1029,10 +1029,13 @@ def _doc() -> str:
     return (ROOT / "docs" / "operations" / "security-scanning.md").read_text(encoding="utf-8")
 
 
-def test_the_docs_say_the_baseline_has_not_been_scanned() -> None:
-    doc = _doc()
+def test_the_docs_say_the_baseline_has_not_been_reviewed() -> None:
+    # The workflow has run (GitHub's public run list), but its findings live in artifacts that
+    # need a signed-in account and have not been reviewed: the doc must not imply a clean result.
+    doc = " ".join(_doc().split())  # compare across line wraps
 
-    assert "never run" in doc and "no baseline" in doc.lower()
+    assert "have not been reviewed" in doc and "no reviewed baseline" in doc.lower()
+    assert "does not claim the repository is free of vulnerabilities or secrets" in doc
     assert "reporting-only" in doc.lower()
     assert "NOT a clean result" in doc
     assert "| _not yet scanned_ |" in doc

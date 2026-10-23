@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.agents.exceptions import AgentTimeoutError
+from app.core.middleware import SECURITY_HEADERS
 from app.documents.exceptions import DocumentValidationError
 from app.embeddings.exceptions import (
     DocumentNotReadyError,
@@ -85,14 +86,46 @@ class AuthUnavailableError(AppError):
         )
 
 
-def _error_payload(request: Request, *, code: str, message: str) -> dict[str, Any]:
-    return {
-        "error": {
-            "code": code,
-            "message": message,
-            "request_id": getattr(request.state, "request_id", None),
-        }
+def _error_payload(
+    request: Request, *, code: str, message: str, details: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": getattr(request.state, "request_id", None),
     }
+    if details is not None:
+        error["details"] = details
+    return {"error": error}
+
+
+# A 422 must say what is wrong without repeating what was sent: Pydantic's raw errors include the
+# rejected `input` (a 2 MB string comes back in full; a mistakenly pasted secret is echoed) and
+# parser internals (`ctx`). Only where (`loc`), what (`msg`) and the error `type` are returned.
+_MAX_VALIDATION_DETAILS = 20
+_MAX_LOC_PART_CHARS = 64
+_MAX_MSG_CHARS = 200
+
+
+def _validation_details(errors: Any) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for error in list(errors)[:_MAX_VALIDATION_DETAILS]:
+        if not isinstance(error, dict):
+            continue
+        loc = [str(part)[:_MAX_LOC_PART_CHARS] for part in error.get("loc", ())]
+        details.append(
+            {
+                "loc": loc,
+                "msg": str(error.get("msg", "Invalid value"))[:_MAX_MSG_CHARS],
+                "type": str(error.get("type", "value_error"))[:_MAX_LOC_PART_CHARS],
+            }
+        )
+    return details
+
+
+def _validation_message(details: list[dict[str, Any]]) -> str:
+    parts = [f"{'.'.join(d['loc']) or 'request'}: {d['msg']}" for d in details]
+    return "; ".join(parts) if parts else "The request is invalid"
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -109,9 +142,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        details = _validation_details(exc.errors())
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content=_error_payload(request, code="validation_error", message=str(exc.errors())),
+            content=_error_payload(
+                request,
+                code="validation_error",
+                message=_validation_message(details),
+                details=details,
+            ),
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -247,5 +286,5 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_error_payload(
                 request, code="internal_error", message="An unexpected error occurred"
             ),
-            headers={"X-Request-ID": request_id} if request_id else None,
+            headers={**SECURITY_HEADERS, **({"X-Request-ID": request_id} if request_id else {})},
         )

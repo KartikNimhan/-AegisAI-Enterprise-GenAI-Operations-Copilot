@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, Index, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,6 +13,12 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.domain.models.message import Message
+
+
+def _message_order() -> list[Any]:
+    from app.domain.models.message import message_order
+
+    return message_order()
 
 
 class Conversation(Base):
@@ -62,7 +68,8 @@ class Conversation(Base):
     messages: Mapped[list[Message]] = relationship(
         "Message",
         back_populates="conversation",
-        order_by="Message.created_at",
+        # Evaluated at mapper set-up, after both classes exist (see `message_order`).
+        order_by=lambda: _message_order(),
         cascade="all, delete-orphan",
         # The FK is declared with ondelete="CASCADE"; let Postgres handle
         # cascading deletes rather than SQLAlchemy loading every child row.

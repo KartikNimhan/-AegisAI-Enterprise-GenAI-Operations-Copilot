@@ -79,7 +79,9 @@ class ChatService:
         model_role: ModelRole,
     ) -> ChatTurnResult:
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
         prompt = self._prompt_builder.build(history=history, user_message=message)
 
         await self._messages.add(
@@ -112,7 +114,9 @@ class ChatService:
         model_role: ModelRole,
     ) -> AsyncIterator[StreamTurnChunk]:
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
         prompt = self._prompt_builder.build(history=history, user_message=message)
 
         await self._messages.add(

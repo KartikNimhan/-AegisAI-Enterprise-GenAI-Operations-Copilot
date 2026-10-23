@@ -26,6 +26,10 @@ class RAGPromptBuilder:
         self._system_prompt = system_prompt
         self._history_limits = history_limits or HistoryLimits()
 
+    @property
+    def history_limits(self) -> HistoryLimits:
+        return self._history_limits
+
     def build(
         self, *, context_text: str, question: str, history: list[Message]
     ) -> list[ChatMessage]:

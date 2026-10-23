@@ -3,9 +3,10 @@
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import structlog
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -16,6 +17,21 @@ from app.observability import metrics
 logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
+
+# Every API response: never let a browser guess a different content type for a JSON body, and
+# never store one in a browser or proxy cache (responses carry conversations, documents and
+# memories). A route that chooses its own caching keeps it.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "no-store",
+}
+
+
+def apply_security_headers(headers: MutableHeaders) -> None:
+    for name, value in SECURITY_HEADERS.items():
+        if name not in headers:
+            headers[name] = value
+
 
 # A client-supplied id is only trusted if it is short and made of safe
 # characters; otherwise a fresh one is generated (it ends up in every log line
@@ -52,6 +68,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         _record(request, response.status_code, duration_ms / 1000)
 
         response.headers[REQUEST_ID_HEADER] = request_id
+        apply_security_headers(response.headers)
         logger.info(
             "request_completed",
             method=request.method,
@@ -106,29 +123,47 @@ class _BodyTooLargeError(Exception):
     pass
 
 
-class BodySizeLimitMiddleware:
-    """Refuses a non-upload request body larger than `max_body_bytes` with 413, before the
-    application parses it. Pydantic length limits only apply AFTER a whole JSON body is read into
-    memory; this bounds that read. A declared Content-Length is checked up front; for a body with no
-    (or a false) length the bytes are counted as they arrive. Multipart bodies are exempt: the
-    document upload has its own limit and reads at most that many bytes."""
+# Room for multipart framing (boundaries, part headers) on top of the uploaded file itself.
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
-    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+
+class BodySizeLimitMiddleware:
+    """Refuses a request body larger than its limit with 413, before the application reads it.
+
+    Pydantic length limits only apply AFTER a whole body is read into memory, and a multipart
+    upload is spooled to disk before the route sees it, so neither bounds the read itself. Every
+    request gets `max_body_bytes`, except a POST to one of `upload_limits`' paths, which gets that
+    path's own (larger) limit. The client's Content-Type is deliberately NOT consulted: labelling a
+    request `multipart/form-data` used to skip the check entirely. A declared Content-Length is
+    checked up front; for a body with no (or a false) length the bytes are counted as they arrive.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_body_bytes: int,
+        upload_limits: Mapping[str, int] | None = None,
+    ) -> None:
         self.app = app
         self.max_body_bytes = max_body_bytes
+        self.upload_limits = dict(upload_limits or {})
+
+    def limit_for(self, scope: Scope) -> int:
+        if scope.get("method") == "POST" and scope.get("path") in self.upload_limits:
+            return self.upload_limits[scope["path"]]
+        return self.max_body_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        limit = self.limit_for(scope)
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        if headers.get(b"content-type", b"").lower().startswith(b"multipart/"):
-            await self.app(scope, receive, send)
-            return
         declared = headers.get(b"content-length")
         if declared is not None:
             try:
-                too_large = int(declared) > self.max_body_bytes
+                too_large = int(declared) > limit
             except ValueError:
                 too_large = False  # the server layer rejects a malformed length itself
             if too_large:
@@ -143,7 +178,7 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_body_bytes:
+                if received > limit:
                     raise _BodyTooLargeError
             return message
 

@@ -85,7 +85,9 @@ class AgentService:
         self, *, conversation_id: uuid.UUID | None, message: str
     ) -> tuple[Conversation, AgentState]:
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=HistoryLimits.from_settings(self._settings).max_messages
+        )
 
         # Notes this user saved earlier (never anyone else's: the repository is scoped to the
         # caller). A failure here means no notes this time, not a failed run.

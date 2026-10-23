@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.identity_repository import IdentityRepository
 from app.domain.enums.user_role import UserRole
 
+from .requirements import service_unavailable
+
 pytestmark = pytest.mark.integration
 
 ISSUER = "https://idp.example.test/realms/aegis"
@@ -21,7 +23,9 @@ ISSUER = "https://idp.example.test/realms/aegis"
 async def repo(db_session: AsyncSession) -> IdentityRepository:
     exists = await db_session.scalar(text("select to_regclass('public.user_identities')"))
     if exists is None:
-        pytest.skip("migration 0005 (identity tables) has not been applied to this database")
+        service_unavailable(
+            "migration 0005 (identity tables) has not been applied to this database"
+        )
     return IdentityRepository(db_session)
 
 

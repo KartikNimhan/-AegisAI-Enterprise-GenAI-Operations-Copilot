@@ -62,12 +62,79 @@ def test_the_real_endpoints_refuse_a_huge_json_body_before_validating_it(
     assert response.status_code == 413  # not 401/422: the body was never parsed
 
 
-def test_multipart_uploads_are_exempt_from_this_limit(client: TestClient) -> None:
+def test_the_upload_route_gets_its_own_larger_limit(client: TestClient) -> None:
     response = client.post(
         "/api/v1/documents", files={"file": ("a.txt", b"z" * (LIMIT * 3), "text/plain")}
     )
 
-    assert response.status_code != 413  # the upload endpoint applies its own limit
+    assert response.status_code != 413  # within the upload route's own (larger) limit
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["multipart/form-data; boundary=x", "MULTIPART/form-data", "multipart/mixed"],
+)
+def test_claiming_to_be_multipart_does_not_skip_the_limit(
+    client: TestClient, content_type: str
+) -> None:
+    # Regression: any request labelled multipart used to be exempt, so a JSON route would read a
+    # body of any size. Only the upload route has a different limit, and it is chosen by path.
+    response = client.post(
+        "/__echo", content=b"A" * (LIMIT * 50), headers={"content-type": content_type}
+    )
+
+    assert response.status_code == 413
+
+
+def test_a_multipart_body_to_a_json_route_is_cut_off_even_without_a_length(
+    client: TestClient,
+) -> None:
+    def body() -> Iterator[bytes]:
+        for _ in range(100):
+            yield b"y" * 1024
+
+    response = client.post(
+        "/__echo", content=body(), headers={"content-type": "multipart/form-data; boundary=x"}
+    )
+
+    assert response.status_code == 413
+
+
+def test_the_upload_route_limit_is_the_upload_size_plus_framing() -> None:
+    from app.core.middleware import MULTIPART_OVERHEAD_BYTES
+
+    upload_limit = 4096
+    application = create_app(
+        Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            debug=True,
+            environment="local",
+            max_request_body_bytes=LIMIT,
+            document_max_upload_size_bytes=upload_limit,
+        )
+    )
+    oversized = b"z" * (upload_limit + MULTIPART_OVERHEAD_BYTES + 1)
+
+    response = TestClient(application).post(
+        "/api/v1/documents", files={"file": ("a.txt", oversized, "text/plain")}
+    )
+
+    assert response.status_code == 413  # bounded before the upload is spooled anywhere
+
+
+def test_only_a_post_to_the_upload_path_gets_the_upload_limit() -> None:
+    from app.core.middleware import BodySizeLimitMiddleware
+
+    middleware = BodySizeLimitMiddleware(
+        None,  # type: ignore[arg-type]
+        max_body_bytes=10,
+        upload_limits={"/api/v1/documents": 1000},
+    )
+
+    assert middleware.limit_for({"method": "POST", "path": "/api/v1/documents"}) == 1000
+    assert middleware.limit_for({"method": "PUT", "path": "/api/v1/documents"}) == 10
+    assert middleware.limit_for({"method": "POST", "path": "/api/v1/documents/x"}) == 10
+    assert middleware.limit_for({"method": "POST", "path": "/api/v1/chat/completions"}) == 10
 
 
 def test_a_get_request_is_unaffected(client: TestClient) -> None:

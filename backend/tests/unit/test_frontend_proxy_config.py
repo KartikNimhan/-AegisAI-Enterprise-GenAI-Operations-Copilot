@@ -154,3 +154,43 @@ def test_the_frontend_configmap_matches_the_template_variables(template: str) ->
     assert data["OIDC_CLIENT_ID"]  # the public client id has a default
     assert data["API_BASE_URL"] == ""  # same origin
     assert "${BACKEND_UPSTREAM}" in template
+
+
+# -- Browser security headers -----------------------------------------------------------
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": '"nosniff"',
+    "X-Frame-Options": '"SAMEORIGIN"',
+    "Referrer-Policy": '"strict-origin-when-cross-origin"',
+    "Content-Security-Policy": "\"frame-ancestors 'self'; object-src 'none'; base-uri 'self'\"",
+}
+
+
+def _server_level(template: str) -> str:
+    """The server block's own directives, without its location blocks."""
+    return re.sub(r"^    location .*?^    \}\n", "", template, flags=re.M | re.S)
+
+
+def test_security_headers_are_sent_on_every_response(template: str) -> None:
+    server = _server_level(template)
+    for name, value in _SECURITY_HEADERS.items():
+        assert f"add_header {name} {value} always;" in server, name
+    assert "server_tokens off;" in server
+
+
+def test_a_location_with_its_own_add_header_repeats_the_security_headers(template: str) -> None:
+    # nginx rule: a location that declares any add_header inherits NONE from the server block.
+    for _modifier, path, body in _locations(template):
+        if "add_header" in body:
+            for name, value in _SECURITY_HEADERS.items():
+                assert f"add_header {name} {value} always;" in body, f"{path} drops {name}"
+
+
+def test_the_policy_does_not_restrict_scripts_or_connections(template: str) -> None:
+    # The sign-in provider's origin is runtime configuration; restricting script-src or
+    # connect-src here would break sign-in without any way to test it in CI.
+    policies = re.findall(r'add_header Content-Security-Policy "([^"]*)"', template)
+    assert policies
+    for policy in policies:
+        for directive in ("script-src", "connect-src", "default-src"):
+            assert directive not in policy
