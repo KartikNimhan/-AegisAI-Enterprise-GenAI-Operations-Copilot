@@ -29,6 +29,9 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 # ---- runtime -------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
+# The base image's system pip is never used at runtime (everything runs from
+# /srv/.venv, which has no pip), so it is removed rather than shipped.
+RUN python -m pip uninstall --yes pip
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
