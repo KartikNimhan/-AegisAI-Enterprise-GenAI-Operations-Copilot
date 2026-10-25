@@ -1,0 +1,135 @@
+name: RAG integration (manual)
+
+# Runs the opt-in real-embedding and RAG tests that `ci.yml` always skips: they need the real
+# Sentence Transformers model and PostgreSQL with pgvector. Started by hand only, and it uses no
+# secrets: the RAG pipeline test uses a scripted LLM, so nothing here calls an LLM provider or
+# receives an API key. A real-LLM end-to-end test is deliberately not part of this workflow.
+#
+# Isolation: the database is this job's own throwaway service container on a GitHub-hosted runner,
+# reachable only at localhost there and destroyed with the job. `DATABASE_URL` is set explicitly
+# below (its credentials exist only inside that container), and `.env` is never part of a checkout.
+# Never point it at a real database, take it from a secret, or run this on a self-hosted runner.
+#
+# Known limitations:
+# - `pgvector/pgvector:pg16` is a floating tag (the same one ci.yml uses). No verified digest is
+#   recorded in this repository yet, so the pgvector version is whatever the tag names at run time.
+# - The embedding model revision is not pinned (ADR 017, D-8): the first use downloads the current
+#   `sentence-transformers/all-MiniLM-L6-v2` (about 90 MB) from the Hugging Face Hub.
+
+on:
+  workflow_dispatch:
+
+# Least privilege: the job only reads the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: rag-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.2"
+
+jobs:
+  embeddings-and-rag:
+    name: Real embeddings + pgvector RAG (no LLM, no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: aegis
+          POSTGRES_PASSWORD: aegis
+          POSTGRES_DB: aegis
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aegis -d aegis"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # This job's own disposable service above, and nothing else.
+      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis
+      # An unreachable database FAILS the tests instead of skipping them
+      # (backend/tests/integration/requirements.py).
+      AEGIS_REQUIRE_SERVICES: "1"
+      # The opt-in gate of the four tests below.
+      RUN_EMBEDDING_INTEGRATION: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Do not leave the job's token in .git/config, where test code or a dependency could
+          # read it. Nothing later in this job needs Git credentials.
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked --all-groups
+      - run: cd backend && uv run alembic upgrade head
+      # -rs lists any skip with its reason; the JUnit report feeds the check below.
+      - name: Run the real-embedding and RAG tests
+        id: tests
+        run: >-
+          uv run pytest -v -rs -p no:cacheprovider --junitxml=rag-integration-junit.xml
+          backend/tests/integration/test_embedding_model_live.py
+          backend/tests/integration/test_rag_pipeline_live.py
+          backend/tests/evaluation/test_recall_at_k.py
+          backend/tests/evaluation/test_evaluate_runner.py
+      # pytest exits 0 when every test is skipped. This makes "skipped", "missing" and "fewer than
+      # expected" a failed job, never a green one. It also runs (and writes the summary) after a
+      # failed pytest step, and then fails itself, so a failed run can never turn green here.
+      - name: Fail unless all four tests ran and passed
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          JUNIT_REPORT: rag-integration-junit.xml
+          EXPECTED_TESTS: "4"
+          PYTEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = os.environ["JUNIT_REPORT"]
+          expected = int(os.environ["EXPECTED_TESTS"])
+          outcome = os.environ.get("PYTEST_OUTCOME") or "unknown"
+
+
+          def report(line):
+              print(line)
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as out:
+                      out.write(f"## RAG integration\n\n{line}\n")
+
+
+          try:
+              root = ET.parse(path).getroot()
+          except (OSError, ET.ParseError) as exc:
+              report(f"No readable JUnit report ({type(exc).__name__}); pytest step outcome: {outcome}")
+              sys.exit(f"No readable JUnit report at {path}: the tests did not run.")
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          totals = {
+              key: sum(int(suite.get(key, "0")) for suite in suites)
+              for key in ("tests", "skipped", "failures", "errors")
+          }
+          report(
+              f"tests={totals['tests']} skipped={totals['skipped']} failures={totals['failures']} "
+              f"errors={totals['errors']} (expected {expected} passed); pytest step outcome: {outcome}"
+          )
+          if outcome != "success":
+              sys.exit(f"The pytest step did not succeed (outcome: {outcome}).")
+          if totals["failures"] or totals["errors"]:
+              sys.exit("Some tests failed or errored.")
+          if totals["skipped"]:
+              sys.exit(f"{totals['skipped']} test(s) were skipped; every one must run (see the -rs list above).")
+          if totals["tests"] != expected:
+              sys.exit(f"Expected exactly {expected} tests, the report has {totals['tests']}.")
+          print(f"All {expected} tests ran and passed.")
+          PY
