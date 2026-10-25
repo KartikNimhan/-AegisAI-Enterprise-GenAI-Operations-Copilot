@@ -27,14 +27,15 @@ RUN npm run build
 # nginx-unprivileged: runs as the non-root user 101 (a numeric USER, so
 # Kubernetes can verify `runAsNonRoot`), listens on 8080 (an unprivileged
 # process cannot bind port 80), and keeps its pid file and temp directories under
-# /tmp. Same nginx 1.27 line as the stock image this replaced. Multi-arch
+# /tmp. nginx 1.30 (stable line) on Alpine 3.24; it replaced 1.27.5 on Alpine
+# 3.21, whose OS packages lacked published security fixes. Multi-arch
 # (amd64/arm64).
 # The digest below is enforced: it is the multi-arch index digest of the
-# 1.27.5-alpine tag, confirmed against the Docker Hub registry (the manifest's
+# 1.30.6-alpine tag, confirmed against the Docker Hub registry (the manifest's
 # Docker-Content-Digest header, and the SHA-256 of the index body itself).
 # The tag stays for readability. To update, resolve the new tag's index digest
 # from the registry and replace both together.
-FROM nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
+FROM nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03 AS runtime
 
 # The build steps below need root; the final USER drops back to 101.
 USER root
