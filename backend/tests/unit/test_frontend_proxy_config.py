@@ -15,6 +15,7 @@ consistent, not that it works at runtime.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,39 @@ def test_dockerfile_uses_a_pinned_unprivileged_image_and_a_numeric_user() -> Non
     assert f"http://127.0.0.1:{_PORT}/" in runtime
     # config.js is written at start without root, so its directory must be writable.
     assert "chown 101:0 /usr/share/nginx/html" in dockerfile
+
+
+def test_runtime_package_fixes_are_narrow_minimum_versions() -> None:
+    """The runtime stage may only raise named Alpine packages to a minimum version.
+
+    The pinned base image predates four Alpine security fixes (Trivy, run #47), so the
+    Dockerfile installs them on top. A blanket `apk upgrade` could replace the image's
+    nginx.org build of nginx with Alpine's own `nginx` package, and an exact `=` pin
+    breaks as soon as Alpine publishes the next revision. Remove the expected set
+    together with the Dockerfile step once the pinned digest contains these versions.
+    """
+    dockerfile = _text(_WEB / "Dockerfile")
+    runtime = re.sub(r"\\\n\s*", " ", dockerfile[dockerfile.index("AS runtime") :])
+    commands = [
+        line[4:] for line in runtime.splitlines() if line.startswith("RUN ") and "apk" in line
+    ]
+
+    assert "apk upgrade" not in runtime
+    assert len(commands) == 1
+    args = shlex.split(commands[0])
+    assert args[:3] == ["apk", "add", "--no-cache"]
+    packages = args[3:]
+    assert packages and all(">=" in arg for arg in packages)
+    floors = {name: floor for name, _, floor in (arg.partition(">=") for arg in packages)}
+    assert not any(name.startswith("nginx") for name in floors)
+    assert floors == {
+        "brotli-libs": "1.2.1-r0",
+        "musl": "1.2.6-r3",
+        "musl-utils": "1.2.6-r3",
+        "zlib": "1.3.2-r1",
+    }
+    # Installed while still root, before the final switch to the unprivileged user.
+    assert runtime.index("USER root") < runtime.index(commands[0]) < runtime.rindex("USER 101")
 
 
 def test_compose_maps_and_probes_the_unprivileged_port() -> None:
