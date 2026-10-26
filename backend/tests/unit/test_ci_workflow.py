@@ -55,3 +55,31 @@ def test_ci_and_security_scanning_pin_the_same_commit_for_the_same_action(raw: s
 def test_no_workflow_uses_the_pull_request_target_trigger() -> None:
     for path in WORKFLOWS.glob("*.yml"):
         assert "pull_request_target" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_no_checkout_in_any_workflow_keeps_the_job_token() -> None:
+    # By default actions/checkout writes the job's token into .git/config, where every later step,
+    # test and dependency could read it. No job here needs Git credentials after its checkout.
+    checkouts = 0
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for job_name, job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].items():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    checkouts += 1
+                    where = f"{path.name}: {job_name}"
+                    assert (step.get("with") or {}).get("persist-credentials") is False, where
+
+    assert checkouts >= 13  # ci.yml 7, security.yml 4, rag-integration.yml 1, rag-e2e-live.yml 1
+
+
+def test_every_workflow_installs_exactly_the_locked_python_dependencies() -> None:
+    # Without --locked, `uv sync` quietly re-resolves when uv.lock is out of date, so CI would test
+    # other versions than the ones the images install (`--frozen`) and the security scans audit.
+    syncs = 0
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if re.search(r"^\s*(?:- )?run:.*\buv sync\b", line):
+                syncs += 1
+                assert "--locked" in line.split(), f"{path.name}: {line.strip()}"
+
+    assert syncs >= 7  # ci.yml 5, rag-integration.yml 1, rag-e2e-live.yml 1
