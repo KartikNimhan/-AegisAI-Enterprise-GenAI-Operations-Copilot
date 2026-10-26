@@ -1,4 +1,5 @@
 import { Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
+import { AdminOnly } from './auth/AdminOnly'
 import { AppShell } from './components/Shell/AppShell'
 import { ConversationsPage } from './pages/ConversationsPage'
 import { CopilotPage } from './pages/CopilotPage'
@@ -35,7 +36,14 @@ export function App() {
         <Route path="/documents" element={<DocumentsPage />} />
         <Route path="/memory" element={<MemoryPage />} />
         <Route path="/operations" element={<OperationsPage />} />
-        <Route path="/system" element={<SystemStatusPage />} />
+        <Route
+          path="/system"
+          element={
+            <AdminOnly>
+              <SystemStatusPage />
+            </AdminOnly>
+          }
+        />
       </Routes>
     </AppShell>
   )

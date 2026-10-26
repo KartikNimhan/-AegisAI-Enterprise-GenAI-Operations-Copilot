@@ -1,5 +1,7 @@
 import { MemoryRouter } from 'react-router-dom'
 import { App } from '../App'
+import type { Me } from '../api/auth'
+import { AccountContext } from '../auth/AccountContext'
 import { AuthStateContext, type AuthState } from '../auth/AuthContext'
 import { MOCK_USER } from './mockData'
 
@@ -13,6 +15,15 @@ const PREVIEW_AUTH: AuthState = {
   message: null,
   signIn: () => undefined,
   signOut: () => undefined,
+}
+
+// A made-up administrator account, only so every page, System Status included, can be previewed.
+// Like the state above it grants nothing: there is no backend here, and its status is simulated.
+const PREVIEW_ACCOUNT: Me = {
+  user_id: '00000000-0000-4000-8000-0000000000a1',
+  organization_id: '00000000-0000-4000-8000-0000000000b1',
+  email: MOCK_USER.email,
+  role: 'admin',
 }
 
 // The real shell is exactly one viewport tall; shrink it by the banner so the page does not scroll.
@@ -56,9 +67,11 @@ export function PreviewApp({ initialRoute = '/' }: { initialRoute?: string }) {
       <style>{FRAME_CSS}</style>
       <PreviewBanner />
       <div className="aegis-preview-frame">
-        <MemoryRouter initialEntries={[initialRoute]}>
-          <App />
-        </MemoryRouter>
+        <AccountContext.Provider value={PREVIEW_ACCOUNT}>
+          <MemoryRouter initialEntries={[initialRoute]}>
+            <App />
+          </MemoryRouter>
+        </AccountContext.Provider>
       </div>
     </AuthStateContext.Provider>
   )

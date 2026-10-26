@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { getMe } from '../api/auth'
+import { getMe, type Me } from '../api/auth'
 import { BackendError } from '../api/client'
 import { friendlyMessage } from '../utils/errors'
+import { AccountContext } from './AccountContext'
 import { useAuthState, type AuthState } from './AuthContext'
 import styles from './AuthGate.module.css'
 
@@ -19,14 +20,14 @@ function Screen({ title, children }: { title: string; children: ReactNode }) {
 }
 
 type Check =
-  | { kind: 'ok' }
+  | { kind: 'ok'; account: Me }
   | { kind: 'not_provisioned' }
   | { kind: 'failed'; message: string }
 
 /**
  * Everything between "the page loaded" and "the app is usable": signing in, and
  * confirming that the backend knows the signed-in person. The app below it never
- * renders for someone who is not both.
+ * renders for someone who is not both, and it receives the confirmed account.
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const auth = useAuthState()
@@ -96,7 +97,7 @@ function AccountCheck({ auth, children }: { auth: AuthState; children: ReactNode
   useEffect(() => {
     const controller = new AbortController()
     getMe(controller.signal)
-      .then(() => setResult({ key, check: { kind: 'ok' } }))
+      .then((account) => setResult({ key, check: { kind: 'ok', account } }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return
         if (error instanceof BackendError && error.statusCode === 403) {
@@ -121,7 +122,10 @@ function AccountCheck({ auth, children }: { auth: AuthState; children: ReactNode
       </Screen>
     )
   }
-  if (check.kind === 'ok') return <>{children}</>
+  if (check.kind === 'ok') {
+    // The app decides which administrator-only screens to show from this account's role.
+    return <AccountContext.Provider value={check.account}>{children}</AccountContext.Provider>
+  }
   if (check.kind === 'failed') {
     return (
       <Screen title="Could not check your account">

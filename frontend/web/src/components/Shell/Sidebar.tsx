@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { isAdmin, useAccount } from '../../auth/AccountContext'
 import { Icon, type IconName } from '../Icon'
 import styles from './Sidebar.module.css'
 
@@ -6,6 +7,8 @@ interface NavItem {
   to: string
   label: string
   icon: IconName
+  /** Listed for administrators only. The backend refuses everyone else on its own (403). */
+  adminOnly?: boolean
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -14,7 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/documents', label: 'Documents', icon: 'documents' },
   { to: '/memory', label: 'Memory', icon: 'memory' },
   { to: '/operations', label: 'Operations', icon: 'operations' },
-  { to: '/system', label: 'System Status', icon: 'status' },
+  { to: '/system', label: 'System Status', icon: 'status', adminOnly: true },
 ]
 
 export function Sidebar({
@@ -24,6 +27,9 @@ export function Sidebar({
   collapsed: boolean
   onToggle: () => void
 }) {
+  const admin = isAdmin(useAccount())
+  const items = NAV_ITEMS.filter((item) => admin || !item.adminOnly)
+
   return (
     <aside className={`${styles.sidebar} ${collapsed ? styles.collapsed : ''}`}>
       <div className={styles.brand}>
@@ -32,7 +38,7 @@ export function Sidebar({
       </div>
 
       <nav className={styles.nav}>
-        {NAV_ITEMS.map((item) => (
+        {items.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

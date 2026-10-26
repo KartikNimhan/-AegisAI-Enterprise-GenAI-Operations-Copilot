@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { installFetchMock } from '../test/mockFetch'
-import { renderApp } from '../test/renderApp'
+import { ADMIN_ACCOUNT, renderApp } from '../test/renderApp'
 
 const DOC = {
   id: '11111111-2222-3333-4444-555555555555',
@@ -119,7 +119,7 @@ describe('System status page', () => {
         mcp_server: '',
       },
     }))
-    renderApp('/system')
+    renderApp('/system', ADMIN_ACCOUNT)
     // redis down and LLM not configured both render as Unavailable; database is the only Healthy row
     await waitFor(() => expect(screen.getAllByText('Unavailable')).toHaveLength(2))
     expect(screen.getAllByText('Healthy')).toHaveLength(1)
@@ -131,7 +131,7 @@ describe('System status page', () => {
       status: 503,
       body: { error: { code: 'x', message: 'down' } },
     }))
-    renderApp('/system')
+    renderApp('/system', ADMIN_ACCOUNT)
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(screen.queryByText('Healthy')).not.toBeInTheDocument()
   })
