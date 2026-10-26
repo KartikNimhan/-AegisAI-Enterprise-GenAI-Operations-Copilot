@@ -119,8 +119,8 @@ def test_dockerfile_uses_a_pinned_unprivileged_image_and_a_numeric_user() -> Non
 def test_runtime_package_fixes_are_narrow_minimum_versions() -> None:
     """The runtime stage may only raise named Alpine packages to a minimum version.
 
-    The pinned base image predates four Alpine security fixes (Trivy, run #47), so the
-    Dockerfile installs them on top. A blanket `apk upgrade` could replace the image's
+    The pinned base image predates six Alpine security fixes (Trivy, runs #47 and #53), so
+    the Dockerfile installs them on top. A blanket `apk upgrade` could replace the image's
     nginx.org build of nginx with Alpine's own `nginx` package, and an exact `=` pin
     breaks as soon as Alpine publishes the next revision. Remove the expected set
     together with the Dockerfile step once the pinned digest contains these versions.
@@ -141,6 +141,8 @@ def test_runtime_package_fixes_are_narrow_minimum_versions() -> None:
     assert not any(name.startswith("nginx") for name in floors)
     assert floors == {
         "brotli-libs": "1.2.1-r0",
+        "curl": "8.23.0-r0",
+        "libcurl": "8.23.0-r0",
         "musl": "1.2.6-r3",
         "musl-utils": "1.2.6-r3",
         "zlib": "1.3.2-r1",
