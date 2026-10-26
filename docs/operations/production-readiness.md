@@ -11,36 +11,53 @@ earlier working numbering, which this page does not use.
 | Label | Meaning here |
 |---|---|
 | **Offline-verified** | A test that ran and passed without Docker, a database or the network (fakes, mocks, executed SQL on SQLite, rendered migration SQL). It proves logic, **not** that a live system behaves the same. |
-| **Database-backed** | Needs PostgreSQL + pgvector. The suites exist (`backend/tests/integration/`, 119 tests, plus 4 in `backend/tests/evaluation/`) but **none has been run locally**: no disposable database was available. CI runs them against a Postgres service container; since this review an unreachable service fails those tests instead of skipping them. |
-| **CI-reported** | Seen on GitHub's public run page (job outcome and duration only). Job logs, test counts and scan findings need a signed-in account and have **not** been read. |
-| **Live** | Needs a running stack, a real identity provider, or an external model API. Not done. |
+| **Database-backed** | Needs PostgreSQL + pgvector. The suites exist: 105 database-backed integration tests and 2 database-backed evaluation tests (the 16 opt-in live tests are separate). **None has been run locally**: no disposable database was available. CI runs the database tests against its own Postgres service container, where an unreachable service fails them instead of skipping them. |
+| **CI-reported** | Seen through GitHub's public run list and API (job outcome only). Job logs and test counts need a signed-in account and have **not** been read. Scan reports were read only where the baseline log in [security-scanning.md](security-scanning.md) says so. |
+| **Live** | Needs a running stack, a real identity provider, or an external model API. Only the two live Groq tests have run (locally, reported by the maintainer); nothing else live has been done. |
 
 ## Verification record
 
-Latest local run: 2026-10-23, Windows, no Docker, no database, no network. Every backend run had
+Latest local run: 2026-10-26, Windows, no Docker, no database, no network. Every backend run had
 `DATABASE_URL` and `REDIS_URL` forced to an unreachable address, the Hugging Face hub offline, and the
 LLM and identity-provider settings blank, so no test could reach a real service.
 
 | Check | Result |
 |---|---|
-| `ruff check` / `ruff format --check` (whole repository) | clean / clean |
+| `ruff check` / `ruff format --check` (whole repository) | clean / clean (460 files) |
 | `pyright` | 0 errors |
 | `uv lock --check --offline` | consistent |
-| Backend unit suite (`backend/tests/unit`) | **1568 passed, 1 skipped**, no warnings (82 s) (the skip is a test whose HTTP client cannot send the header it tests) |
+| Backend unit suite (`backend/tests/unit`) | **1667 passed, 1 skipped**, no warnings (294 s) (the skip is a test whose HTTP client cannot send the header it tests) |
+| Evaluation suite (`backend/tests/evaluation`) | 2 passed; 2 skipped (opt-in: the real model and a database) |
 | Streamlit UI tests | 27 passed |
-| React (`vitest`, `tsc -b --noEmit`, `oxlint`, `npm run build`) | 133 passed; types clean; 3 pre-existing lint warnings; build succeeds |
-| Production bundle | no preview entry point, no `[MOCK]` data, no source maps in `dist/` |
+| React (`vitest`, `tsc -b`, `oxlint`, `vite build`) | 140 passed; types clean; 3 pre-existing lint warnings; build succeeds |
+| Production bundle | no preview entry point, no `[MOCK]` data, no source maps |
 | Kubernetes manifest validator | 15 documents pass structural checks |
-| Database-backed suites | collected only (123: 119 integration + 4 evaluation); **none run locally** |
+| Database-backed suites | Collected only: 105 database-backed integration tests and 2 database-backed evaluation tests, plus 16 opt-in live tests; **none run locally** |
 
-CI-reported (not re-verified here): CI run #64 and security scanning run #37 completed successfully on
-commit `5d30825` (2026-10-22). Neither has run on later commits. Whether CI's database tests ran or
-skipped is not visible without signing in, and before this review a skip would have looked the same as
-a pass (finding R-3 below).
+CI-reported (job outcomes from GitHub's public API, checked 2026-10-26; logs not read):
+
+- **CI run #78** on `4f151d2` (`main` as of 2026-10-26, before these commits): all 7 jobs
+  succeeded. Its `test` job runs the database-backed suites against its own PostgreSQL and Redis
+  service containers, with
+  `AEGIS_REQUIRE_SERVICES=1` (an unreachable service fails the tests instead of skipping them) and
+  `RUN_MIGRATION_ROUNDTRIP=1`. The opt-in live suites are not enabled there and skip. Exactly which
+  tests ran is in the job's skip list, which needs a signed-in account.
+- **RAG integration run #1** (manual, no secrets) on `8a64718`: succeeded. Its last step fails
+  unless exactly 4 tests ran and passed with none skipped, so it shows the real embedding model and
+  pgvector retrieval working on a GitHub-hosted runner.
+- **Security scanning runs #51 and #52** on `4f151d2`: all four jobs completed. The scans are
+  reporting-only, so that is not a clean result; what has been reviewed is in
+  [security-scanning.md](security-scanning.md).
+
+Reported by the maintainer, not re-run here: the two opt-in live Groq tests
+(`backend/tests/integration/test_groq_live.py`: one completion, and one stream whose final chunk
+must carry token usage) passed locally on 2026-10-25 (`2 passed`). The live RAG end-to-end test
+(`test_rag_end_to_end_live.py`) and its approval-gated workflow (`rag-e2e-live.yml`) have not run.
 
 Mocked tests are labelled as such in their docstrings. `test_indirect_access_paths.py` and
 `test_scoped_repositories.py` prove structure and delegation, **not** that a database hides another
-user's rows; `tests/integration/test_data_isolation.py` is the test for that and has not run locally.
+user's rows. `tests/integration/test_data_isolation.py` is the test for that. It has not run
+locally; CI's `test` job runs it (green in run #78, log not read).
 
 ## Roadmap compliance (M0 to M9)
 
@@ -50,16 +67,16 @@ roadmap row; it says nothing about whether it works against real infrastructure.
 
 | # | Milestone | Implementation | Automated tests (offline) | Integration evidence | Remaining blockers |
 |---|---|---|---|---|---|
-| M0 | Foundation & Architecture | implemented: typed, validated settings; JSON logs with request ids; consistent errors (422s no longer echo input); request-size limit (no Content-Type bypass); security headers; Alembic 0001 to 0008 | pass | CI-reported green on `5d30825` only | a disposable PostgreSQL; Compose/Docker runs (not permitted locally) |
-| M1 | LLM Gateway | implemented: provider-neutral gateway, Groq provider, model roles, retries with a `Retry-After` cap, total stream deadline, fixed client-facing error text | pass (scripted provider) | none | a Groq key and network; the `safety` role is unused (decision D-1) |
-| M2 | Conversational AI | implemented: chat, bounded history window (now loaded with a bounded query), SSE, usage per message; message order made total (finding R-4) | pass | none; `test_chat_flow.py` not run | a disposable PostgreSQL |
-| M3 | Document Intelligence | implemented: PDF/DOCX/TXT/Markdown, magic bytes, expansion limits, XXE-safe DOCX parsing (pinned by a test), duplicate-upload advisory lock | pass (real extractors) | none | a disposable PostgreSQL; the unique `(owner, checksum)` index needs an operator de-duplication first (ADR 016) |
-| M4 | Embeddings | implemented: Sentence Transformers, pgvector column, dimension guard at startup, model/version stamping | pass (fake provider) | none | pgvector (not installed locally); the real model run is opt-in |
-| M5 | Production RAG | implemented: scoped retrieval, filters, threshold, context assembly with marker neutralization, citation validation (retrieval, not claim support) | pass | none | a disposable PostgreSQL + pgvector; a live model |
-| M6 | Agentic AI | implemented: LangGraph agent, allowlisted tools, step/tool/time budgets, malformed-argument handling, per-user memory with TTL, caps and an owner row lock | pass | none | a disposable PostgreSQL; human approval is a decision (D-2) |
+| M0 | Foundation & Architecture | implemented: typed, validated settings; JSON logs with request ids; consistent errors (422s no longer echo input); request-size limit (no Content-Type bypass); security headers; Alembic 0001 to 0008 | pass | CI-reported green on `4f151d2` (run #78) | Compose/Docker runs (not permitted locally) |
+| M1 | LLM Gateway | implemented: provider-neutral gateway, Groq provider, model roles, retries with a `Retry-After` cap, total stream deadline, fixed client-facing error text (a reply cut off before any text has its own code, `llm_output_truncated`) | pass (scripted provider) | a live completion and a live stream with token usage passed locally (maintainer-reported, 2026-10-25); retries, `Retry-After` and the stream deadline not exercised live | the `safety` role is unused (decision D-1) |
+| M2 | Conversational AI | implemented: chat, bounded history window (now loaded with a bounded query), SSE, usage per message; message order made total (finding R-4) | pass | CI-reported: `test_chat_flow.py` runs in the `test` job (green in run #78, log not read); not run locally | CI's skip list unread; no deployed-stack run |
+| M3 | Document Intelligence | implemented: PDF/DOCX/TXT/Markdown, magic bytes, expansion limits, XXE-safe DOCX parsing (pinned by a test), duplicate-upload advisory lock | pass (real extractors) | CI-reported: `test_document_ingestion_flow.py` runs in the `test` job (green in run #78, log not read) | the unique `(owner, checksum)` index needs an operator de-duplication first (ADR 016) |
+| M4 | Embeddings | implemented: Sentence Transformers, pgvector column, dimension guard at startup, model/version stamping | pass (fake provider) | the real model with pgvector: RAG integration run #1 passed (4 tests, none skipped) | the model revision is not pinned (decision D-8); not run locally (no pgvector) |
+| M5 | Production RAG | implemented: scoped retrieval, filters, threshold, context assembly with marker neutralization, citation validation (retrieval, not claim support) | pass | real retrieval: RAG integration run #1 passed; a live-model answer test with an approval-gated workflow exists but has not run | configure the `groq-live` environment and run `rag-e2e-live.yml`; citations prove retrieval, not support (D-5) |
+| M6 | Agentic AI | implemented: LangGraph agent, allowlisted tools, step/tool/time budgets, malformed-argument handling, per-user memory with TTL, caps and an owner row lock | pass | CI-reported: the database-backed agent and memory tests run in the `test` job (green in run #78, log not read); no live-model agent run | a live agent run (needs a model); human approval is a decision (D-2) |
 | M7 | MCP + A2A Multi-Agent | implemented: in-process MCP, allowlisted A2A with size/deadline limits and validated responses, partial-failure isolation, stdio server fails closed | pass (mock transports) | none | a live multi-agent run (needs a model) |
-| M8 | GenAI UI + APIs | implemented: React Copilot (four modes), Conversations, Documents, Memory, Operations, System Status; legacy Streamlit (no sign-in); development-only preview, excluded from builds | pass | none in a browser | an identity provider (OIDC) for sign-in; a browser |
-| M9 | Production / MLOps / Responsible AI | partial: Dockerfiles, Kubernetes manifests (non-root, no service-account tokens), CI with service-requiring integration tests and pinned actions, reporting-only security scans, opt-in metrics, retrieval evaluation, runbooks | pass (static checks) | CI-reported only; scans' findings unreviewed | no tracing/dashboards/alerts; scans not blocking (D-9); no token budgets (D-10); no data-retention policy; manifests never applied |
+| M8 | GenAI UI + APIs | implemented: React Copilot (four modes), Conversations, Documents, Memory, Operations, System Status (listed for administrators only); legacy Streamlit (no sign-in); development-only preview, excluded from builds | pass | none in a browser | an identity provider (OIDC) for sign-in; a browser |
+| M9 | Production / MLOps / Responsible AI | partial: Dockerfiles, Kubernetes manifests (non-root, no service-account tokens), CI with service-requiring integration tests and pinned actions, reporting-only security scans, opt-in metrics, retrieval evaluation, runbooks | pass (static checks) | CI-reported; the security-scan baseline is partly reviewed (see `security-scanning.md`), and every vulnerability those reviewed reports showed was fixed | no tracing/dashboards/alerts; scans not blocking (D-9); no token budgets (D-10); no data-retention policy; manifests never applied |
 
 ## Security and reliability review (2026-10-23)
 
@@ -97,12 +114,27 @@ tokens; the React app renders no HTML from data; application pods run non-root w
 dropped; the development Keycloak realm file holds no users or secrets; production builds contain no
 preview code.
 
+### Since the review (2026-10-26)
+
+Each item has a regression test. During development, each test was also confirmed to fail when its
+change is undone; those mutation checks were run separately and are not part of the committed test
+suite. None of this was verified against a live system.
+
+| Change | Where | Regression test |
+|---|---|---|
+| No checkout leaves the job's token in `.git/config` (`persist-credentials: false`) | every workflow | `tests/unit/test_ci_workflow.py` |
+| CI installs exactly the locked Python dependencies (`uv sync --locked`), as the images (`--frozen`) and the scans do | `.github/workflows/ci.yml` | `tests/unit/test_ci_workflow.py` |
+| A live RAG end-to-end test (real embeddings, pgvector, one real Groq answer checked for grounding and citations) and a manual workflow that needs an approval and exposes the key to one step only | `tests/integration/test_rag_end_to_end_live.py`, `rag-e2e-live.yml` | `tests/unit/test_rag_e2e_live_workflow.py` (static; the live test has not run) |
+| A reply cut off before any text returns 502 `llm_output_truncated` with a fixed message, not the generic provider error | `app/core/exceptions.py` | `tests/unit/api/test_chat_endpoint.py`, `test_rag_endpoint.py` |
+| System Status is listed for administrators only, and `/system` shows members a notice without calling the API | `frontend/web/src/` | `App.test.tsx`, `AuthGate.test.tsx` |
+
 ## Security model: what is enforced, and where it is not
 
 Known limitations, none of which is fixed:
 
-1. **Database isolation is unproven live.** Everything above about isolation rests on offline tests
-   until `test_data_isolation.py` runs against Postgres.
+1. **Database isolation is verified only in CI's throwaway database.** `test_data_isolation.py` runs
+   in CI's `test` job against a service Postgres (green in run #78; the log has not been read). It has
+   not run locally or against a deployed database.
 2. **`backend/scripts/mcp_stdio_server.py`** has no authentication. It now refuses to start unless
    `MCP_STDIO_USER_ID` + `MCP_STDIO_ORGANIZATION_ID` (one user's data) or
    `MCP_STDIO_ALLOW_UNRESTRICTED=true` (every organization's data) is set, but whoever can run it
@@ -113,8 +145,10 @@ Known limitations, none of which is fixed:
 5. **No user-management API.** Accounts and roles are created by an operator command that writes to
    the database directly.
 6. **Administrators see organization-wide document counts** in the operations summary (numbers only).
-7. **The UI does not hide admin-only pages from members**; the API refuses them (403) and the UI
-   shows "You do not have permission to do that".
+7. **Hiding admin-only pages is display only.** The web UI lists System Status for administrators
+   only (the role comes from `/api/v1/auth/me` at sign-in), and a member who opens `/system` sees a
+   notice. The API's 403 is what protects it. A role change reaches the UI at the next sign-in or
+   page reload.
 8. **Legacy data is invisible until assigned.** After migration 0006 and before the backfill,
    pre-existing conversations and documents match no user's scope.
 9. **Not reviewed for a real deployment:** TLS termination, secrets management, data retention,
@@ -150,43 +184,50 @@ with the models, the downgrade drops only what 0006 added, and 0007 refuses whil
 What they cannot establish: that the SQL executes on PostgreSQL, that the composite foreign key and
 check constraints behave as intended on real data, and that the throwaway-database round trip works.
 `tests/integration/test_ownership_migration.py` (opt-in via `RUN_MIGRATION_ROUNDTRIP=1`, enabled in CI)
-is the test for those, and it has not run.
+is the test for those. It has not run locally; CI's `test` job runs it (green in run #78, log not
+read).
 
 `make docker-migrate` and the Kubernetes migration job run `alembic upgrade head`; on a database with
 unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above instead.
 
 ## Blocked checks (need infrastructure that was not available or not permitted)
 
-- Database-backed suites: data isolation, ownership migration round trip, repository, chat, RAG,
-  embedding, ingestion and agent flows (115 tests).
+- Database-backed suites, locally: data isolation, ownership migration round trip, repository,
+  chat, RAG, embedding, ingestion and agent flows (105 tests). CI's `test` job runs them; which ones
+  ran is in its skip list, not read.
 - Live OIDC: a real sign-in, token issuance by Keycloak, the audience mapper, silent renewal, and
   `iss` stability when the backend reaches the identity provider by another host name.
 - Docker images (build, migrate, health checks), Compose and Kubernetes deployment.
-- Live model calls (Groq) and the answer-quality evaluation metrics.
+- Live model calls beyond the two local Groq tests: the live RAG end-to-end workflow (it needs the
+  `groq-live` environment), live agent and multi-agent runs, and the answer-quality evaluation
+  metrics.
 - Concurrency behavior of the rate limiter under real load; multi-replica behavior.
 
 ## Remaining work, in priority order
 
-1. Run the database-backed suites (locally with Docker, or by letting CI run them) and fix what they find.
+1. Read CI's `test` job skip list once (it needs a signed-in account) to confirm which
+   database-backed tests ran in run #78, and run them locally when a disposable database is available.
 2. Build the images; apply the migrations to a *copy* of the database following the sequence above; then to the real one.
 3. Real browser sign-in with Keycloak; provision the first administrator; confirm `/system/status` is
-   403 for a member and 200 for an administrator.
+   403 for a member and 200 for an administrator, and that only the administrator's sidebar lists
+   System Status.
 4. Decide and implement shared rate limiting if more than one process will serve traffic.
 5. Scrape the opt-in `/metrics` endpoint in a real environment, add tracing, dashboards, and
    alerting on 5xx rates, rate-limit refusals, limiter failures and LLM errors (the metrics exist;
    see `observability.md`), and on repeated `not_found` audit outcomes.
-6. Review the reporting-only security scans' first results (they have run; the findings are in
-   signed-in-only artifacts), record the baseline in `security-scanning.md`, then decide a blocking
+6. Finish the security-scan baseline: review CI's Gitleaks report and the reports after run #49 (the
+   artifacts need a signed-in account), record them in `security-scanning.md`, then decide a blocking
    rule (D-9).
 7. Ship audit logs to storage the application cannot alter; define retention.
 8. A user-management API and UI (create/disable users, change roles) with its own audit events.
-9. UI: hide admin-only pages from members; a sharing control for documents.
+9. UI: a sharing control for documents.
 10. Review CORS, TLS, secrets handling, backup/restore and data retention for the target environment.
 11. Semantic memory recall if wanted, and any further M9 governance documents the project wants
     (model-use policy, data-retention policy, responsible-AI review). The React Memory page now lists,
     adds, edits and deletes notes.
-12. Push the current commits so CI runs the database-backed suites with `AEGIS_REQUIRE_SERVICES=1`,
-    and read the `test` job's skip list.
+12. Set up the `groq-live` GitHub Environment (a required reviewer and deployments limited to `main`
+    first, then a dedicated, spending-capped `GROQ_API_KEY` environment secret) and run
+    `rag-e2e-live.yml` once.
 
 ## Troubleshooting
 
@@ -194,7 +235,8 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
 |---|---|---|
 | `401` | no, expired or invalid token | `auth.denied` log lines (reason, request id) |
 | `403` on most routes | valid token but the identity is not linked to a user, or the user/organization is disabled | `auth.denied`; run `provision_identity.py` |
-| `403` on `/system/status` | the caller is a `member`; the page is for administrators | by design |
+| `403` on `/system/status` | the caller is a `member`; the page is for administrators (the web UI does not list it for members) | by design |
+| `502` with code `llm_output_truncated` | the model used its whole output budget (often on hidden reasoning) before writing any text; the same request stops at the same limit, so it is not retried | `llm_output_truncated` warning lines; try a shorter question, and review `PRIMARY_LLM_MODEL` / `FAST_LLM_MODEL` if it recurs |
 | `404` on a resource you believe exists | it exists but is not yours (or is private to someone else); the API does not say which | the `audit` line with outcome `not_found` |
 | `429` with `Retry-After` | a rate limit; wait or raise the `RATE_LIMIT_*` setting | `audit` line `rate_limit.exceeded` (warning) |
 | `503` on a protected route | authentication is not configured, the key set is unreachable, the database failed, or the rate limiter could not enforce | `auth.unavailable` / `rate_limit.unavailable` error lines |

@@ -1029,16 +1029,38 @@ def _doc() -> str:
     return (ROOT / "docs" / "operations" / "security-scanning.md").read_text(encoding="utf-8")
 
 
-def test_the_docs_say_the_baseline_has_not_been_reviewed() -> None:
-    # The workflow has run (GitHub's public run list), but its findings live in artifacts that
-    # need a signed-in account and have not been reviewed: the doc must not imply a clean result.
+def _baseline_log_rows() -> list[str]:
+    log = _doc().split("## Baseline log", 1)[1].split("\n## ", 1)[0]
+    rows = [line.strip() for line in log.splitlines() if line.startswith("|")]
+    return rows[2:]  # after the header row and the separator
+
+
+def test_the_docs_never_present_a_partly_reviewed_baseline_as_clean() -> None:
+    # Some reports were downloaded and reviewed; CI's Gitleaks reports and the later runs were not
+    # (the artifacts need a signed-in account). The doc must say so and not imply a clean result.
     doc = " ".join(_doc().split())  # compare across line wraps
 
     assert "have not been reviewed" in doc and "no reviewed baseline" in doc.lower()
     assert "does not claim the repository is free of vulnerabilities or secrets" in doc
     assert "reporting-only" in doc.lower()
     assert "NOT a clean result" in doc
-    assert "| _not yet scanned_ |" in doc
+    assert "Not reviewed yet: CI's `gitleaks-report`" in doc
+
+
+def test_every_baseline_log_entry_says_when_and_where_it_came_from() -> None:
+    rows = _baseline_log_rows()
+
+    assert rows, "the baseline log has no entries"
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert len(cells) == 4, row
+        date, scan, result, decision = cells
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date), row
+        # A CI run with its commit, a local scan, or reports that came before a named fix.
+        assert re.search(r"run #\d+ \(`[0-9a-f]{7}`\)|\*\*locally\*\*|before the fixes", scan), row
+        assert result and decision, row
+        if "before the fixes" in scan:
+            assert re.search(r"`[0-9a-f]{7}`", decision), row  # the fix, named by its commit
 
 
 def test_the_docs_explain_how_each_outcome_is_told_apart() -> None:

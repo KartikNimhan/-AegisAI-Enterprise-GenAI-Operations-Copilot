@@ -695,7 +695,8 @@ Conversations and documents have an owner (see
   re-share it. An administrator can remove a member's private document without being able to read it.
 - Nothing is ever visible across organizations, and a resource you may not see is a `404`, the
   same as one that does not exist.
-- `GET /api/v1/system/status` (infrastructure facts) is for administrators only.
+- `GET /api/v1/system/status` (infrastructure facts) is for administrators only, and the web UI
+  lists its System Status page for administrators only (display only: the 403 is the protection).
 - `GET /api/v1/operations/summary` counts documents by status: a member's counts cover what they
   can read; an administrator's cover their whole organization (aggregate numbers only, never titles,
   owners or content).
@@ -796,8 +797,8 @@ cd frontend/web && npm install && npm run dev
 
 Then visit http://localhost:5173 — Vite's dev server, with
 `VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
-backend. The Copilot, Conversations, Documents, Memory, Operations, and System Status
-pages are all in the left sidebar. The Copilot streams its answer over Server-Sent Events
+backend. The Copilot, Conversations, Documents, Memory and Operations pages are in the left
+sidebar, and so is System Status for administrators. The Copilot streams its answer over Server-Sent Events
 (`POST /api/v1/rag/chat/stream`, read with `fetch` so the bearer token can be sent): text
 appears as it is written, with a Stop button, sources when it finishes, and an explicit
 "Try again" after a failure (there is no automatic reconnect: a retry would repeat a request
@@ -1029,6 +1030,27 @@ RUN_MULTI_AGENT_LIVE_INTEGRATION=1 uv run pytest -m multi_agent_integration -v
 RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
     uv run pytest -m multi_agent_integration -v
 ```
+
+Run the opt-in live RAG end-to-end test explicitly with (real embeddings and pgvector retrieval,
+then one real Groq answer, checked for grounding and citations; it writes synthetic rows, so run it
+only against a disposable database):
+
+```bash
+RUN_RAG_E2E_LIVE=1 RUN_EMBEDDING_INTEGRATION=1 GROQ_API_KEY=sk-... \
+    uv run pytest backend/tests/integration/test_rag_end_to_end_live.py -v -rs
+```
+
+Two manual GitHub Actions workflows run the RAG tests on a GitHub-hosted runner against a
+throwaway pgvector service (Actions → the workflow → **Run workflow**). Both fail unless every
+expected test ran and passed, so a skipped test is a failed run:
+
+- `rag-integration.yml`: the four real-embedding retrieval tests. No LLM and no secrets.
+- `rag-e2e-live.yml`: the live end-to-end test above. It runs in the `groq-live` environment and
+  reads that environment's `GROQ_API_KEY` secret. Set the environment up **before** adding the
+  secret (Settings → Environments): a required reviewer, so every run waits for an approval, and
+  deployment branches limited to `main`; then the secret, a dedicated key with a spending cap.
+  Store the key only as a `groq-live` environment secret, never as a repository or organization secret.
+  GitHub creates a missing environment on first use **without** any protection rules.
 
 Run the React frontend's checks (no real backend/network — every `fetch`
 call is mocked in its tests):

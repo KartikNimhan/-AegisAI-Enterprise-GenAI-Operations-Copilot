@@ -18,7 +18,7 @@ can honestly be called done. This file exists so none of them is mistaken for fi
 | D-6 | Unique index on `(owner, checksum)`? | see ADR 016 "Not done" | Concurrent identical uploads are narrowed by an advisory lock but not forbidden by the database | Operator de-duplication, then a migration. Needs a real database |
 | D-7 | Hard database cap on memories per user? | counter column, trigger, or keep the row lock | The cap holds only while every writer uses the service | Keep the row lock; revisit if another writer appears |
 | D-8 | How to version embeddings? | see below | A changed model with an unchanged version label silently mixes vectors | Policy below |
-| D-9 | When should the security scans block a merge? | (a) reporting only (current, `security.yml`); (b) block on new Critical/High findings; (c) block on any finding | A known-vulnerable dependency or a leaked secret can be merged while every check is green | (b), after the first baseline run is reviewed (the artifacts need a signed-in GitHub account). Gitleaks findings should block as soon as the baseline is clean |
+| D-9 | When should the security scans block a merge? | (a) reporting only (current, `security.yml`); (b) block on new Critical/High findings; (c) block on any finding | A known-vulnerable dependency or a leaked secret can be merged while every check is green | (b), once the baseline review is finished (partly done, see `docs/operations/security-scanning.md`; the artifacts need a signed-in GitHub account). Gitleaks findings should block as soon as the baseline is clean |
 | D-10 | Token or cost budgets per user? | (a) request-count rate limits only (current); (b) a daily token budget per user; (c) per-organization quotas | Rate limits bound requests, not tokens: long prompts within the limits still cost more | (a) for a single team; (b) before any shared or paid deployment, using the token counts already stored per message |
 | D-11 | Harden the bundled PostgreSQL and Redis manifests? | (a) leave as development/staging-only examples (current); (b) add non-root security contexts | Those two pods run with the images' defaults (PostgreSQL's entrypoint starts as root to drop to `postgres`) | (a), and use a managed database in production, as `infra/kubernetes/README.md` already recommends |
 | D-12 | Keep the legacy Streamlit UI? | (a) keep as a tested legacy UI; (b) remove it | It cannot call an authentication-enabled backend (no sign-in), and it renders model answers as Markdown, so an injected Markdown image would be fetched by the browser if it were ever used against such a backend | (b) eventually; until then it is documented as unsupported with authentication |
@@ -46,9 +46,12 @@ follows. Do not describe this as fact checking.
 ## Residual risks that need an environment
 
 - Everything that touches PostgreSQL (migrations, pgvector search, cross-user isolation, the
-  advisory and row locks) is covered by offline tests only. Run the integration suite against a
-  real database.
-- Live Groq behaviour: retries, `Retry-After`, the stream deadline, tool calling.
+  advisory and row locks) is covered by offline tests and, in CI, by the integration suite against a
+  throwaway PostgreSQL service (the `test` job, green on `4f151d2`; its log has not been read). It
+  has not run against a deployed database.
+- Live Groq behaviour beyond one completion and one stream, which both passed locally on 2026-10-25
+  (reported by the maintainer): retries, `Retry-After`, the stream deadline, tool calling, and a
+  live RAG answer (`rag-e2e-live.yml`, not yet run).
 - Identity-provider login and token validation; the web UI in a real browser.
 - A real Prometheus scrape; the Kubernetes secret flow.
 - The extraction limits and body limits are generous starting points, not tuned values.

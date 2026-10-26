@@ -1,11 +1,15 @@
 # Security scanning
 
-**Status: configured, reporting-only, has run, findings not yet reviewed.** GitHub's public run list
-shows the workflow completing on `main` (run #37, commit `5d30825`, 2026-10-22). Because every job is
-reporting-only, "completed successfully" only means the jobs finished: the findings are in the run
-summaries and artifacts, which need a signed-in GitHub account and **have not been reviewed**. So there
-is still **no reviewed baseline**, and this document does not claim the repository is free of
-vulnerabilities or secrets. When a scan should start blocking is open decision D-9 in
+**Status: configured, reporting-only, has run; the baseline is partly reviewed.** GitHub's public
+run list shows every job completing on `main`, most recently in runs #51 and #52 on commit `4f151d2`
+(2026-10-26). Because every job is reporting-only, "completed successfully" only means the jobs
+finished: the findings are in the run summaries and artifacts, which need a signed-in GitHub account.
+The reports listed in the [baseline log](#baseline-log) were downloaded by the maintainer and
+reviewed, and every vulnerability they showed has been fixed. Reports not listed there
+**have not been reviewed**, including CI's Gitleaks reports (every run), run #49's pip-audit and
+Trivy reports (only its npm report was reviewed), and every report after run #49. There is still
+**no reviewed baseline** for the CI secret scan. This document does not claim the repository is
+free of vulnerabilities or secrets. When a scan should start blocking is open decision D-9 in
 [ADR 017](../architecture/decisions/017-open-decisions-and-residual-risks.md).
 
 Files: `.github/workflows/security.yml`, `.github/dependabot.yml`, `.gitleaks.toml`, `SECURITY.md`.
@@ -79,7 +83,8 @@ content to a third-party service: advisory and database lookups are read-only do
   CVE-2026-63328 (0.72.0). It is not one of the compromised 0.69.4 to 0.69.6.
 - **Compatibility:** every Trivy option the action passes (`format`, `output`, `exit-code`,
   `scanners`, `ignore-unfixed`, cache directory) exists in Trivy v0.74.0's source and v0.36.0 has the
-  same inputs as v0.35.0. This was read from the sources, **not run**.
+  same inputs as v0.35.0. This was read from the sources; since then the image job has completed
+  with these settings in every run through #52, and run #48's three reports were valid SARIF.
 - **Maintenance:** Dependabot does not track the `version:` input. Re-check upstream advisories when
   reviewing scan results and update it deliberately.
 - **Not independently verified:** the cryptographic signatures of the Trivy release files.
@@ -94,20 +99,27 @@ content to a third-party service: advisory and database lookups are read-only do
 - **Unfixed OS vulnerabilities** in base images are hidden (`ignore-unfixed`) so the report is
   actionable; they are therefore not reported at all.
 - **Gitleaks** may flag test fixtures (the auth tests build fake tokens and keys at run time) or
-  the development realm in `infra/keycloak/`. Only three files are allowlisted today (the
-  environment template and the two Kubernetes Secret templates). Handle any other false positive by
-  adding a single-file, justified entry after reviewing the finding, never a directory.
+  the development realm in `infra/keycloak/`. Only three files are allowlisted in `.gitleaks.toml`
+  (the environment template and the two Kubernetes Secret templates). Four reviewed false positives
+  are suppressed one by one in `.gitleaksignore` (exact commit, file, rule and line, each with its
+  reason), so the same text in any other commit is still reported. Handle any other false positive
+  the same way after reviewing it: a fingerprint, or a single-file entry with a reason, never a
+  directory or a rule change.
 - Scanners find **known** issues only: not logic bugs, authorization mistakes or misconfiguration.
 - Gitleaks scans the repository's commits, not anything that was never committed.
 - The images are built from the current commit on the runner; images in a registry or a cluster are
   not scanned (none are published).
-- Tool and action versions were looked up from their GitHub repositories at the time of writing but
-  **not executed**; compatibility (for example `pip-audit` options, Trivy's database download from a
-  rate-limited host) is verified only by the first run.
+- Tool and action versions were looked up from their GitHub repositories at the time of writing.
+  The reviewed reports from run #48 (pip-audit and Trivy) and run #49 (npm) were valid, so those
+  tools and their options worked on those runs. Later runs (#50 to #52) completed, but every scan job
+  and step tolerates failure, so a completed job does not show that a tool worked: inspect each run's
+  individual reports or summaries. A failed or incomplete scan is reported there as
+  `NOT a clean result`.
 
 ## Triage
 
-1. Read the summary and artifacts of the first run. Record the counts here as the baseline.
+1. Read each run's summary and artifacts. Record what was reviewed in the baseline log below, with
+   the run and commit it came from.
 2. For each finding: **fix** (upgrade, or remove the secret and **rotate it**: removing it from
    history does not make it safe), **accept** (write the reason and a review date below), or
    **ignore as a false positive** (single-file allowlist with a reason).
@@ -117,6 +129,18 @@ content to a third-party service: advisory and database lookups are read-only do
 
 ## Baseline log
 
+Only reports someone actually read are listed. "Run" is the Security scanning run number on GitHub.
+
 | Date | Scan | Result | Decision |
 |---|---|---|---|
-| _not yet scanned_ | | | |
+| 2026-10-25 | pip-audit, reports from before the fixes | `opentelemetry-api` 1.45.0 (CVE-2026-114603); `filelock` 4.0.9 (three advisories); `setuptools` 84.0.0 (GHSA-xmj3-9gf7-h52w) | fixed: upgraded in `5ff5b6e` and `32d497d` |
+| 2026-10-25 | Trivy, reports from before the fixes | vulnerabilities in the React image's nginx base and Alpine packages, and in the `pip` copies inside the runtime images | fixed: `752837d` (nginx), `689b887` (pip removed), `079cea0` (Alpine packages) |
+| 2026-10-25 | Gitleaks 8.30.1 run **locally** over the full history with `.gitleaks.toml` (CI's report needs sign-in and was not read) | 4 `generic-api-key` matches: docstring prose, two `GROQ_API_KEY` usage placeholders, a storage object key in a test | false positives: one exact fingerprint each in `.gitleaksignore` (`5ff5b6e`); rules unchanged |
+| 2026-10-25 | run #48 (`079cea0`): pip-audit, both modes | 0 known vulnerabilities in 134 packages (all groups) and 117 (runtime); `torch` skipped, so **not audited** | torch: see the known limitation above |
+| 2026-10-25 | run #48 (`079cea0`): Trivy | 0 results in all three image reports (backend, React, Streamlit) | none needed |
+| 2026-10-25 | run #48 (`079cea0`): npm audit | runtime: 0; everything: `undici` (1 High, 2 Moderate; build and test tooling only) | fixed: upgraded in `da95c67` |
+| 2026-10-25 | run #49 (`da95c67`): npm audit | 0 in both modes | none needed |
+
+Not reviewed yet: CI's `gitleaks-report` (every run), run #49's pip-audit and Trivy reports (only
+its npm report was reviewed), every report after run #49, and any other report not listed above.
+Runs #50 to #52 completed, but a completed reporting-only run is `NOT a clean result`.
