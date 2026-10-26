@@ -20,6 +20,7 @@ from app.config import Settings, get_settings
 from app.llm.base import LLMProvider
 from app.llm.exceptions import (
     LLMError,
+    LLMOutputTruncatedError,
     LLMProviderUnavailableError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -35,6 +36,10 @@ _MAX_BACKOFF_SECONDS = 8.0
 # A provider asking us to wait longer than this (Retry-After) is not retried: sleeping would hold
 # the request open for minutes. The error surfaces immediately instead.
 _MAX_RETRY_WAIT_SECONDS = 20.0
+# A reply cut off by the output limit before any text or tool call (e.g. a reasoning model that
+# spent the whole budget on hidden reasoning) is a failure, not an empty answer.
+_LENGTH_LIMIT = "length"
+_NO_OUTPUT_MESSAGE = "The model reached its output limit before producing any text"
 
 T = TypeVar("T")
 
@@ -71,7 +76,7 @@ class LLMGateway:
         model = self.resolve_model(model_role)
 
         async def call() -> CompletionResponse:
-            return await self._provider.complete(
+            response = await self._provider.complete(
                 model=model,
                 messages=messages,
                 temperature=temperature,
@@ -79,6 +84,14 @@ class LLMGateway:
                 response_format=response_format,
                 tools=tools,
             )
+            if _cut_off_without_output(response):
+                # The tokens were still spent (and billed): count them before failing. Not
+                # retryable, so `_with_retries` records it as an error and re-raises.
+                metrics.record_llm_tokens(self._provider.name, model_role.value, response.usage)
+                raise LLMOutputTruncatedError(
+                    _NO_OUTPUT_MESSAGE, provider=self._provider.name, request_id=response.request_id
+                )
+            return response
 
         return await self._with_retries(
             model_role=model_role, model=model, operation="chat_completion", call=call
@@ -103,6 +116,7 @@ class LLMGateway:
             model_role=model_role.value,
         )
         usage_recorded = False
+        produced_text = False
         try:
             async for chunk in self._with_deadline(
                 self._provider.stream_complete(
@@ -117,6 +131,16 @@ class LLMGateway:
                     # about the chunk or the stream.
                     metrics.record_llm_tokens(self._provider.name, model_role.value, chunk.usage)
                     usage_recorded = True
+                if chunk.delta.strip():
+                    produced_text = True
+                elif chunk.finish_reason == _LENGTH_LIMIT and not produced_text:
+                    # Cut off before any visible text: fail instead of ending an empty reply.
+                    # Nothing visible has reached the caller, so failing here loses nothing.
+                    raise LLMOutputTruncatedError(
+                        _NO_OUTPUT_MESSAGE,
+                        provider=self._provider.name,
+                        request_id=chunk.request_id,
+                    )
                 yield chunk
         except LLMError as exc:
             self._record_call_end(
@@ -277,7 +301,18 @@ def _usage_log_fields(result: object) -> dict[str, object]:
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
+        "reasoning_tokens": getattr(usage, "reasoning_tokens", None),  # a count, never the text
     }
+
+
+def _cut_off_without_output(response: CompletionResponse) -> bool:
+    """True only for blank content with no tool call at the output limit: partial text and tool
+    calls (whose content is legitimately empty) are valid responses."""
+    return (
+        response.finish_reason == _LENGTH_LIMIT
+        and not response.content.strip()
+        and not response.tool_calls
+    )
 
 
 def _backoff_delay(attempt: int, exc: Exception) -> float:

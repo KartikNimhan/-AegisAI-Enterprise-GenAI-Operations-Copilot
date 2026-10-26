@@ -57,3 +57,10 @@ class LLMInvalidRequestError(LLMError):
 
 class LLMProviderError(LLMError):
     """An unexpected, unmapped provider error occurred."""
+
+
+class LLMOutputTruncatedError(LLMError):
+    """The model reached its output limit (`finish_reason == "length"`) before producing any text
+    or tool call, for example a reasoning model that spent the whole budget on hidden reasoning.
+
+    Not retried: the same request would stop at the same limit."""

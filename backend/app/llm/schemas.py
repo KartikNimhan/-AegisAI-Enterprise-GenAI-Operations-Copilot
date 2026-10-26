@@ -85,6 +85,11 @@ class TokenUsage(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    # How many of `output_tokens` a reasoning model spent on hidden reasoning. Already part of
+    # `output_tokens` (and billed as output), never added to it. Internal accounting only: excluded
+    # from serialization, so API responses and A2A payloads are unchanged. The reasoning text
+    # itself is never captured.
+    reasoning_tokens: int | None = Field(default=None, exclude=True)
 
 
 class CompletionResponse(BaseModel):

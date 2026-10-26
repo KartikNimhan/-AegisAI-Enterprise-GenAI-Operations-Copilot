@@ -13,6 +13,7 @@ from app.config import Settings
 from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMInvalidRequestError,
+    LLMOutputTruncatedError,
     LLMRateLimitError,
     LLMTimeoutError,
 )
@@ -24,6 +25,7 @@ from app.llm.schemas import (
     ModelRole,
     StreamChunk,
     TokenUsage,
+    ToolCall,
 )
 
 from .doubles import ScriptedProvider
@@ -168,6 +170,139 @@ async def test_stream_chat_completion_propagates_provider_error() -> None:
     with pytest.raises(LLMTimeoutError):
         async for _ in gateway.stream_chat_completion(model_role=ModelRole.FAST, messages=MESSAGES):
             pass
+
+
+# -- output cut off by the length limit -------------------------------------------------------
+# A reasoning model can spend its whole output budget on hidden reasoning and return no text
+# (finish_reason "length"). That is a failure, never an empty answer; partial text and tool calls
+# are valid responses and pass through unchanged.
+
+CUT_USAGE = TokenUsage(input_tokens=5, output_tokens=20, total_tokens=25, reasoning_tokens=20)
+
+
+def make_completion(
+    content: str, finish_reason: str, tool_calls: list[ToolCall] | None = None
+) -> CompletionResponse:
+    return CompletionResponse(
+        content=content,
+        model="openai/gpt-oss-20b",
+        provider="fake",
+        finish_reason=finish_reason,
+        usage=CUT_USAGE,
+        request_id="req_cut",
+        tool_calls=tool_calls,
+    )
+
+
+def capture_token_records(monkeypatch: pytest.MonkeyPatch) -> list[TokenUsage | None]:
+    recorded: list[TokenUsage | None] = []
+    monkeypatch.setattr(
+        "app.llm.gateway.metrics.record_llm_tokens",
+        lambda _provider, _role, usage: recorded.append(usage),
+    )
+    return recorded
+
+
+@pytest.mark.parametrize("content", ["", "  \n"])
+async def test_blank_output_at_the_length_limit_raises_and_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    recorded = capture_token_records(monkeypatch)
+    provider = ScriptedProvider([make_completion(content, "length")])
+    gateway = LLMGateway(make_settings(llm_max_retries=2), provider=provider)
+
+    with pytest.raises(LLMOutputTruncatedError) as raised:
+        await gateway.chat_completion(model_role=ModelRole.FAST, messages=MESSAGES)
+
+    assert len(provider.calls) == 1
+    assert raised.value.provider == "fake"
+    assert raised.value.request_id == "req_cut"
+    assert recorded == [CUT_USAGE]  # the spent (billed) tokens are still counted
+
+
+async def test_partial_output_at_the_length_limit_is_returned() -> None:
+    provider = ScriptedProvider([make_completion("Partial answer", "length")])
+    gateway = LLMGateway(make_settings(), provider=provider)
+
+    result = await gateway.chat_completion(model_role=ModelRole.FAST, messages=MESSAGES)
+
+    assert result.content == "Partial answer"
+    assert result.finish_reason == "length"
+
+
+@pytest.mark.parametrize("finish_reason", ["tool_calls", "length"])
+async def test_tool_calls_with_empty_content_are_a_valid_response(finish_reason: str) -> None:
+    tool_calls = [ToolCall(id="call_1", name="calculator", arguments="{}")]
+    provider = ScriptedProvider([make_completion("", finish_reason, tool_calls=tool_calls)])
+    gateway = LLMGateway(make_settings(), provider=provider)
+
+    result = await gateway.chat_completion(model_role=ModelRole.FAST, messages=MESSAGES)
+
+    assert result.tool_calls == tool_calls
+    assert result.content == ""
+
+
+async def test_blank_output_that_ended_normally_is_not_treated_as_truncated() -> None:
+    provider = ScriptedProvider([make_completion("", "stop")])
+    gateway = LLMGateway(make_settings(), provider=provider)
+
+    result = await gateway.chat_completion(model_role=ModelRole.FAST, messages=MESSAGES)
+
+    assert result.content == ""
+    assert result.finish_reason == "stop"
+
+
+async def test_a_stream_cut_off_before_any_text_raises_instead_of_ending_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = capture_token_records(monkeypatch)
+    chunks = [
+        StreamChunk(delta=""),
+        StreamChunk(delta=" "),
+        StreamChunk(
+            delta="", finish_reason="length", is_final=True, usage=CUT_USAGE, request_id="req_s"
+        ),
+    ]
+    gateway = LLMGateway(make_settings(), provider=ScriptedProvider([chunks]))
+    received: list[StreamChunk] = []
+
+    with pytest.raises(LLMOutputTruncatedError) as raised:
+        async for chunk in gateway.stream_chat_completion(
+            model_role=ModelRole.FAST, messages=MESSAGES
+        ):
+            received.append(chunk)
+
+    # No visible text and no final chunk reached the caller, so nothing can be saved as a reply.
+    assert not any(chunk.is_final for chunk in received)
+    assert all(not chunk.delta.strip() for chunk in received)
+    assert raised.value.request_id == "req_s"
+    assert recorded == [CUT_USAGE]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [
+            StreamChunk(delta="Partial"),
+            StreamChunk(delta="", finish_reason="length", is_final=True),
+        ],
+        [StreamChunk(delta="Only chunk", finish_reason="length", is_final=True)],
+    ],
+)
+async def test_a_stream_cut_off_after_visible_text_passes_through_unchanged(
+    chunks: list[StreamChunk],
+) -> None:
+    gateway = LLMGateway(make_settings(), provider=ScriptedProvider([chunks]))
+
+    received = [
+        chunk
+        async for chunk in gateway.stream_chat_completion(
+            model_role=ModelRole.FAST, messages=MESSAGES
+        )
+    ]
+
+    assert received == chunks
+    assert received[-1].finish_reason == "length"
 
 
 async def test_excessive_retry_after_is_not_slept_on(monkeypatch: pytest.MonkeyPatch) -> None:

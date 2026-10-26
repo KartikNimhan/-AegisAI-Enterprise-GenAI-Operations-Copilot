@@ -26,6 +26,11 @@ pytestmark = [
     ),
 ]
 
+# The FAST model is a reasoning model: its hidden reasoning counts against `max_tokens` before any
+# visible text, and a 20-token budget was spent entirely on reasoning (empty content,
+# finish_reason "length"). This leaves room for both while keeping each call bounded.
+_MAX_TOKENS = 512
+
 
 async def test_real_groq_chat_completion_returns_content() -> None:
     gateway = LLMGateway(get_settings())
@@ -33,7 +38,7 @@ async def test_real_groq_chat_completion_returns_content() -> None:
     result = await gateway.chat_completion(
         model_role=ModelRole.FAST,
         messages=[ChatMessage(role=ChatRole.USER, content="Reply with exactly one word: pong")],
-        max_tokens=20,
+        max_tokens=_MAX_TOKENS,
     )
 
     assert result.content.strip() != ""
@@ -50,7 +55,7 @@ async def test_real_groq_streaming_yields_chunks() -> None:
         async for chunk in gateway.stream_chat_completion(
             model_role=ModelRole.FAST,
             messages=[ChatMessage(role=ChatRole.USER, content="Count from 1 to 3.")],
-            max_tokens=30,
+            max_tokens=_MAX_TOKENS,
         )
     ]
 
@@ -58,3 +63,7 @@ async def test_real_groq_streaming_yields_chunks() -> None:
     full_text = "".join(chunk.delta for chunk in chunks)
     assert full_text.strip() != ""
     assert chunks[-1].is_final is True
+    # Groq reports stream usage on the final chunk (`x_groq.usage`; no `stream_options` is sent).
+    final_usage = chunks[-1].usage
+    assert final_usage is not None
+    assert final_usage.total_tokens is not None and final_usage.total_tokens > 0
