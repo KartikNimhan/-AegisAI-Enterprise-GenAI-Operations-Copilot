@@ -21,6 +21,7 @@ from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMError,
     LLMInvalidRequestError,
+    LLMOutputTruncatedError,
     LLMProviderUnavailableError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -261,6 +262,23 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=_error_payload(request, code="llm_unavailable", message=str(exc)),
+        )
+
+    @app.exception_handler(LLMOutputTruncatedError)
+    async def handle_llm_output_truncated_error(
+        request: Request, exc: LLMOutputTruncatedError
+    ) -> JSONResponse:
+        # The model used its whole output budget (often on hidden reasoning) before writing any
+        # text. Its own code lets a client tell this apart from a provider failure. The message is
+        # fixed, so nothing the provider sent can reach the caller.
+        logger.warning("llm_output_truncated", provider=exc.provider, request_id=exc.request_id)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=_error_payload(
+                request,
+                code="llm_output_truncated",
+                message="The model reached its output limit before producing any text",
+            ),
         )
 
     @app.exception_handler(LLMError)

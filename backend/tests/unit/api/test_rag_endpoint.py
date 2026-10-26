@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.exceptions import NotFoundError
-from app.llm.exceptions import LLMError, LLMTimeoutError
+from app.llm.exceptions import LLMError, LLMOutputTruncatedError, LLMTimeoutError
 from app.llm.schemas import StreamChunk, TokenUsage
 from app.main import app
 from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
@@ -242,6 +242,7 @@ def test_rag_chat_returns_404_for_unknown_conversation(
     ("error", "expected_status", "expected_code"),
     [
         (LLMTimeoutError("timed out", provider="groq"), 504, "llm_timeout"),
+        (LLMOutputTruncatedError("cut off", provider="groq"), 502, "llm_output_truncated"),
     ],
 )
 def test_rag_chat_maps_llm_errors_to_http_status(

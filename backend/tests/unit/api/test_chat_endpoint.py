@@ -13,7 +13,13 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.llm.exceptions import LLMError, LLMRateLimitError, LLMTimeoutError
+from app.llm.exceptions import (
+    LLMError,
+    LLMOutputTruncatedError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from app.llm.schemas import CompletionResponse, ModelRole, StreamChunk, TokenUsage
 from app.main import app
 from app.services.chat_service import ChatService, ChatTurnResult, StreamTurnChunk, get_chat_service
@@ -184,6 +190,8 @@ def test_create_chat_completion_rejects_malformed_json_body(client: TestClient) 
     [
         (LLMRateLimitError("rate limited", provider="groq"), 429, "llm_rate_limited"),
         (LLMTimeoutError("timed out", provider="groq"), 504, "llm_timeout"),
+        (LLMOutputTruncatedError("cut off", provider="groq"), 502, "llm_output_truncated"),
+        (LLMProviderError("boom", provider="groq"), 502, "llm_provider_error"),
     ],
 )
 def test_create_chat_completion_maps_llm_errors_to_http_status(
@@ -199,6 +207,32 @@ def test_create_chat_completion_maps_llm_errors_to_http_status(
 
     assert response.status_code == expected_status
     assert response.json()["error"]["code"] == expected_code
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected_message"),
+    [
+        (
+            LLMOutputTruncatedError,
+            "The model reached its output limit before producing any text",
+        ),
+        (LLMProviderError, "The LLM provider returned an error"),
+    ],
+)
+def test_llm_failures_without_a_safe_message_return_a_fixed_one(
+    client: TestClient,
+    override_chat_service: Any,
+    error_type: type[LLMError],
+    expected_message: str,
+) -> None:
+    # Whatever text the exception carries (it could come from a provider) never reaches the caller.
+    leaked = "upstream detail 8f3a: finish_reason=length after 2048 reasoning tokens"
+    override_chat_service(FakeChatService(error=error_type(leaked, provider="groq")))
+
+    response = client.post("/api/v1/chat/completions", json={"message": "hello"})
+
+    assert response.json()["error"]["message"] == expected_message
+    assert "8f3a" not in response.text
 
 
 def test_stream_chat_completion_emits_sse_events(
