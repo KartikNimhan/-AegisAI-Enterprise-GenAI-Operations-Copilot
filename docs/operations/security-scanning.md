@@ -1,15 +1,16 @@
 # Security scanning
 
 **Status: configured, reporting-only, has run; the baseline is partly reviewed.** GitHub's public
-run list shows every job completing on `main`, most recently in runs #51 and #52 on commit `4f151d2`
+run list shows every job completing on `main`, most recently in run #56 on commit `a0db731`
 (2026-10-26). Because every job is reporting-only, "completed successfully" only means the jobs
 finished: the findings are in the run summaries and artifacts, which need a signed-in GitHub account.
 The reports listed in the [baseline log](#baseline-log) were downloaded by the maintainer and
 reviewed, and every vulnerability they showed has been fixed. Reports not listed there
 **have not been reviewed**, including CI's Gitleaks reports (every run), run #49's pip-audit and
-Trivy reports (only its npm report was reviewed), and every report after run #49. There is still
-**no reviewed baseline** for the CI secret scan. This document does not claim the repository is
-free of vulnerabilities or secrets. When a scan should start blocking is open decision D-9 in
+Trivy reports (only its npm report was reviewed), and every report after run #49 except the three
+Trivy reports of run #56. There is still **no reviewed baseline** for the CI secret scan. This
+document does not claim the repository is free of vulnerabilities or secrets. When a scan should
+start blocking is open decision D-9 in
 [ADR 017](../architecture/decisions/017-open-decisions-and-residual-risks.md).
 
 Files: `.github/workflows/security.yml`, `.github/dependabot.yml`, `.gitleaks.toml`, `SECURITY.md`.
@@ -140,7 +141,13 @@ Only reports someone actually read are listed. "Run" is the Security scanning ru
 | 2026-10-25 | run #48 (`079cea0`): Trivy | 0 results in all three image reports (backend, React, Streamlit) | none needed |
 | 2026-10-25 | run #48 (`079cea0`): npm audit | runtime: 0; everything: `undici` (1 High, 2 Moderate; build and test tooling only) | fixed: upgraded in `da95c67` |
 | 2026-10-25 | run #49 (`da95c67`): npm audit | 0 in both modes | none needed |
+| 2026-10-26 | run #56 (`a0db731`): Trivy | `trivy-backend.sarif`: 0 results; `trivy-frontend.sarif` (React): 0 results; `trivy-streamlit.sarif`: 0 results | none needed; the React image's `curl` and `libcurl` minimum is now `8.23.0-r0` (`a0db731`) |
+
+Run #56's 0 results apply only to that one scan of those three images, and that scan looks only for
+known operating-system and library vulnerabilities that have a fix available (unfixed ones are
+hidden, see above). They are not proof that the application has no security vulnerabilities.
 
 Not reviewed yet: CI's `gitleaks-report` (every run), run #49's pip-audit and Trivy reports (only
-its npm report was reviewed), every report after run #49, and any other report not listed above.
-Runs #50 to #52 completed, but a completed reporting-only run is `NOT a clean result`.
+its npm report was reviewed), every report after run #49 except the three Trivy reports of run #56,
+and any other report not listed above. Runs #50 to #52 completed, but a completed reporting-only run
+is `NOT a clean result`.
