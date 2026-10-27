@@ -1,0 +1,240 @@
+name: Kubernetes smoke test (manual, disposable kind cluster)
+
+# Deploys the committed manifests in infra/kubernetes/ to a throwaway kind cluster on a
+# GitHub-hosted runner and checks that the stack comes up: PostgreSQL + pgvector, Redis, the
+# migration Job, the backend (/health/ready), and the React frontend with its /health and /api/
+# proxy. Started by hand only. It needs no cloud host, no registry, no local Docker and no secret.
+#
+# What is test-only, applied while the workflow runs (the committed manifests are not changed):
+#   - image tags: `:REPLACE_WITH_TAG` becomes `:smoke`, images built here and loaded into kind;
+#   - authentication: the backend refuses to start with empty AUTH_* settings outside local
+#     development, so they get placeholders on the reserved `.invalid` domain. Nothing contacts
+#     them: the backend fetches signing keys only when it verifies a token, and no token is sent;
+#   - Secrets: created here from a generated, masked password. No repository secret is read and
+#     no LLM is called (no provider key is set at all).
+# Not applied: the `.example.yaml` Secret templates and the ingress template.
+#
+# Known limitations: one node, no ingress/TLS, no real sign-in. `pgvector/pgvector:pg16`,
+# `redis:7-alpine` and the Dockerfiles' base images are pulled by tag. The backend downloads its
+# embedding model from Hugging Face at start-up; a failed download only logs a warning.
+
+on:
+  workflow_dispatch:
+
+# Least privilege: the job only reads the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  KIND_VERSION: "v0.33.0"
+  # sha256 of kind-linux-amd64 v0.33.0, from the release's published .sha256sum file (it matches
+  # GitHub's own digest for that asset).
+  KIND_SHA256: "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+  # The node image the kind v0.33.0 release notes name for Kubernetes v1.37.0, pinned by digest
+  # (confirmed against the Docker Hub registry's index digest).
+  KIND_NODE_IMAGE: "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
+  CLUSTER_NAME: aegis-smoke
+  IMAGE_TAG: smoke
+  # The newest migration in backend/alembic/versions (a unit test keeps this in step).
+  EXPECTED_ALEMBIC_HEAD: "0008"
+
+jobs:
+  smoke:
+    name: Deploy the manifests to a throwaway kind cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false # no job token left in .git/config
+
+      - name: Install kind (checksum-verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL -o "$RUNNER_TEMP/bin/kind" \
+            "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  $RUNNER_TEMP/bin/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/kind"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Write the wait helpers
+        run: |
+          cat > "$RUNNER_TEMP/smoke-lib.sh" <<'SH'
+          # A pod reason that will not fix itself, for the pods matching a label selector.
+          fatal_reason() {
+            kubectl get pods -l "$1" -o jsonpath='{range .items[*]}{range .status.initContainerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{range .status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{end}' \
+              | grep -E '^(CreateContainerConfigError|CreateContainerError|ErrImageNeverPull|ErrImagePull|ImagePullBackOff|InvalidImageName|CrashLoopBackOff)$' \
+              | head -n 1 || true
+          }
+
+          # wait_rollout <resource> <label selector> <timeout seconds>
+          wait_rollout() {
+            local deadline=$((SECONDS + $3)) reason
+            until kubectl rollout status "$1" --timeout=10s >/dev/null 2>&1; do
+              reason="$(fatal_reason "$2")"
+              if [ -n "$reason" ]; then echo "::error::$1: a pod cannot start ($reason)"; return 1; fi
+              if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::$1 was not ready within $3 s"; return 1; fi
+            done
+            echo "$1 is ready"
+          }
+
+          # wait_job <job name> <timeout seconds>
+          wait_job() {
+            local deadline=$((SECONDS + $2)) succeeded failed reason
+            while :; do
+              succeeded="$(kubectl get job "$1" -o jsonpath='{.status.succeeded}')"
+              failed="$(kubectl get job "$1" -o jsonpath='{.status.failed}')"
+              if [ "${succeeded:-0}" -ge 1 ]; then echo "job/$1 completed"; return 0; fi
+              reason="$(fatal_reason "job-name=$1")"
+              if [ -n "$reason" ]; then echo "::error::job/$1: its pod cannot start ($reason)"; return 1; fi
+              if [ "${failed:-0}" -ge 3 ]; then echo "::error::job/$1 failed $failed times"; return 1; fi
+              if [ "$SECONDS" -ge "$deadline" ]; then echo "::error::job/$1 did not complete within $2 s"; return 1; fi
+              sleep 5
+            done
+          }
+
+          # check_http <url> <expected status> <expected text in the body>
+          check_http() {
+            local body="$RUNNER_TEMP/body" status
+            status="$(curl -sS --max-time 10 -o "$body" -w '%{http_code}' "$1")" || status="no response"
+            echo "GET $1 -> $status"
+            if [ "$status" != "$2" ]; then echo "::error::GET $1 returned $status, expected $2"; head -c 500 "$body"; return 1; fi
+            if ! grep -qF -- "$3" "$body"; then echo "::error::GET $1: the body does not contain $3"; head -c 500 "$body"; return 1; fi
+          }
+
+          # port_forward <service> <local port:service port>; waits until the local port answers
+          port_forward() {
+            kubectl port-forward "service/$1" "$2" >"$RUNNER_TEMP/port-forward-$1.log" 2>&1 &
+            local port="${2%%:*}" i
+            for i in $(seq 1 30); do
+              if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then return 0; fi
+              sleep 1
+            done
+            echo "::error::port-forward to $1 did not start"; cat "$RUNNER_TEMP/port-forward-$1.log"; return 1
+          }
+          SH
+
+      # Kept on the runner and loaded into kind below; never pushed to any registry.
+      - name: Build the backend and React images locally
+        run: |
+          docker build --tag "aegisai-backend:${IMAGE_TAG}" --file Dockerfile .
+          docker build --tag "aegisai-frontend:${IMAGE_TAG}" --file frontend/web/Dockerfile frontend/web
+
+      - name: Create the kind cluster and load the images
+        run: |
+          kind create cluster --name "$CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 180s
+          kind load docker-image --name "$CLUSTER_NAME" "aegisai-backend:${IMAGE_TAG}" "aegisai-frontend:${IMAGE_TAG}"
+          kubectl version
+          kubectl get nodes -o wide
+
+      # Test-only changes, written to copies under $RUNNER_TEMP; the diff shows every one of them.
+      - name: Render the manifests with the test-only substitutions
+        run: |
+          out="$RUNNER_TEMP/k8s"
+          mkdir -p "$out"
+          for name in postgres-statefulset postgres-service redis-deployment redis-service \
+            backend-pvc backend-service frontend-configmap frontend-service; do
+            cp "infra/kubernetes/$name.yaml" "$out/$name.yaml"
+          done
+          for name in migration-job backend-deployment frontend-deployment; do
+            sed -e "s|:REPLACE_WITH_TAG|:${IMAGE_TAG}|" "infra/kubernetes/$name.yaml" > "$out/$name.yaml"
+          done
+          sed -e 's|AUTH_ISSUER: ""|AUTH_ISSUER: "https://idp.invalid/realms/aegis-smoke"|' \
+            -e 's|AUTH_AUDIENCE: ""|AUTH_AUDIENCE: "aegis-smoke"|' \
+            -e 's|AUTH_JWKS_URL: ""|AUTH_JWKS_URL: "https://idp.invalid/realms/aegis-smoke/protocol/openid-connect/certs"|' \
+            infra/kubernetes/backend-configmap.yaml > "$out/backend-configmap.yaml"
+          if grep -rq "REPLACE_WITH_TAG" "$out"; then echo "::error::an image tag was not substituted"; exit 1; fi
+          if [ "$(grep -c 'https://idp.invalid/' "$out/backend-configmap.yaml")" -ne 2 ]; then
+            echo "::error::the authentication placeholders were not applied"; exit 1
+          fi
+          grep -q 'ENVIRONMENT: "kubernetes"' "$out/backend-configmap.yaml"
+          for name in migration-job backend-deployment frontend-deployment backend-configmap; do
+            diff -u "infra/kubernetes/$name.yaml" "$out/$name.yaml" || true
+          done
+
+      - name: Create disposable Secrets from a generated password
+        run: |
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::${password}"
+          kubectl create secret generic aegisai-postgres-secret \
+            --from-literal=POSTGRES_PASSWORD="${password}"
+          kubectl create secret generic aegisai-backend-secret \
+            --from-literal=DATABASE_URL="postgresql+asyncpg://aegis:${password}@aegisai-postgres:5432/aegis"
+
+      - name: Start PostgreSQL (pgvector) and Redis
+        run: |
+          source "$RUNNER_TEMP/smoke-lib.sh"
+          out="$RUNNER_TEMP/k8s"
+          kubectl apply -f "$out/postgres-statefulset.yaml" -f "$out/postgres-service.yaml" \
+            -f "$out/redis-deployment.yaml" -f "$out/redis-service.yaml"
+          wait_rollout statefulset/aegisai-postgres app.kubernetes.io/name=aegisai-postgres 240
+          wait_rollout deployment/aegisai-redis app.kubernetes.io/name=aegisai-redis 120
+          kubectl exec statefulset/aegisai-postgres -- pg_isready -U aegis -d aegis
+          test "$(kubectl exec deployment/aegisai-redis -- redis-cli ping)" = "PONG"
+
+      - name: Run the migration Job
+        run: |
+          source "$RUNNER_TEMP/smoke-lib.sh"
+          out="$RUNNER_TEMP/k8s"
+          kubectl apply -f "$out/backend-configmap.yaml" -f "$out/backend-pvc.yaml"
+          kubectl apply -f "$out/migration-job.yaml"
+          wait_job aegisai-migrate 300
+          sql() { kubectl exec statefulset/aegisai-postgres -- psql -U aegis -d aegis -tAc "$1"; }
+          vector="$(sql "SELECT extversion FROM pg_extension WHERE extname = 'vector'")"
+          head="$(sql "SELECT version_num FROM alembic_version")"
+          echo "pgvector extension: ${vector:-missing}; alembic revision: ${head:-none}"
+          if [ -z "$vector" ]; then echo "::error::the pgvector extension is not installed"; exit 1; fi
+          if [ "$head" != "$EXPECTED_ALEMBIC_HEAD" ]; then
+            echo "::error::the database is at revision ${head:-none}, expected $EXPECTED_ALEMBIC_HEAD"; exit 1
+          fi
+          test "$(sql "SELECT to_regclass('public.agent_memories') IS NOT NULL")" = "t"
+
+      - name: Deploy the backend and check /health/ready
+        run: |
+          source "$RUNNER_TEMP/smoke-lib.sh"
+          out="$RUNNER_TEMP/k8s"
+          kubectl apply -f "$out/backend-deployment.yaml" -f "$out/backend-service.yaml"
+          wait_rollout deployment/aegisai-backend app.kubernetes.io/name=aegisai-backend 300
+          port_forward aegisai-backend 18000:8000
+          check_http http://127.0.0.1:18000/health/ready 200 '"status":"ready"'
+
+      - name: Deploy the frontend and check it and its proxy
+        run: |
+          source "$RUNNER_TEMP/smoke-lib.sh"
+          out="$RUNNER_TEMP/k8s"
+          kubectl apply -f "$out/frontend-configmap.yaml" -f "$out/frontend-deployment.yaml" \
+            -f "$out/frontend-service.yaml"
+          wait_rollout deployment/aegisai-frontend app.kubernetes.io/name=aegisai-frontend 180
+          port_forward aegisai-frontend 18080:80
+          check_http http://127.0.0.1:18080/ 200 '<div id="root"></div>'
+          check_http http://127.0.0.1:18080/health 200 '"status":"ok"'
+          # Through the proxy, without credentials: authentication is enforced.
+          check_http http://127.0.0.1:18080/api/v1/auth/me 401 '"code":"unauthorized"'
+
+      # Pods, events and logs only: Secret contents are never printed (and the password is masked).
+      - name: Show the cluster state after a failure
+        if: ${{ failure() }}
+        run: |
+          kubectl get nodes,pods,services,persistentvolumeclaims,jobs -o wide || true
+          kubectl get events --sort-by=.lastTimestamp || true
+          kubectl describe pods || true
+          for pod in $(kubectl get pods -o name 2>/dev/null); do
+            echo "::group::logs of $pod"
+            kubectl logs "$pod" --all-containers --tail=200 || true
+            kubectl logs "$pod" --all-containers --previous --tail=100 2>/dev/null || true
+            echo "::endgroup::"
+          done
+
+      - name: Delete the kind cluster
+        if: ${{ always() }}
+        run: |
+          if command -v kind >/dev/null 2>&1; then
+            kind delete cluster --name "$CLUSTER_NAME"
+          fi

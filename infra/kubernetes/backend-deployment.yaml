@@ -39,6 +39,12 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
+        # The image's group (the root Dockerfile's fixed gid 10001). Kubernetes gives the
+        # uploads volume to this group, so the non-root process can write a fresh volume that
+        # starts out owned by root. OnRootMismatch only re-applies ownership when the volume
+        # root does not already match, instead of walking every file on each start.
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -98,13 +104,13 @@ spec:
             readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
-            # The image's own USER (see the root Dockerfile) already runs
-            # as a non-root `app` user with a fixed uid/gid baked in at
-            # build time — runAsUser/runAsGroup are intentionally left
-            # unset here so Kubernetes doesn't need to match that exact
-            # uid; `runAsNonRoot: true` (pod-level, above) is still
-            # enforced and would reject the container if it ever did run
-            # as root.
+            # The image declares its user as the number 10001:10001 (see
+            # the root Dockerfile), so `runAsNonRoot: true` (pod-level,
+            # above) can be checked from the image itself. Kubernetes
+            # refuses an image whose user is a name, because it cannot tell
+            # whether that name is root. runAsUser/runAsGroup are left
+            # unset, as for the frontend: the image is the one place that
+            # declares the uid.
             # readOnlyRootFilesystem is left false: uvicorn/Python write
             # transient files (e.g. __pycache__ under some conditions,
             # temp files for multipart upload parsing) outside the one

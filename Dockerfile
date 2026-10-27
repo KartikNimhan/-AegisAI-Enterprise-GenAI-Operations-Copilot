@@ -46,8 +46,13 @@ ENV PYTHONUNBUFFERED=1 \
 # Kubernetes ConfigMap override ENVIRONMENT explicitly. Alembic (the migration
 # service/Job uses this same image) does not require authentication settings.
 
-# A dedicated, unprivileged user — the application never runs as root.
-RUN groupadd --system app && useradd --system --gid app --no-create-home app
+# A dedicated, unprivileged user — the application never runs as root. The uid/gid are fixed
+# (10001) instead of whatever useradd picks, so the final USER can be numeric: Kubernetes can
+# only verify `runAsNonRoot` against a numeric image user, and infra/kubernetes/
+# backend-deployment.yaml's fsGroup must equal this gid
+# (backend/tests/unit/test_k8s_pod_security.py checks both).
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home app
 
 WORKDIR /srv
 
@@ -82,7 +87,9 @@ RUN chown -R app:app /srv
 RUN mkdir -p /home/app && chown -R app:app /home/app
 ENV HOME=/home/app
 
-USER app
+# Numeric, not `app`: the same user (see the groupadd/useradd above), in a form Kubernetes can
+# check against `runAsNonRoot` without reading /etc/passwd.
+USER 10001:10001
 
 EXPOSE 8000
 
