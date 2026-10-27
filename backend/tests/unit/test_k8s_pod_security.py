@@ -141,3 +141,38 @@ def test_the_backend_volume_group_is_the_image_group() -> None:
     assert spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
     mounts = {m["mountPath"] for c in spec["containers"] for m in c.get("volumeMounts", [])}
     assert "/data/uploads" in mounts
+
+
+# -- the bundled Redis (upstream image) ------------------------------------------------------
+#
+# Regression: the Redis pod ran as root with every capability dropped, so the image's entrypoint
+# could not switch to its `redis` user (`setpriv: setresuid failed`) and crash-looped in the
+# first smoke run. It now starts as that user. Unlike the backend, the manifest names the uid:
+# the upstream image has no USER. These check the manifest only, not a running Redis.
+REDIS_UID = 999  # the official image's `redis` user
+REDIS_GID = 1000  # and its `redis` group
+
+
+def test_redis_runs_as_the_images_own_non_root_user() -> None:
+    spec = pod_spec("redis-deployment.yaml")
+    pod = spec["securityContext"]
+
+    assert pod["runAsNonRoot"] is True
+    assert pod["runAsUser"] == REDIS_UID != 0
+    assert pod["runAsGroup"] == REDIS_GID != 0
+    assert pod["seccompProfile"]["type"] == "RuntimeDefault"
+    assert spec["automountServiceAccountToken"] is False
+    (container,) = spec["containers"]
+    assert container["image"].startswith("redis:")
+    # Nothing in the container puts the user back to another one (or to root).
+    for key in ("runAsUser", "runAsGroup", "runAsNonRoot"):
+        assert key not in container["securityContext"], key
+
+
+def test_redis_keeps_every_capability_dropped_and_adds_none() -> None:
+    (container,) = pod_spec("redis-deployment.yaml")["containers"]
+    context = container["securityContext"]
+
+    assert context["allowPrivilegeEscalation"] is False
+    assert context["capabilities"] == {"drop": ["ALL"]}  # exactly this: no `add` key at all
+    assert context.get("privileged", False) is False

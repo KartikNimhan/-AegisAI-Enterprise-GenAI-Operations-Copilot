@@ -32,6 +32,17 @@ spec:
       # No pod here talks to the Kubernetes API, so none gets a service-account token: a
       # compromised container then has no cluster credential to use.
       automountServiceAccountToken: false
+      # Run as the image's own `redis` user (uid 999, gid 1000 in the official image). The image
+      # has no USER: started as root, its entrypoint switches to `redis` with setpriv, which needs
+      # CAP_SETUID. That capability is dropped below, so the switch failed ("setresuid failed:
+      # Operation not permitted", CrashLoopBackOff). Started as 999, the entrypoint skips the
+      # switch and runs redis-server directly, with no capability at all.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           # Pinned, not `:latest` — matches docker-compose.yml.
