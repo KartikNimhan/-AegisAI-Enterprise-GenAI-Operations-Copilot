@@ -22,10 +22,12 @@ _BLOCK_SEPARATOR = "\n\n---\n\n"
 # Text from a document that looks like one of OUR markers: `[SOURCE 2]`, `[/SOURCE 2]`, `[S3]`,
 # `[S1, S2]`. Left alone, a document could plant a fake source boundary in the prompt, or write
 # `[S3]` so that a model quoting it makes a citation the sanitizer would accept as valid. The
-# sanitizer also accepts lenticular brackets (U+3010/U+3011, see app.rag.citations), so those
-# count as look-alikes too.
+# sanitizer also accepts lenticular brackets (U+3010/U+3011) and a block label as a citation
+# (`[SOURCE 1]`, alone or in a group such as `[S1, SOURCE 2]`, see app.rag.citations), so all of
+# those count as look-alikes too.
 _MARKER_LOOKALIKE = re.compile(
-    r"[\[【]\s*/?\s*(SOURCE\s*\d+|S\d+(?:\s*,\s*S\d+)*)\s*[\]】]", re.IGNORECASE
+    r"[\[【]\s*/?\s*((?:SOURCE\s*\d+|S\d+)(?:\s*,\s*(?:SOURCE\s*\d+|S\d+))*)\s*[\]】]",
+    re.IGNORECASE,
 )
 
 

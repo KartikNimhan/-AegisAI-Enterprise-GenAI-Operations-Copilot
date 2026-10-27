@@ -82,10 +82,14 @@ _CORPUS = [
     "The stock market rallied today amid strong quarterly earnings.",
     "Quantum computers use qubits instead of classical bits.",
 ]
-# The same marker shapes app.rag.citations accepts: `[S1]`, `[S2, S3]`, and the lenticular `【S1】`
-# (U+3010/U+3011) that gpt-oss models write despite the prompt.
-_CITATION_GROUP = re.compile(r"[\[【]\s*(S\d+(?:\s*,\s*S\d+)*)\s*[\]】]")
+# The same marker shapes app.rag.citations accepts: `[S1]`, `[S2, S3]`, the lenticular `【S1】`
+# (U+3010/U+3011) that gpt-oss models write despite the prompt, and the context block label as the
+# id (`【SOURCE 1】` is `S1`, live run #2).
+_CITED = r"(?:SOURCE\s*\d+|S\d+)"
+_CITATION_GROUP = re.compile(rf"[\[【]\s*({_CITED}(?:\s*,\s*{_CITED})*)\s*[\]】]")
+_CITED_ID = re.compile(r"SOURCE\s*(\d+)|S(\d+)")
 _LENTICULAR_MARKER = re.compile(r"【\s*S\d|S\d+\s*】")
+_SOURCE_LABEL_MARKER = re.compile(r"[\[【]\s*SOURCE\s*\d")
 _DASHES = dict.fromkeys(map(ord, "‐‑‒–—―−"), "-")
 
 
@@ -195,7 +199,11 @@ def _rag_service(
 
 
 def _cited_ids(text: str) -> set[str]:
-    return {i for group in _CITATION_GROUP.findall(text) for i in re.findall(r"S\d+", group)}
+    return {
+        f"S{label or plain}"
+        for group in _CITATION_GROUP.findall(text)
+        for label, plain in _CITED_ID.findall(group)
+    }
 
 
 def _states_the_fact(text: str) -> bool:
@@ -245,6 +253,7 @@ async def test_a_real_model_answers_from_the_retrieved_evidence_and_cites_it(
     assert _cited_ids(gateway.completions[0].content) == shown | set(answer.invalid_citations)
     # Whatever brackets the model used, every kept marker is returned as `[Sn]`.
     assert not _LENTICULAR_MARKER.search(answer.answer), context
+    assert not _SOURCE_LABEL_MARKER.search(answer.answer), context
     # Model behaviour, the live signal: it cited the evidence, and cited only real sources.
     assert by_chunk[target.id].cited, context
     assert answer.invalid_citations == (), context

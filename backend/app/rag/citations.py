@@ -10,7 +10,9 @@ Only text that is *shaped like* a citation (`[S<digits>]`, optionally comma-sepa
 any other bracketed text is left exactly as written. Some models (the gpt-oss family in particular)
 write lenticular brackets, `【S1】`, despite the prompt. Those are citations too: they are checked
 the same way, so an invalid `【S9】` cannot slip past, and every kept marker is written back in
-the canonical `[S1]` form.
+the canonical `[S1]` form. A source may also be cited by the label its context block carries,
+`SOURCE 1` (see app.rag.context.assembler, which labels the block of source `S1` `[SOURCE 1]`): the
+label is the same source, is checked the same way, and is written back as its id (`[S1]`).
 
 `StreamingCitationSanitizer` applies the same rule to a token stream. A marker can be split across
 chunks (`"[S"`, `"9]"`), so text from an opening bracket is held back until the marker is either
@@ -30,10 +32,15 @@ from dataclasses import dataclass
 # Any opener with any closer counts, so a stray mixed pair is still validated rather than ignored.
 _OPENERS = "[【"
 _CLOSERS = "]】"
-_GROUP = re.compile(rf"[{re.escape(_OPENERS)}]\s*(S\d+(?:\s*,\s*S\d+)*)\s*[{re.escape(_CLOSERS)}]")
-_ID = re.compile(r"S\d+")
-# Longest marker we will wait for: far more than any realistic "[S1, S2, ... ]" group.
-_MAX_MARKER_LENGTH = 64
+# One cited source: its id (`S1`) or its context block's label (`SOURCE 1`), the same source.
+_CITED = r"(?:SOURCE\s*\d+|S\d+)"
+_GROUP = re.compile(
+    rf"[{re.escape(_OPENERS)}]\s*({_CITED}(?:\s*,\s*{_CITED})*)\s*[{re.escape(_CLOSERS)}]"
+)
+_ID = re.compile(r"SOURCE\s*(\d+)|S(\d+)")
+# Longest marker we will wait for: room for a group citing all 20 sources a request can return
+# (`rag_max_results`) in the longer `SOURCE n` form, far more than any realistic citation.
+_MAX_MARKER_LENGTH = 256
 
 
 @dataclass(frozen=True)
@@ -52,15 +59,17 @@ class SanitizedText:
 
 def _can_continue_marker(char: str) -> bool:
     """Whether `char` can appear between a citation's brackets, read exactly as `_GROUP` reads it:
-    `S`, `,`, Unicode whitespace (`\\s` is `str.isspace`) and Unicode decimal digits (`\\d` is
-    `str.isdecimal`). The stream must hold the same characters, or a marker such as `[S9\\n]` would
-    be checked on one path only. A non-ASCII digit never matches a source id: `S` followed by a
-    fullwidth nine (U+FF19) is a different id from `S9`, so it is reported as invalid."""
-    return char in "S," or char.isspace() or char.isdecimal()
+    the letters of `SOURCE` (which include `S`), `,`, Unicode whitespace (`\\s` is `str.isspace`)
+    and Unicode decimal digits (`\\d` is `str.isdecimal`). The stream must hold the same characters,
+    or a marker such as `[S9\\n]` would be checked on one path only. A non-ASCII digit never matches
+    a source id: `S` followed by a fullwidth nine (U+FF19) is a different id from `S9`, so it is
+    reported as invalid."""
+    return char in "SOURCE," or char.isspace() or char.isdecimal()
 
 
 def _resolve(match: re.Match[str], allowed: frozenset[str]) -> tuple[str, list[str], list[str]]:
-    ids = _ID.findall(match.group(1))
+    # `SOURCE 1` and `S1` are the same id; the digits are kept as written, so `SOURCE 01` is `S01`.
+    ids = [f"S{label or plain}" for label, plain in _ID.findall(match.group(1))]
     valid = [i for i in dict.fromkeys(ids) if i in allowed]
     invalid = [i for i in dict.fromkeys(ids) if i not in allowed]
     replacement = f"[{', '.join(valid)}]" if valid else ""

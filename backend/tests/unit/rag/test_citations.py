@@ -13,6 +13,7 @@ L, R = "【", "】"
 # Whitespace and digits beyond ASCII, which the non-streaming pattern reads as `\s` and `\d`.
 NEWLINE, NBSP, IDEOGRAPHIC_SPACE = chr(0x0A), chr(0xA0), chr(0x3000)
 FULLWIDTH_ONE, FULLWIDTH_NINE = chr(0xFF11), chr(0xFF19)
+NON_BREAKING_HYPHEN = chr(0x2011)
 
 
 def test_valid_citations_are_unchanged() -> None:
@@ -100,6 +101,45 @@ def test_a_mixed_bracket_pair_is_still_checked() -> None:
     assert result.text == "Mixed [S1] and."
     assert result.report.cited == ("S1",)
     assert result.report.removed == ("S9",)
+
+
+def test_the_context_label_cites_the_same_source_and_is_written_back_as_its_id() -> None:
+    # Live run #2: the model cited the context block's label, 【SOURCE 1】, instead of its id.
+    text = f"Held in **Larkspur{NON_BREAKING_HYPHEN}17**{L}SOURCE 1{R}, see also [SOURCE 2]."
+
+    result = sanitize_citations(text, ALLOWED)
+
+    assert result.text == f"Held in **Larkspur{NON_BREAKING_HYPHEN}17**[S1], see also [S2]."
+    assert result.report.cited == ("S1", "S2")
+    assert result.report.removed == ()
+
+
+def test_an_unknown_source_label_is_removed_and_reported_as_its_id() -> None:
+    result = sanitize_citations(f"Made up {L}SOURCE 9{R} and [SOURCE 01].", ALLOWED)
+
+    assert result.text == "Made up  and."
+    assert result.report.removed == ("S9", "S01")
+    assert result.report.cited == ()
+
+
+def test_labels_and_ids_mix_in_a_group_and_each_source_is_reported_once() -> None:
+    result = sanitize_citations(f"Both [SOURCE 1, S2, SOURCE 7] and [S1], {L}SOURCE 1{R}.", ALLOWED)
+
+    assert result.text == "Both [S1, S2] and [S1], [S1]."
+    assert result.report.cited == ("S1", "S2")
+    assert result.report.removed == ("S7",)
+
+
+def test_text_that_only_resembles_a_source_label_is_not_touched() -> None:
+    text = (
+        f"See [SOURCES 1], [Source 1], [SOURCE], [SOURCE one], [/SOURCE 1], {L}SOURCE 1a{R}, "
+        "[CORE 1] and [SOURCE 1, ]."
+    )
+
+    result = sanitize_citations(text, ALLOWED)
+
+    assert result.text == text
+    assert result.report == sanitize_citations("", ALLOWED).report
 
 
 def test_lenticular_text_that_only_looks_bracketed_is_not_touched() -> None:
@@ -213,9 +253,31 @@ def test_ordinary_text_with_these_characters_is_released_at_once_and_unchanged()
     assert sanitizer.report == sanitize_citations("", ALLOWED).report
 
 
+def test_streaming_source_label_split_across_chunks_is_validated() -> None:
+    out, sanitizer = _stream(["Fact ", L, "SOU", "RCE", " 1", R, " and [SOURCE", " 9", "]."])
+
+    assert out == "Fact [S1] and ."
+    assert sanitizer.report.cited == ("S1",)
+    assert sanitizer.report.removed == ("S9",)
+
+
+def test_a_group_citing_every_returnable_source_by_label_is_checked_on_both_paths() -> None:
+    allowed = [f"S{i}" for i in range(1, 21)]  # rag_max_results: at most 20 sources
+    labels = ", ".join(f"SOURCE {i}" for i in range(1, 22))  # ...plus one that was not retrieved
+    text = f"All of them {L}{labels}{R}."
+    expected = sanitize_citations(text, allowed)
+
+    for parts in ([text], list(text)):
+        out, sanitizer = _stream(parts, allowed)
+        assert out == expected.text
+        assert sanitizer.report == expected.report
+    assert expected.report.cited == tuple(allowed)
+    assert expected.report.removed == ("S21",)
+
+
 def test_streaming_hold_is_bounded_for_whitespace_too() -> None:
     sanitizer = StreamingCitationSanitizer(ALLOWED)
-    noise = L + IDEOGRAPHIC_SPACE * 100  # could be a marker for a while, but never closes
+    noise = L + IDEOGRAPHIC_SPACE * 300  # could be a marker for a while, but never closes
 
     released = sanitizer.feed(noise)
 
@@ -236,6 +298,8 @@ def test_streaming_hold_is_bounded_for_whitespace_too() -> None:
         f"tail {L}",
         f"a [S9{NEWLINE}] b {L}{IDEOGRAPHIC_SPACE}S1, S2{R} c [S9{NBSP}] d {L}S{FULLWIDTH_NINE}{R}",
         f"[S1,{NEWLINE}{NBSP}S2] and [S{FULLWIDTH_ONE}] and {L}S1 {IDEOGRAPHIC_SPACE}x",
+        f"Claim {L}SOURCE 1{R} then [SOURCE 9], [SOURCE 1, S4, SOURCE 2], [SOURCES 1] {L}SOURCE 1",
+        "[CORE] [ROUTE 66] [SOURCE code] [SOURCE 2] [SOURCE\t01]",
     ],
 )
 def test_streaming_equals_non_streaming_for_every_split(text: str) -> None:
@@ -259,7 +323,7 @@ def test_streaming_does_not_stall_on_a_stray_bracket() -> None:
 
 def test_streaming_hold_is_bounded() -> None:
     sanitizer = StreamingCitationSanitizer(ALLOWED)
-    noise = "[" + "S1, " * 40  # looks like a marker forever but never closes
+    noise = "[" + "S1, " * 100  # looks like a marker forever but never closes (past the bound)
 
     released = sanitizer.feed(noise)
 

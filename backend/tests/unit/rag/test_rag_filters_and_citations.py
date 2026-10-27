@@ -283,6 +283,24 @@ async def test_lenticular_citations_mark_their_source_cited_and_are_normalized()
     assert messages.messages[-1].content == answer.answer
 
 
+async def test_a_source_label_citation_marks_its_source_cited_and_is_normalized() -> None:
+    # Live run #2: the model cited the context block's label, 【SOURCE 1】, instead of [S1].
+    strategy = FakeRetrievalStrategy(results=[make_result(), make_result()])
+    gateway = ScriptedRAGGateway(
+        completion=make_completion(
+            content="The drill is held in **Larkspur-17**【SOURCE 1】, not 【SOURCE 9】."
+        )
+    )
+    service, _c, messages, _s = make_service(gateway=gateway, strategy=strategy)
+
+    answer = await service.answer(conversation_id=None, message="q", model_role=ModelRole.PRIMARY)
+
+    assert answer.answer == "The drill is held in **Larkspur-17**[S1], not."
+    assert [(s.source_id, s.cited) for s in answer.sources] == [("S1", True), ("S2", False)]
+    assert answer.invalid_citations == ("S9",)
+    assert messages.messages[-1].content == answer.answer
+
+
 async def test_answer_without_citations_is_left_alone() -> None:
     gateway = ScriptedRAGGateway(completion=make_completion(content="Plain answer."))
     service, *_ = make_service(
@@ -355,6 +373,33 @@ async def test_streamed_lenticular_citation_is_validated_and_normalized() -> Non
     sent = "".join(chunk.delta for _id, chunk, _sources in received)
     assert sent == "Held in Larkspur-17 [S1] and ."
     assert "S8" not in sent
+    assert messages.messages[-1].content == sent
+    final_sources = received[-1][2]
+    assert final_sources is not None and [s.cited for s in final_sources] == [True]
+
+
+async def test_streamed_source_label_citation_is_validated_and_normalized() -> None:
+    chunks = [
+        StreamChunk(delta="Held in Larkspur-17 【SOU"),
+        StreamChunk(delta="RCE 1】 and [SOURCE"),
+        StreamChunk(delta=" 8]"),
+        StreamChunk(delta=".", is_final=True, finish_reason="stop", model="m"),
+    ]
+    service, _c, messages, _s = make_service(
+        gateway=ScriptedRAGGateway(stream_chunks=chunks),
+        strategy=FakeRetrievalStrategy(results=[make_result()]),
+    )
+
+    received = [
+        item
+        async for item in service.answer_stream(
+            conversation_id=None, message="q", model_role=ModelRole.PRIMARY
+        )
+    ]
+
+    sent = "".join(chunk.delta for _id, chunk, _sources in received)
+    assert sent == "Held in Larkspur-17 [S1] and ."
+    assert "SOURCE" not in sent
     assert messages.messages[-1].content == sent
     final_sources = received[-1][2]
     assert final_sources is not None and [s.cited for s in final_sources] == [True]
