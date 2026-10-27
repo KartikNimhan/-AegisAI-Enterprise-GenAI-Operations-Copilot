@@ -82,8 +82,10 @@ _CORPUS = [
     "The stock market rallied today amid strong quarterly earnings.",
     "Quantum computers use qubits instead of classical bits.",
 ]
-# The same marker shape app.rag.citations accepts: `[S1]`, `[S2, S3]`.
-_CITATION_GROUP = re.compile(r"\[\s*(S\d+(?:\s*,\s*S\d+)*)\s*\]")
+# The same marker shapes app.rag.citations accepts: `[S1]`, `[S2, S3]`, and the lenticular `【S1】`
+# (U+3010/U+3011) that gpt-oss models write despite the prompt.
+_CITATION_GROUP = re.compile(r"[\[【]\s*(S\d+(?:\s*,\s*S\d+)*)\s*[\]】]")
+_LENTICULAR_MARKER = re.compile(r"【\s*S\d|S\d+\s*】")
 _DASHES = dict.fromkeys(map(ord, "‐‑‒–—―−"), "-")
 
 
@@ -241,6 +243,8 @@ async def test_a_real_model_answers_from_the_retrieved_evidence_and_cites_it(
     assert {source.source_id for source in answer.sources if source.cited} == shown, context
     assert not set(answer.invalid_citations) & shown, context
     assert _cited_ids(gateway.completions[0].content) == shown | set(answer.invalid_citations)
+    # Whatever brackets the model used, every kept marker is returned as `[Sn]`.
+    assert not _LENTICULAR_MARKER.search(answer.answer), context
     # Model behaviour, the live signal: it cited the evidence, and cited only real sources.
     assert by_chunk[target.id].cited, context
     assert answer.invalid_citations == (), context

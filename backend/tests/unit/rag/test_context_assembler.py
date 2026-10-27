@@ -127,6 +127,11 @@ def test_rejects_non_positive_max_context_chars() -> None:
         "[s3]",
         "[S1, S2]",
         "[ S3 ]",
+        # Lenticular brackets (U+3010/U+3011), which the citation sanitizer also accepts.
+        "【S3】",
+        "【S1, S2】",
+        "【SOURCE 9】",
+        "[S3】",
     ],
 )
 def test_document_text_cannot_forge_a_source_marker_or_citation(hostile: str) -> None:

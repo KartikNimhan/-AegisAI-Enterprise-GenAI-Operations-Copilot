@@ -7,10 +7,13 @@ valid ids are kept, invalid ids are removed (a group left empty disappears entir
 that were removed are reported so the caller can log/return them.
 
 Only text that is *shaped like* a citation (`[S<digits>]`, optionally comma-separated) is touched;
-any other bracketed text is left exactly as written.
+any other bracketed text is left exactly as written. Some models (the gpt-oss family in particular)
+write lenticular brackets, `【S1】`, despite the prompt. Those are citations too: they are checked
+the same way, so an invalid `【S9】` cannot slip past, and every kept marker is written back in
+the canonical `[S1]` form.
 
 `StreamingCitationSanitizer` applies the same rule to a token stream. A marker can be split across
-chunks (`"[S"`, `"9]"`), so text from an opening `[` is held back until the marker is either
+chunks (`"[S"`, `"9]"`), so text from an opening bracket is held back until the marker is either
 complete (checked, then emitted or dropped) or can no longer be a citation (emitted unchanged).
 The hold is bounded, so a stray `[` cannot stall the stream. Text already sent cannot be taken
 back, so unlike the non-streaming path the stream does not close the space before punctuation
@@ -23,10 +26,12 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-_GROUP = re.compile(r"\[\s*(S\d+(?:\s*,\s*S\d+)*)\s*\]")
+# Brackets that can open and close a citation: ASCII `[ ]` and lenticular `【 】` (U+3010, U+3011).
+# Any opener with any closer counts, so a stray mixed pair is still validated rather than ignored.
+_OPENERS = "[【"
+_CLOSERS = "]】"
+_GROUP = re.compile(rf"[{re.escape(_OPENERS)}]\s*(S\d+(?:\s*,\s*S\d+)*)\s*[{re.escape(_CLOSERS)}]")
 _ID = re.compile(r"S\d+")
-# Characters that can appear between "[" and "]" in a citation marker.
-_MARKER_CHARS = frozenset("S0123456789, \t")
 # Longest marker we will wait for: far more than any realistic "[S1, S2, ... ]" group.
 _MAX_MARKER_LENGTH = 64
 
@@ -43,6 +48,15 @@ class CitationReport:
 class SanitizedText:
     text: str
     report: CitationReport
+
+
+def _can_continue_marker(char: str) -> bool:
+    """Whether `char` can appear between a citation's brackets, read exactly as `_GROUP` reads it:
+    `S`, `,`, Unicode whitespace (`\\s` is `str.isspace`) and Unicode decimal digits (`\\d` is
+    `str.isdecimal`). The stream must hold the same characters, or a marker such as `[S9\\n]` would
+    be checked on one path only. A non-ASCII digit never matches a source id: `S` followed by a
+    fullwidth nine (U+FF19) is a different id from `S9`, so it is reported as invalid."""
+    return char in "S," or char.isspace() or char.isdecimal()
 
 
 def _resolve(match: re.Match[str], allowed: frozenset[str]) -> tuple[str, list[str], list[str]]:
@@ -96,18 +110,18 @@ class StreamingCitationSanitizer:
         out: list[str] = []
         for char in delta:
             if self._held:
-                if char == "]":
+                if char in _CLOSERS:
                     out.append(self._close(self._held + char))
                     self._held = ""
                     continue
-                if char in _MARKER_CHARS and len(self._held) < _MAX_MARKER_LENGTH:
+                if _can_continue_marker(char) and len(self._held) < _MAX_MARKER_LENGTH:
                     self._held += char
                     continue
                 # Not a citation after all: release what was held, then handle this char normally.
                 out.append(self._held)
                 self._held = ""
-            if char == "[":
-                self._held = "["
+            if char in _OPENERS:
+                self._held = char
             else:
                 out.append(char)
         return "".join(out)
