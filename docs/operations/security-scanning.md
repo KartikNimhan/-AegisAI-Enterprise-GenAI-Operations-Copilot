@@ -1,8 +1,8 @@
 # Security scanning
 
 **Status: configured, reporting-only, has run; the baseline is partly reviewed.** GitHub's public
-run list shows every job completing on `main`, most recently in run #56 on commit `a0db731`
-(2026-10-26). Because every job is reporting-only, "completed successfully" only means the jobs
+run list shows every job completing on `main`, most recently in run #59 on commit `f164c04`
+(2026-10-27). Because every job is reporting-only, "completed successfully" only means the jobs
 finished: the findings are in the run summaries and artifacts, which need a signed-in GitHub account.
 The reports listed in the [baseline log](#baseline-log) were downloaded by the maintainer and
 reviewed, and every vulnerability they showed has been fixed. Reports not listed there

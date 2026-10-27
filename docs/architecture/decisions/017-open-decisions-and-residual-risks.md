@@ -50,8 +50,8 @@ follows. Do not describe this as fact checking.
   throwaway PostgreSQL service (the `test` job, green on `4f151d2`; its log has not been read). It
   has not run against a deployed database.
 - Live Groq behaviour beyond one completion and one stream, which both passed locally on 2026-10-25
-  (reported by the maintainer): retries, `Retry-After`, the stream deadline, tool calling, and a
-  live RAG answer (`rag-e2e-live.yml`, not yet run).
+  (reported by the maintainer), and one live RAG answer, which passed in CI (`rag-e2e-live.yml`
+  run #3 on `f164c04`): retries, `Retry-After`, the stream deadline and tool calling.
 - Identity-provider login and token validation; the web UI in a real browser.
 - A real Prometheus scrape; the Kubernetes secret flow.
 - The extraction limits and body limits are generous starting points, not tuned values.

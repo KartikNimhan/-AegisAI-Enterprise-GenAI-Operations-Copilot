@@ -6,6 +6,12 @@ what has *not* been checked, and what remains. Milestones are the ones in the
 scope, not completion, and nothing below changes it. Older documents (ADRs, code comments) use an
 earlier working numbering, which this page does not use.
 
+**Status (2026-10-27): not production-ready.** CI and the live RAG run passed, and the security
+scans completed, on `f164c04` (see the verification record), but these are still outstanding:
+a staging deployment, a real sign-in through an identity provider, the migrations on a copy of
+the real database, a backup and restore rehearsal, load testing, and operational monitoring and
+alerting.
+
 ## How to read "verified"
 
 | Label | Meaning here |
@@ -13,7 +19,7 @@ earlier working numbering, which this page does not use.
 | **Offline-verified** | A test that ran and passed without Docker, a database or the network (fakes, mocks, executed SQL on SQLite, rendered migration SQL). It proves logic, **not** that a live system behaves the same. |
 | **Database-backed** | Needs PostgreSQL + pgvector. The suites exist: 105 database-backed integration tests and 2 database-backed evaluation tests (the 16 opt-in live tests are separate). **None has been run locally**: no disposable database was available. CI runs the database tests against its own Postgres service container, where an unreachable service fails them instead of skipping them. |
 | **CI-reported** | Seen through GitHub's public run list and API (job outcome only). Job logs and test counts need a signed-in account and have **not** been read. Scan reports were read only where the baseline log in [security-scanning.md](security-scanning.md) says so. |
-| **Live** | Needs a running stack, a real identity provider, or an external model API. Only the two live Groq tests have run (locally, reported by the maintainer); nothing else live has been done. |
+| **Live** | Needs a running stack, a real identity provider, or an external model API. Two things have run against a live model: the two Groq tests (locally, reported by the maintainer) and the live RAG end-to-end workflow (in CI, run #3). No running stack, identity provider or deployment has been exercised. |
 
 ## Verification record
 
@@ -34,25 +40,35 @@ LLM and identity-provider settings blank, so no test could reach a real service.
 | Kubernetes manifest validator | 15 documents pass structural checks |
 | Database-backed suites | Collected only: 105 database-backed integration tests and 2 database-backed evaluation tests, plus 16 opt-in live tests; **none run locally** |
 
-CI-reported (job outcomes from GitHub's public API, checked 2026-10-26; logs not read):
+CI-reported (job outcomes from GitHub's public API, checked 2026-10-27; logs not read):
 
-- **CI run #78** on `4f151d2` (`main` as of 2026-10-26, before these commits): all 7 jobs
-  succeeded. Its `test` job runs the database-backed suites against its own PostgreSQL and Redis
-  service containers, with
-  `AEGIS_REQUIRE_SERVICES=1` (an unreachable service fails the tests instead of skipping them) and
-  `RUN_MIGRATION_ROUNDTRIP=1`. The opt-in live suites are not enabled there and skip. Exactly which
-  tests ran is in the job's skip list, which needs a signed-in account.
+- **CI run #85** on `f164c04` (`main` as of 2026-10-27): all 7 jobs succeeded (so did
+  run #78 on `4f151d2` before it). The `test` job runs the database-backed suites against its own
+  PostgreSQL and Redis service containers, with `AEGIS_REQUIRE_SERVICES=1` (an unreachable service
+  fails the tests instead of skipping them) and `RUN_MIGRATION_ROUNDTRIP=1`. The opt-in live suites
+  are not enabled there and skip. Exactly which tests ran is in the job's skip list, which needs a
+  signed-in account.
 - **RAG integration run #1** (manual, no secrets) on `8a64718`: succeeded. Its last step fails
   unless exactly 4 tests ran and passed with none skipped, so it shows the real embedding model and
   pgvector retrieval working on a GitHub-hosted runner.
-- **Security scanning runs #51 and #52** on `4f151d2`: all four jobs completed. The scans are
-  reporting-only, so that is not a clean result; what has been reviewed is in
+- **Live RAG end-to-end run #3** (`rag-e2e-live.yml`, manual and approval-gated) on `f164c04`
+  (2026-10-27): succeeded. It exercised real embeddings, PostgreSQL + pgvector retrieval and one
+  live Groq answer, checked for grounding and for citations against the retrieved source ids. Its
+  last step fails unless exactly 2 tests ran and passed with none skipped; the maintainer reports
+  the summary as `2 passed, 0 skipped, 0 failures, 0 errors`. The earlier runs #1 (`cc1a399`) and
+  #2 (`9d5a78d`) failed on citation forms the parser did not yet accept (`【S1】`, then
+  `【SOURCE 1】`), fixed in `9d5a78d` and `f164c04`. The job runs in the `groq-live` environment:
+  one required reviewer and deployments from `main` only (repository admins can bypass the
+  approval, GitHub's default). It covers one synthetic question: a smoke test of the live path, not
+  an answer-quality evaluation.
+- **Security scanning run #59** on `f164c04`: all four jobs completed. The scans are
+  reporting-only, so that is not a clean result and does not show the repository is free of
+  vulnerabilities; the reports of run #59 have not been reviewed. What has been reviewed is in
   [security-scanning.md](security-scanning.md).
 
 Reported by the maintainer, not re-run here: the two opt-in live Groq tests
 (`backend/tests/integration/test_groq_live.py`: one completion, and one stream whose final chunk
-must carry token usage) passed locally on 2026-10-25 (`2 passed`). The live RAG end-to-end test
-(`test_rag_end_to_end_live.py`) and its approval-gated workflow (`rag-e2e-live.yml`) have not run.
+must carry token usage) passed locally on 2026-10-25 (`2 passed`).
 
 Mocked tests are labelled as such in their docstrings. `test_indirect_access_paths.py` and
 `test_scoped_repositories.py` prove structure and delegation, **not** that a database hides another
@@ -68,11 +84,11 @@ roadmap row; it says nothing about whether it works against real infrastructure.
 | # | Milestone | Implementation | Automated tests (offline) | Integration evidence | Remaining blockers |
 |---|---|---|---|---|---|
 | M0 | Foundation & Architecture | implemented: typed, validated settings; JSON logs with request ids; consistent errors (422s no longer echo input); request-size limit (no Content-Type bypass); security headers; Alembic 0001 to 0008 | pass | CI-reported green on `4f151d2` (run #78) | Compose/Docker runs (not permitted locally) |
-| M1 | LLM Gateway | implemented: provider-neutral gateway, Groq provider, model roles, retries with a `Retry-After` cap, total stream deadline, fixed client-facing error text (a reply cut off before any text has its own code, `llm_output_truncated`) | pass (scripted provider) | a live completion and a live stream with token usage passed locally (maintainer-reported, 2026-10-25); retries, `Retry-After` and the stream deadline not exercised live | the `safety` role is unused (decision D-1) |
+| M1 | LLM Gateway | implemented: provider-neutral gateway, Groq provider, model roles, retries with a `Retry-After` cap, total stream deadline, fixed client-facing error text (a reply cut off before any text has its own code, `llm_output_truncated`) | pass (scripted provider) | a live completion and a live stream with token usage passed locally (maintainer-reported, 2026-10-25), and a live completion through the gateway passed in CI (live RAG run #3); retries, `Retry-After` and the stream deadline not exercised live | the `safety` role is unused (decision D-1) |
 | M2 | Conversational AI | implemented: chat, bounded history window (now loaded with a bounded query), SSE, usage per message; message order made total (finding R-4) | pass | CI-reported: `test_chat_flow.py` runs in the `test` job (green in run #78, log not read); not run locally | CI's skip list unread; no deployed-stack run |
 | M3 | Document Intelligence | implemented: PDF/DOCX/TXT/Markdown, magic bytes, expansion limits, XXE-safe DOCX parsing (pinned by a test), duplicate-upload advisory lock | pass (real extractors) | CI-reported: `test_document_ingestion_flow.py` runs in the `test` job (green in run #78, log not read) | the unique `(owner, checksum)` index needs an operator de-duplication first (ADR 016) |
 | M4 | Embeddings | implemented: Sentence Transformers, pgvector column, dimension guard at startup, model/version stamping | pass (fake provider) | the real model with pgvector: RAG integration run #1 passed (4 tests, none skipped) | the model revision is not pinned (decision D-8); not run locally (no pgvector) |
-| M5 | Production RAG | implemented: scoped retrieval, filters, threshold, context assembly with marker neutralization, citation validation (retrieval, not claim support) | pass | real retrieval: RAG integration run #1 passed; a live-model answer test with an approval-gated workflow exists but has not run | configure the `groq-live` environment and run `rag-e2e-live.yml`; citations prove retrieval, not support (D-5) |
+| M5 | Production RAG | implemented: scoped retrieval, filters, threshold, context assembly with marker neutralization, citation validation (retrieval, not claim support) | pass | real retrieval: RAG integration run #1 passed; a live-model answer, grounded and with validated citations, passed in live RAG run #3 on `f164c04` | one synthetic question only, and no answer-quality evaluation yet; citations prove retrieval, not support (D-5) |
 | M6 | Agentic AI | implemented: LangGraph agent, allowlisted tools, step/tool/time budgets, malformed-argument handling, per-user memory with TTL, caps and an owner row lock | pass | CI-reported: the database-backed agent and memory tests run in the `test` job (green in run #78, log not read); no live-model agent run | a live agent run (needs a model); human approval is a decision (D-2) |
 | M7 | MCP + A2A Multi-Agent | implemented: in-process MCP, allowlisted A2A with size/deadline limits and validated responses, partial-failure isolation, stdio server fails closed | pass (mock transports) | none | a live multi-agent run (needs a model) |
 | M8 | GenAI UI + APIs | implemented: React Copilot (four modes), Conversations, Documents, Memory, Operations, System Status (listed for administrators only); legacy Streamlit (no sign-in); development-only preview, excluded from builds | pass | none in a browser | an identity provider (OIDC) for sign-in; a browser |
@@ -118,13 +134,14 @@ preview code.
 
 Each item has a regression test. During development, each test was also confirmed to fail when its
 change is undone; those mutation checks were run separately and are not part of the committed test
-suite. None of this was verified against a live system.
+suite. Only the live RAG test has also run against a live system (run #3, above); none of the rest
+has.
 
 | Change | Where | Regression test |
 |---|---|---|
 | No checkout leaves the job's token in `.git/config` (`persist-credentials: false`) | every workflow | `tests/unit/test_ci_workflow.py` |
 | CI installs exactly the locked Python dependencies (`uv sync --locked`), as the images (`--frozen`) and the scans do | `.github/workflows/ci.yml` | `tests/unit/test_ci_workflow.py` |
-| A live RAG end-to-end test (real embeddings, pgvector, one real Groq answer checked for grounding and citations) and a manual workflow that needs an approval and exposes the key to one step only | `tests/integration/test_rag_end_to_end_live.py`, `rag-e2e-live.yml` | `tests/unit/test_rag_e2e_live_workflow.py` (static; the live test has not run) |
+| A live RAG end-to-end test (real embeddings, pgvector, one real Groq answer checked for grounding and citations) and a manual workflow that needs an approval and exposes the key to one step only | `tests/integration/test_rag_end_to_end_live.py`, `rag-e2e-live.yml` | `tests/unit/test_rag_e2e_live_workflow.py` (static); the live test passed in run #3 |
 | A reply cut off before any text returns 502 `llm_output_truncated` with a fixed message, not the generic provider error | `app/core/exceptions.py` | `tests/unit/api/test_chat_endpoint.py`, `test_rag_endpoint.py` |
 | System Status is listed for administrators only, and `/system` shows members a notice without calling the API | `frontend/web/src/` | `App.test.tsx`, `AuthGate.test.tsx` |
 
@@ -198,9 +215,8 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
 - Live OIDC: a real sign-in, token issuance by Keycloak, the audience mapper, silent renewal, and
   `iss` stability when the backend reaches the identity provider by another host name.
 - Docker images (build, migrate, health checks), Compose and Kubernetes deployment.
-- Live model calls beyond the two local Groq tests: the live RAG end-to-end workflow (it needs the
-  `groq-live` environment), live agent and multi-agent runs, and the answer-quality evaluation
-  metrics.
+- Live model calls beyond the two local Groq tests and live RAG run #3: live agent and multi-agent
+  runs, and the answer-quality evaluation metrics.
 - Concurrency behavior of the rate limiter under real load; multi-replica behavior.
 
 ## Remaining work, in priority order
@@ -225,9 +241,9 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
 11. Semantic memory recall if wanted, and any further M9 governance documents the project wants
     (model-use policy, data-retention policy, responsible-AI review). The React Memory page now lists,
     adds, edits and deletes notes.
-12. Set up the `groq-live` GitHub Environment (a required reviewer and deployments limited to `main`
-    first, then a dedicated, spending-capped `GROQ_API_KEY` environment secret) and run
-    `rag-e2e-live.yml` once.
+12. Re-run `rag-e2e-live.yml` after any change to retrieval, prompts, citation handling or the
+    model. The `groq-live` environment is set up and run #3 passed on `f164c04`; it checks one
+    synthetic question, so answer quality still needs its own evaluation.
 
 ## Troubleshooting
 
