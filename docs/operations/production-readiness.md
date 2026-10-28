@@ -83,9 +83,9 @@ CI-reported (job outcomes from GitHub's public API, checked 2026-10-28; logs not
   in order to check `runAsNonRoot`. **This shows the manifests deploy and start; it is not a
   staging or production deployment.** It used one node, no ingress or TLS, no real sign-in and no
   model call, the bundled in-cluster PostgreSQL and Redis instead of managed services, and nothing
-  persisted after the run. Both runs carry GitHub's warning that the then-pinned `actions/checkout`
-  (v4.4.0) targets the deprecated Node.js 20 and was configured to run on Node.js 24 instead.
-  Checkout has since moved to v5.1.0, which targets Node.js 24 (see remaining work).
+  persisted after the run. Both runs carry GitHub's warning that the pinned `actions/checkout`
+  (v4.4.0) targets the deprecated Node.js 20 and is being run on Node.js 24 instead (see remaining
+  work).
 - **Security scanning run #62** on `e75e7ed`: all four jobs completed (so did run #59 on `f164c04`
   before it). The scans are reporting-only, so that is not a clean result and does not show the
   repository is free of vulnerabilities; the reports of runs #59 and #62 have not been reviewed.
@@ -287,14 +287,9 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
     model. The `groq-live` environment is set up and run #3 passed on `f164c04`; it checks one
     synthetic question, so answer quality still needs its own evaluation. Likewise, re-run
     `k8s-smoke.yml` after any change to the Dockerfiles, the manifests or the backend's start-up.
-15. Finish moving off Node.js 20, which GitHub has deprecated. Every workflow now pins
-    `actions/checkout` to v5.1.0 (`fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`), which targets
-    Node.js 24 (it was v4.4.0). Only the next CI, security-scanning and smoke runs will show whether
-    its warning is gone. Six other pinned actions still target Node.js 20 and each needs its own
-    reviewed update: `actions/setup-node` v4.4.0, `actions/upload-artifact` v4.6.2,
-    `astral-sh/setup-uv` v3.2.4, `docker/build-push-action` v6.19.2,
-    `docker/setup-buildx-action` v3.12.0 and `github/codeql-action/upload-sarif` v3.39.1. Not done
-    yet.
+15. Move `actions/checkout` (pinned to v4.4.0 in every workflow) to a reviewed release that targets
+    Node.js 24. GitHub's runs warn that Node.js 20 is deprecated and currently run this action on
+    Node.js 24 instead. Not done yet.
 
 ## Troubleshooting
 
