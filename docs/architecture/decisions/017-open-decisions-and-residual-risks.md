@@ -20,7 +20,7 @@ can honestly be called done. This file exists so none of them is mistaken for fi
 | D-8 | How to version embeddings? | see below | A changed model with an unchanged version label silently mixes vectors | Policy below |
 | D-9 | When should the security scans block a merge? | (a) reporting only (current, `security.yml`); (b) block on new Critical/High findings; (c) block on any finding | A known-vulnerable dependency or a leaked secret can be merged while every check is green | (b), once the baseline review is finished (partly done, see `docs/operations/security-scanning.md`; the artifacts need a signed-in GitHub account). Gitleaks findings should block as soon as the baseline is clean |
 | D-10 | Token or cost budgets per user? | (a) request-count rate limits only (current); (b) a daily token budget per user; (c) per-organization quotas | Rate limits bound requests, not tokens: long prompts within the limits still cost more | (a) for a single team; (b) before any shared or paid deployment, using the token counts already stored per message |
-| D-11 | Harden the bundled PostgreSQL and Redis manifests? | (a) leave as development/staging-only examples (current); (b) add non-root security contexts | Those two pods run with the images' defaults (PostgreSQL's entrypoint starts as root to drop to `postgres`) | (a), and use a managed database in production, as `infra/kubernetes/README.md` already recommends |
+| D-11 | Harden the bundled PostgreSQL and Redis manifests? | (a) leave as development/staging-only examples (current); (b) add non-root security contexts | The PostgreSQL pod runs with its image's defaults (its entrypoint starts as root to drop to `postgres`). Redis no longer does: with every capability dropped it could not switch to its own user and crash-looped (Kubernetes smoke test run #1), so `e75e7ed` gave it an explicit pod security context (non-root as the image's `redis` user 999:1000, `RuntimeDefault` seccomp), and it started in run #2. That was a fix to make the manifest start, not a choice of (b) | (a), and use a managed database in production, as `infra/kubernetes/README.md` already recommends |
 | D-12 | Keep the legacy Streamlit UI? | (a) keep as a tested legacy UI; (b) remove it | It cannot call an authentication-enabled backend (no sign-in), and it renders model answers as Markdown, so an injected Markdown image would be fetched by the browser if it were ever used against such a backend | (b) eventually; until then it is documented as unsupported with authentication |
 
 ## Embedding versioning policy (D-8)
@@ -53,5 +53,11 @@ follows. Do not describe this as fact checking.
   (reported by the maintainer), and one live RAG answer, which passed in CI (`rag-e2e-live.yml`
   run #3 on `f164c04`): retries, `Retry-After`, the stream deadline and tool calling.
 - Identity-provider login and token validation; the web UI in a real browser.
-- A real Prometheus scrape; the Kubernetes secret flow.
+- A real Prometheus scrape.
+- A real Kubernetes deployment. The manifests have been applied only to a disposable single-node
+  kind cluster in CI (`k8s-smoke.yml` run #2 on `e75e7ed`, 2026-10-27). Every pod started, the
+  migration Job completed and the health checks passed, with Secrets generated for the run and
+  placeholder identity-provider settings. No staging or production cluster has been used, and
+  ingress, TLS and the Kubernetes secret flow with an environment's own secrets have not been
+  exercised.
 - The extraction limits and body limits are generous starting points, not tuned values.

@@ -6,11 +6,14 @@ what has *not* been checked, and what remains. Milestones are the ones in the
 scope, not completion, and nothing below changes it. Older documents (ADRs, code comments) use an
 earlier working numbering, which this page does not use.
 
-**Status (2026-10-27): not production-ready.** CI and the live RAG run passed, and the security
-scans completed, on `f164c04` (see the verification record), but these are still outstanding:
-a staging deployment, a real sign-in through an identity provider, the migrations on a copy of
-the real database, a backup and restore rehearsal, load testing, and operational monitoring and
-alerting.
+**Status (2026-10-28): not production-ready.** On `e75e7ed` CI passed, the security scans
+completed, and the Kubernetes smoke test deployed the manifests to a disposable kind cluster on
+GitHub Actions; the live RAG run last passed on `f164c04` (see the verification record). A
+throwaway cluster is not a staging or production deployment, and these are still outstanding:
+a real staging deployment with that environment's own secrets, a real sign-in through an
+identity provider, the migrations on a disposable copy of the staging database, a backup and
+restore rehearsal, a verified rollback, load and failure testing, and operational monitoring and
+alerting. No cloud provider has been chosen, to avoid cost.
 
 ## How to read "verified"
 
@@ -19,7 +22,7 @@ alerting.
 | **Offline-verified** | A test that ran and passed without Docker, a database or the network (fakes, mocks, executed SQL on SQLite, rendered migration SQL). It proves logic, **not** that a live system behaves the same. |
 | **Database-backed** | Needs PostgreSQL + pgvector. The suites exist: 105 database-backed integration tests and 2 database-backed evaluation tests (the 16 opt-in live tests are separate). **None has been run locally**: no disposable database was available. CI runs the database tests against its own Postgres service container, where an unreachable service fails them instead of skipping them. |
 | **CI-reported** | Seen through GitHub's public run list and API (job outcome only). Job logs and test counts need a signed-in account and have **not** been read. Scan reports were read only where the baseline log in [security-scanning.md](security-scanning.md) says so. |
-| **Live** | Needs a running stack, a real identity provider, or an external model API. Two things have run against a live model: the two Groq tests (locally, reported by the maintainer) and the live RAG end-to-end workflow (in CI, run #3). No running stack, identity provider or deployment has been exercised. |
+| **Live** | Needs a running stack, a real identity provider, or an external model API. Two things have run against a live model: the two Groq tests (locally, reported by the maintainer) and the live RAG end-to-end workflow (in CI, run #3). The whole stack has run once, in a disposable kind cluster in CI (Kubernetes smoke test run #2), with placeholder identity-provider settings and no model call. No identity provider, staging or production deployment has been exercised. |
 
 ## Verification record
 
@@ -40,14 +43,14 @@ LLM and identity-provider settings blank, so no test could reach a real service.
 | Kubernetes manifest validator | 15 documents pass structural checks |
 | Database-backed suites | Collected only: 105 database-backed integration tests and 2 database-backed evaluation tests, plus 16 opt-in live tests; **none run locally** |
 
-CI-reported (job outcomes from GitHub's public API, checked 2026-10-27; logs not read):
+CI-reported (job outcomes from GitHub's public API, checked 2026-10-28; logs not read):
 
-- **CI run #85** on `f164c04` (`main` as of 2026-10-27): all 7 jobs succeeded (so did
-  run #78 on `4f151d2` before it). The `test` job runs the database-backed suites against its own
-  PostgreSQL and Redis service containers, with `AEGIS_REQUIRE_SERVICES=1` (an unreachable service
-  fails the tests instead of skipping them) and `RUN_MIGRATION_ROUNDTRIP=1`. The opt-in live suites
-  are not enabled there and skip. Exactly which tests ran is in the job's skip list, which needs a
-  signed-in account.
+- **CI run #88** on `e75e7ed` (`main` as of 2026-10-27): all 7 jobs succeeded (so did
+  run #85 on `f164c04` and run #78 on `4f151d2` before it). The `test` job runs the
+  database-backed suites against its own PostgreSQL and Redis service containers, with
+  `AEGIS_REQUIRE_SERVICES=1` (an unreachable service fails the tests instead of skipping them) and
+  `RUN_MIGRATION_ROUNDTRIP=1`. The opt-in live suites are not enabled there and skip. Exactly
+  which tests ran is in the job's skip list, which needs a signed-in account.
 - **RAG integration run #1** (manual, no secrets) on `8a64718`: succeeded. Its last step fails
   unless exactly 4 tests ran and passed with none skipped, so it shows the real embedding model and
   pgvector retrieval working on a GitHub-hosted runner.
@@ -61,10 +64,32 @@ CI-reported (job outcomes from GitHub's public API, checked 2026-10-27; logs not
   one required reviewer and deployments from `main` only (repository admins can bypass the
   approval, GitHub's default). It covers one synthetic question: a smoke test of the live path, not
   an answer-quality evaluation.
-- **Security scanning run #59** on `f164c04`: all four jobs completed. The scans are
-  reporting-only, so that is not a clean result and does not show the repository is free of
-  vulnerabilities; the reports of run #59 have not been reviewed. What has been reviewed is in
-  [security-scanning.md](security-scanning.md).
+- **Kubernetes smoke test run #2** (`k8s-smoke.yml`, manual) on `e75e7ed` (2026-10-27, 4m 32s):
+  succeeded. On a GitHub-hosted runner it built the backend and React images (never pushed),
+  loaded them into a disposable single-node kind cluster, and applied the committed manifests.
+  Test-only substitutions were made at run time: the image tag, and identity-provider placeholders
+  on the reserved `.invalid` domain, which are never contacted. The Secrets were generated for the
+  run. Each step fails unless its check passes:
+  - PostgreSQL with pgvector and Redis ready (`pg_isready`, `PONG`);
+  - the migration Job complete (the `vector` extension present, Alembic at `0008`);
+  - the backend's `/health/ready` reporting ready;
+  - the frontend's `/` and its proxied `/health` answering;
+  - `/api/v1/auth/me` returning 401 without credentials.
+
+  The cluster was deleted afterwards. Run #1 (`c480369`) failed: Redis crash-looped (`setpriv:
+  setresuid failed: Operation not permitted`) because it started as root with every capability
+  dropped. `e75e7ed` runs it as the image's own `redis` user (999:1000), and in run #2 it started.
+  `c480369` had already given the backend image a fixed numeric user (10001), which Kubernetes needs
+  in order to check `runAsNonRoot`. **This shows the manifests deploy and start; it is not a
+  staging or production deployment.** It used one node, no ingress or TLS, no real sign-in and no
+  model call, the bundled in-cluster PostgreSQL and Redis instead of managed services, and nothing
+  persisted after the run. Both runs carry GitHub's warning that the pinned `actions/checkout`
+  (v4.4.0) targets the deprecated Node.js 20 and is being run on Node.js 24 instead (see remaining
+  work).
+- **Security scanning run #62** on `e75e7ed`: all four jobs completed (so did run #59 on `f164c04`
+  before it). The scans are reporting-only, so that is not a clean result and does not show the
+  repository is free of vulnerabilities; the reports of runs #59 and #62 have not been reviewed.
+  What has been reviewed is in [security-scanning.md](security-scanning.md).
 
 Reported by the maintainer, not re-run here: the two opt-in live Groq tests
 (`backend/tests/integration/test_groq_live.py`: one completion, and one stream whose final chunk
@@ -92,7 +117,7 @@ roadmap row; it says nothing about whether it works against real infrastructure.
 | M6 | Agentic AI | implemented: LangGraph agent, allowlisted tools, step/tool/time budgets, malformed-argument handling, per-user memory with TTL, caps and an owner row lock | pass | CI-reported: the database-backed agent and memory tests run in the `test` job (green in run #78, log not read); no live-model agent run | a live agent run (needs a model); human approval is a decision (D-2) |
 | M7 | MCP + A2A Multi-Agent | implemented: in-process MCP, allowlisted A2A with size/deadline limits and validated responses, partial-failure isolation, stdio server fails closed | pass (mock transports) | none | a live multi-agent run (needs a model) |
 | M8 | GenAI UI + APIs | implemented: React Copilot (four modes), Conversations, Documents, Memory, Operations, System Status (listed for administrators only); legacy Streamlit (no sign-in); development-only preview, excluded from builds | pass | none in a browser | an identity provider (OIDC) for sign-in; a browser |
-| M9 | Production / MLOps / Responsible AI | partial: Dockerfiles, Kubernetes manifests (non-root, no service-account tokens), CI with service-requiring integration tests and pinned actions, reporting-only security scans, opt-in metrics, retrieval evaluation, runbooks | pass (static checks) | CI-reported; the security-scan baseline is partly reviewed (see `security-scanning.md`), and every vulnerability those reviewed reports showed was fixed | no tracing/dashboards/alerts; scans not blocking (D-9); no token budgets (D-10); no data-retention policy; manifests never applied |
+| M9 | Production / MLOps / Responsible AI | partial: Dockerfiles, Kubernetes manifests (non-root, no service-account tokens), CI with service-requiring integration tests and pinned actions, reporting-only security scans, opt-in metrics, retrieval evaluation, runbooks | pass (static checks) | CI-reported; the security-scan baseline is partly reviewed (see `security-scanning.md`), and every vulnerability those reviewed reports showed was fixed; the manifests deployed and started in a disposable kind cluster (Kubernetes smoke test run #2 on `e75e7ed`) | no tracing/dashboards/alerts; scans not blocking (D-9); no token budgets (D-10); no data-retention policy; manifests never applied to a staging or production cluster |
 
 ## Security and reliability review (2026-10-23)
 
@@ -130,12 +155,13 @@ tokens; the React app renders no HTML from data; application pods run non-root w
 dropped; the development Keycloak realm file holds no users or secrets; production builds contain no
 preview code.
 
-### Since the review (2026-10-26)
+### Since the review (2026-10-27)
 
 Each item has a regression test. During development, each test was also confirmed to fail when its
 change is undone; those mutation checks were run separately and are not part of the committed test
-suite. Only the live RAG test has also run against a live system (run #3, above); none of the rest
-has.
+suite. Only the live RAG test has also run against a live system (run #3, above). The Kubernetes
+items have run in the disposable smoke-test cluster (run #2, above), which is not a live system.
+None of the rest has run outside the offline tests.
 
 | Change | Where | Regression test |
 |---|---|---|
@@ -144,6 +170,9 @@ has.
 | A live RAG end-to-end test (real embeddings, pgvector, one real Groq answer checked for grounding and citations) and a manual workflow that needs an approval and exposes the key to one step only | `tests/integration/test_rag_end_to_end_live.py`, `rag-e2e-live.yml` | `tests/unit/test_rag_e2e_live_workflow.py` (static); the live test passed in run #3 |
 | A reply cut off before any text returns 502 `llm_output_truncated` with a fixed message, not the generic provider error | `app/core/exceptions.py` | `tests/unit/api/test_chat_endpoint.py`, `test_rag_endpoint.py` |
 | System Status is listed for administrators only, and `/system` shows members a notice without calling the API | `frontend/web/src/` | `App.test.tsx`, `AuthGate.test.tsx` |
+| A manual smoke test deploys the committed manifests to a disposable kind cluster, checks each layer and always deletes the cluster | `.github/workflows/k8s-smoke.yml` | `tests/unit/test_k8s_smoke_workflow.py` (static); the workflow passed in run #2 |
+| The backend image runs as the fixed numeric user 10001:10001, so Kubernetes can verify `runAsNonRoot` (a user name cannot be checked, so the pods were refused); the uploads volume is given to group 10001 (`fsGroup`) | `Dockerfile`, `infra/kubernetes/backend-deployment.yaml` | `tests/unit/test_k8s_pod_security.py` |
+| Redis runs as its image's own `redis` user (999:1000, non-root, `RuntimeDefault` seccomp, all capabilities still dropped); before, it crash-looped in smoke run #1 | `infra/kubernetes/redis-deployment.yaml` | `tests/unit/test_k8s_pod_security.py`; Redis started in run #2 |
 
 ## Security model: what is enforced, and where it is not
 
@@ -176,8 +205,10 @@ Known limitations, none of which is fixed:
 10. **The legacy Streamlit UI has no sign-in** and renders model answers as Markdown (so an injected
    image link would be fetched if it were ever used against an authentication-enabled backend);
    whether to keep it is decision D-12.
-11. **The bundled PostgreSQL and Redis manifests** run with their images' default security context
-   (development/staging only; decision D-11).
+11. **The bundled PostgreSQL manifest** runs with its image's default security context (its
+   entrypoint starts as root to drop to `postgres`). The bundled Redis manifest now sets an explicit
+   non-root pod security context (999:1000, `RuntimeDefault` seccomp, all capabilities dropped).
+   Both are development/staging only (decision D-11).
 12. **Cost controls are request counts, not tokens** (decision D-10).
 
 ## Migration readiness
@@ -214,7 +245,11 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
   ran is in its skip list, not read.
 - Live OIDC: a real sign-in, token issuance by Keycloak, the audience mapper, silent renewal, and
   `iss` stability when the backend reaches the identity provider by another host name.
-- Docker images (build, migrate, health checks), Compose and Kubernetes deployment.
+- Locally: Docker images, Compose and Kubernetes (Docker is not permitted here). In CI the images
+  are built, and Kubernetes smoke test run #2 deployed them to a disposable kind cluster.
+- A staging environment: a real cluster with its own secrets, a disposable copy of its database, an
+  identity provider, and rehearsals of backup, restore and rollback. No cloud provider has been
+  chosen, to avoid cost.
 - Live model calls beyond the two local Groq tests and live RAG run #3: live agent and multi-agent
   runs, and the answer-quality evaluation metrics.
 - Concurrency behavior of the rate limiter under real load; multi-replica behavior.
@@ -223,27 +258,38 @@ unassigned rows they stop safely at 0006 with a message. Use steps 2 to 6 above 
 
 1. Read CI's `test` job skip list once (it needs a signed-in account) to confirm which
    database-backed tests ran in run #78, and run them locally when a disposable database is available.
-2. Build the images; apply the migrations to a *copy* of the database following the sequence above; then to the real one.
+2. Deploy to a real staging environment with that environment's own secrets (the smoke test's
+   disposable cluster and generated Secrets do not count). There, apply the migrations to a
+   disposable *copy* of the staging database following the sequence above, then to the real one.
+   This needs a cloud provider or other cluster, which has not been chosen.
 3. Real browser sign-in with Keycloak; provision the first administrator; confirm `/system/status` is
    403 for a member and 200 for an administrator, and that only the administrator's sidebar lists
    System Status.
-4. Decide and implement shared rate limiting if more than one process will serve traffic.
-5. Scrape the opt-in `/metrics` endpoint in a real environment, add tracing, dashboards, and
+4. In staging, rehearse a backup and restore and verify a rollback, following
+   [backup-restore-and-rollback.md](backup-restore-and-rollback.md) (documented, never rehearsed).
+5. Load and failure testing: behavior under realistic traffic, with several replicas, and when the
+   database, Redis or the model provider is unavailable.
+6. Decide and implement shared rate limiting if more than one process will serve traffic.
+7. Scrape the opt-in `/metrics` endpoint in a real environment, add tracing, dashboards, and
    alerting on 5xx rates, rate-limit refusals, limiter failures and LLM errors (the metrics exist;
    see `observability.md`), and on repeated `not_found` audit outcomes.
-6. Finish the security-scan baseline: review CI's Gitleaks report and the reports after run #49 (the
+8. Finish the security-scan baseline: review CI's Gitleaks report and the reports after run #49 (the
    artifacts need a signed-in account), record them in `security-scanning.md`, then decide a blocking
    rule (D-9).
-7. Ship audit logs to storage the application cannot alter; define retention.
-8. A user-management API and UI (create/disable users, change roles) with its own audit events.
-9. UI: a sharing control for documents.
-10. Review CORS, TLS, secrets handling, backup/restore and data retention for the target environment.
-11. Semantic memory recall if wanted, and any further M9 governance documents the project wants
+9. Ship audit logs to storage the application cannot alter; define retention.
+10. A user-management API and UI (create/disable users, change roles) with its own audit events.
+11. UI: a sharing control for documents.
+12. Review CORS, TLS, secrets handling and data retention for the target environment.
+13. Semantic memory recall if wanted, and any further M9 governance documents the project wants
     (model-use policy, data-retention policy, responsible-AI review). The React Memory page now lists,
     adds, edits and deletes notes.
-12. Re-run `rag-e2e-live.yml` after any change to retrieval, prompts, citation handling or the
+14. Re-run `rag-e2e-live.yml` after any change to retrieval, prompts, citation handling or the
     model. The `groq-live` environment is set up and run #3 passed on `f164c04`; it checks one
-    synthetic question, so answer quality still needs its own evaluation.
+    synthetic question, so answer quality still needs its own evaluation. Likewise, re-run
+    `k8s-smoke.yml` after any change to the Dockerfiles, the manifests or the backend's start-up.
+15. Move `actions/checkout` (pinned to v4.4.0 in every workflow) to a reviewed release that targets
+    Node.js 24. GitHub's runs warn that Node.js 20 is deprecated and currently run this action on
+    Node.js 24 instead. Not done yet.
 
 ## Troubleshooting
 

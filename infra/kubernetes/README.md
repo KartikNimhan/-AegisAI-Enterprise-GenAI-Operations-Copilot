@@ -16,8 +16,11 @@ frontend image's nginx serves the app *and* proxies `/api/` to the
 cluster-internal `aegisai-backend` Service (`BACKEND_UPSTREAM` in
 `frontend-configmap.yaml`). The browser only ever talks to the frontend's
 own origin; the backend stays ClusterIP-only and needs no separate external
-URL or CORS configuration. (The previous "known gap" is closed by this; it has
-not been exercised in a real cluster — see "What was actually validated".)
+URL or CORS configuration. (The previous "known gap" is closed by this. The
+proxy was exercised in a disposable kind cluster in smoke run #2, where the
+proxied `/health` answered and an unauthenticated `/api/v1/auth/me` returned
+401; it has not been validated in staging or production — see "What was
+actually validated".)
 The frontend image is `nginx-unprivileged` (user 101, container port **8080**; the
 Service port stays 80), so the Deployment keeps `runAsNonRoot: true` and drops all
 capabilities. The proxy also forwards the exact path `/health` for the UI's
@@ -88,11 +91,35 @@ anywhere in these manifests.
 
 ## What was actually validated
 
-`validate_manifests.py` (YAML syntax + required fields + a check that
-every Secret manifest is an obvious, non-functional template) — run via
-`make k8s-validate`. **Not** validated: a real `kubectl apply --dry-run`
-or `kubeconform`/`kubeval` run against a live API server's schema, and
-no manifest here was ever actually applied to a running cluster — see
-the Milestone 10 report for exactly what environment limitation caused
-that, and re-run those checks in an environment with a reachable
-cluster/kubectl context before trusting this foundation in anger.
+- **Static checks:** `validate_manifests.py` (YAML syntax + required
+  fields + a check that every Secret manifest is an obvious,
+  non-functional template), run via `make k8s-validate` and in CI.
+- **One deployment to a disposable cluster:** the manual smoke workflow
+  (`.github/workflows/k8s-smoke.yml`) passed in run #2 on commit
+  `e75e7ed` (2026-10-27). On a GitHub-hosted runner it built the backend
+  and React images (never pushed), created a single-node kind cluster,
+  and applied every manifest here except the `*.example.yaml` templates.
+  The only changes, made at run time, were the image tag and
+  identity-provider placeholders on the reserved `.invalid` domain; the
+  Secrets were generated for the run. Its deployment checks passed:
+  PostgreSQL (pgvector) and Redis ready, the migration Job complete at
+  Alembic `0008`, the backend's `/health/ready` ready, the frontend's `/`
+  and its proxied `/health` answering, and `/api/v1/auth/me` returning
+  401 without credentials. The cluster was then deleted. Run #1
+  (`c480369`) had failed because Redis could not start as root with every
+  capability dropped; `e75e7ed` fixed that.
+
+**Not validated.** That run was not a staging or production deployment.
+No cloud provider has been selected and no cloud infrastructure has been
+provisioned. Still untested:
+- cloud storage classes. kind's local volumes are already writable by
+  everyone, so the backend's `fsGroup` setting was not really exercised;
+- the ingress example and TLS;
+- a real identity provider and sign-in;
+- an environment's own secrets;
+- more than one node, rolling updates and rollback;
+- backups, load and failure behaviour, and production operations;
+- `kubeconform`/`kubeval` schema checks.
+
+Before the smoke workflow existed, no manifest here had been applied to
+any cluster (see the Milestone 10 report).
