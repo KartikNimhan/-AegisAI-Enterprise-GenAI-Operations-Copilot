@@ -112,13 +112,15 @@ anywhere in these manifests.
 **Not validated.** That run was not a staging or production deployment.
 No cloud provider has been selected and no cloud infrastructure has been
 provisioned. Still untested:
-- cloud storage classes. kind's local volumes are already writable by
-  everyone, so the backend's `fsGroup` setting was not really exercised;
+- cloud storage classes and persistent-volume permissions. kind's local
+  volumes are already writable by everyone, so they do not show that the
+  backend's `fsGroup` works on cloud storage;
 - the ingress example and TLS;
 - a real identity provider and sign-in;
 - an environment's own secrets;
 - more than one node, rolling updates and rollback;
-- backups, load and failure behaviour, and production operations;
+- backup and restore, load and failure testing, and production
+  monitoring;
 - `kubeconform`/`kubeval` schema checks.
 
 Before the smoke workflow existed, no manifest here had been applied to
