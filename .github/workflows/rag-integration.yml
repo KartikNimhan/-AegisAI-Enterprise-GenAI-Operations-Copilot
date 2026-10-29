@@ -64,7 +64,7 @@ jobs:
           # Do not leave the job's token in .git/config, where test code or a dependency could
           # read it. Nothing later in this job needs Git credentials.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
