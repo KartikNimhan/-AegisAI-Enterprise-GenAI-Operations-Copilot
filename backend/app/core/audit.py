@@ -29,7 +29,7 @@ from app.auth.principal import Principal
 
 logger = structlog.get_logger("aegisai.audit")
 
-Outcome = Literal["success", "not_found", "limited"]
+Outcome = Literal["success", "not_found", "forbidden", "limited"]
 
 _FORBIDDEN_DETAIL_KEYS = frozenset(
     {

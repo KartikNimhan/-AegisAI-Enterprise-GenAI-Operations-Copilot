@@ -8,7 +8,7 @@ them is malformed, not a deployment choice.
 
 MAX_MESSAGE_CHARS = 32_000
 MAX_TASK_ITEMS = 50  # document ids per document-agent task
-MAX_EXPRESSION_CHARS = 500
+MAX_EXPRESSION_CHARS = 200  # the calculator's own limit: one value, accepted and evaluated
 MAX_EXPRESSIONS = 20
 MAX_EVIDENCE_ITEMS = 20
 MAX_EVIDENCE_CHARS = 100_000

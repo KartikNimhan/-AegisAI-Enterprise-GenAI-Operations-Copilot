@@ -3,7 +3,8 @@ graph — proves tool selection and execution actually works with a real
 model, not just scripted fakes.
 
 Skips automatically when GROQ_API_KEY is not set, mirroring
-test_groq_live.py. Uses a fake retrieval strategy (empty results) so this
+test_groq_live.py (the harness blanks the key unless AEGIS_ALLOW_LIVE_LLM_TESTS=1
+is set as well). Uses a fake retrieval strategy (empty results) so this
 test exercises tool *selection* (calculator) without also requiring the
 real embedding model — that combination is covered separately by
 test_rag_pipeline_live.py/test_agent_flow.py.
@@ -13,7 +14,7 @@ registered `calculator` tool, the tool executed successfully, and the
 final answer contains the correct numeric result.
 
 Run explicitly with a real key via:
-    GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+    AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
 """
 
 from __future__ import annotations

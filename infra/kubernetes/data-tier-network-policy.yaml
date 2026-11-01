@@ -1,0 +1,76 @@
+# Network isolation for the data tier (AIGSEC-005).
+#
+# Both Services are ClusterIP, so nothing outside the cluster reaches PostgreSQL or Redis. Without
+# a NetworkPolicy, though, ANY pod in the cluster could (a compromised or unrelated workload,
+# another team's pod in the same namespace). These policies narrow that to the backend:
+#
+#   1. default-deny: no ingress at all to the PostgreSQL and Redis pods ...
+#   2. ... except from the backend pods to PostgreSQL on 5432 (this includes the migration Job,
+#      which runs the backend image with the backend's labels; see migration-job.yaml) ...
+#   3. ... and from the backend pods to Redis on 6379.
+#
+# Selectors use the labels the workloads actually carry (`app.kubernetes.io/name`), checked by
+# backend/tests/unit/test_k8s_network_policy.py. Only ingress is restricted, so DNS and every
+# pod's outbound traffic are unaffected. The data-tier probes are `exec` probes, which run inside
+# the container and are not subject to NetworkPolicy. There is no namespace-wide allowance: a
+# `podSelector` without a `namespaceSelector` matches pods in the policy's own namespace only.
+#
+# ENFORCEMENT DEPENDS ON THE CLUSTER'S NETWORK PLUGIN (CNI). On a plugin without NetworkPolicy
+# support these objects are accepted but do nothing. Verify enforcement on the target cluster
+# before relying on it (infra/kubernetes/README.md, "Network policies").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegisai-data-tier-default-deny
+  labels:
+    app.kubernetes.io/part-of: aegisai
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["aegisai-postgres", "aegisai-redis"]
+  policyTypes: ["Ingress"]
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegisai-postgres-from-backend
+  labels:
+    app.kubernetes.io/name: aegisai-postgres
+    app.kubernetes.io/part-of: aegisai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aegisai-postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aegisai-backend
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegisai-redis-from-backend
+  labels:
+    app.kubernetes.io/name: aegisai-redis
+    app.kubernetes.io/part-of: aegisai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aegisai-redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: aegisai-backend
+      ports:
+        - protocol: TCP
+          port: 6379

@@ -3,7 +3,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlparse
 
 from pydantic import SecretStr, field_validator, model_validator
@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # chosen to avoid colliding with any locally installed Postgres/Redis.
     database_url: str = "postgresql+asyncpg://aegis:aegis@localhost:5433/aegis"
     redis_url: str = "redis://localhost:6380/0"
+    # Redis AUTH password, kept out of REDIS_URL so the URL stays safe to log and needs no
+    # percent-encoding. Unset (the default) connects without a password, as a local Redis for
+    # Windows does; Docker Compose and Kubernetes set it (AIGSEC-002, AIGSEC-005). A password
+    # written into REDIS_URL itself still takes precedence, as redis-py defines.
+    redis_password: SecretStr | None = None
 
     # http://localhost:8501 is the legacy Streamlit UI; :3000 is the React
     # app's Docker-published port; :5173 is Vite's local dev server.
@@ -78,6 +83,18 @@ class Settings(BaseSettings):
     safety_llm_model: str = "openai/gpt-oss-safeguard-20b"
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
+    # Upper bound on the characters one model call may send (all messages together), checked by
+    # LLMGateway before the provider is called (AIGSEC-009): an oversized prompt fails fast with
+    # 413 instead of being billed, and is never retried. About 50,000 tokens by default.
+    llm_max_input_chars: int = 200_000
+    # Output guard (AIGSEC-015, app.safety.output_guard): credential-like values and
+    # high-confidence personal data (payment card and SSN-shaped numbers) are redacted from
+    # answers and tool results. E-mail addresses and phone numbers are often legitimate content,
+    # so redacting them is opt-in. Deterministic patterns: not complete detection.
+    output_guard_enabled: bool = True
+    output_guard_redact_contact_details: bool = False
+    # Total characters of evidence one Analyst Agent task accepts, across all items (AIGSEC-009).
+    analyst_max_evidence_total_chars: int = 50_000
     # Largest request body the API will read (bytes), whatever its Content-Type. The one
     # exception is the document upload route: DOCUMENT_MAX_UPLOAD_SIZE_BYTES plus 1 MiB of
     # multipart framing. The largest legitimate JSON request is analyst evidence.
@@ -102,6 +119,11 @@ class Settings(BaseSettings):
     document_max_uncompressed_bytes: int = 64 * 1024 * 1024
     document_max_pdf_pages: int = 2_000
     document_max_extracted_chars: int = 20_000_000
+    # Text extraction runs in a separate process with a hard deadline (AIGSEC-003): a file whose
+    # parsing takes longer than this fails instead of holding a worker. The concurrency bound
+    # caps how many extraction processes one server process runs at once.
+    document_extraction_timeout_seconds: float = 60.0
+    document_extraction_max_concurrency: int = 2
 
     # Embeddings (Milestone 4). embedding_model_version is an
     # application-level label (not the HF revision hash) — it exists so we
@@ -189,6 +211,15 @@ class Settings(BaseSettings):
     a2a_max_response_bytes: int = 1_048_576
     a2a_total_timeout_seconds: float = 30.0
     trusted_a2a_agents: list[str] = ["http://localhost:8000"]
+    # The base URL this server's public Agent Cards advertise for their task endpoints
+    # (AIGSEC-010). Never taken from the request's Host header, which any client controls. Unset,
+    # it is the first TRUSTED_A2A_AGENTS entry: the origin this application's own A2A client
+    # already uses to reach these agents.
+    a2a_public_base_url: str | None = None
+    # Host names the API answers to (TrustedHostMiddleware), e.g. ["api.example.com"]. "*" (the
+    # default) accepts any Host. Restricting it is a deployment decision: Kubernetes HTTP probes
+    # send the pod IP as the Host, so that must be allowed too (see docs/security/README.md).
+    allowed_hosts: list[str] = ["*"]
     research_agent_name: str = "AegisAI Research Agent"
     document_agent_name: str = "AegisAI Document Agent"
     analyst_agent_name: str = "AegisAI Analyst Agent"
@@ -234,7 +265,7 @@ class Settings(BaseSettings):
     auth_jwks_failure_cooldown_seconds: float = 5.0
 
     # Rate limits (see app/core/rate_limit.py). Per authenticated user, in a sliding window,
-    # enforced in memory PER PROCESS (not shared between workers or replicas). A limit of 0
+    # in memory per process or shared through Redis (`rate_limit_backend`). A limit of 0
     # switches that one bucket off; rate_limit_enabled=false switches all of them off. The
     # numbers below are starting points for you to review, not recommendations.
     rate_limit_enabled: bool = True
@@ -245,6 +276,11 @@ class Settings(BaseSettings):
     # Upper bound on (bucket, user) counters held in memory; if it is reached with every entry still
     # live the limiter fails closed (503) instead of letting requests through unmetered.
     rate_limit_max_tracked_keys: int = 100_000
+    # Where the counters live (AIGSEC-008): "memory" (this process only; the local default) or
+    # "redis" (shared by every worker and replica, through REDIS_URL / REDIS_PASSWORD). With
+    # "redis", a Redis outage or a reply slower than the timeout refuses the request with 503.
+    rate_limit_backend: Literal["memory", "redis"] = "memory"
+    rate_limit_redis_timeout_seconds: float = 1.0
 
     # Application metrics (app.observability). OFF by default: nothing is recorded or exposed.
     # When enabled, GET /metrics is served outside the OIDC-protected API and requires
@@ -298,7 +334,23 @@ class Settings(BaseSettings):
             # The caller's bearer token is forwarded to these agents.
             for agent_url in self.trusted_a2a_agents:
                 _check_url("TRUSTED_A2A_AGENTS entry", agent_url, require_https=True)
+        if self.a2a_public_base_url:
+            _check_url("A2A_PUBLIC_BASE_URL", self.a2a_public_base_url, require_https=non_local)
+            parsed = urlparse(self.a2a_public_base_url)
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+                raise ValueError("A2A_PUBLIC_BASE_URL must be an origin (scheme, host, port) only")
+        if not self.allowed_hosts:
+            raise ValueError('ALLOWED_HOSTS must not be empty (use ["*"] to accept any host)')
         return self
+
+    @property
+    def agent_card_base_url(self) -> str | None:
+        """Where this server's Agent Cards say their tasks live; never the request's Host."""
+        if self.a2a_public_base_url:
+            return self.a2a_public_base_url.rstrip("/")
+        if self.trusted_a2a_agents:
+            return self.trusted_a2a_agents[0].rstrip("/")
+        return None
 
     @model_validator(mode="after")
     def _validate_rate_limits(self) -> Self:
@@ -313,6 +365,8 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} must be between 0 (unlimited) and 1000000")
         if not 1_000 <= self.rate_limit_max_tracked_keys <= 10_000_000:
             raise ValueError("RATE_LIMIT_MAX_TRACKED_KEYS must be between 1000 and 10000000")
+        if not 0.05 <= self.rate_limit_redis_timeout_seconds <= 30:
+            raise ValueError("RATE_LIMIT_REDIS_TIMEOUT_SECONDS must be between 0.05 and 30")
         return self
 
     @model_validator(mode="after")
@@ -325,6 +379,17 @@ class Settings(BaseSettings):
     def _validate_llm_stream_deadline(self) -> Self:
         if not 1 <= self.llm_stream_total_timeout_seconds <= 3600:
             raise ValueError("LLM_STREAM_TOTAL_TIMEOUT_SECONDS must be between 1 and 3600")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_cost_bounds(self) -> Self:
+        # Every retry is another billed call: the number of them is bounded explicitly.
+        if not 0 <= self.llm_max_retries <= 5:
+            raise ValueError("LLM_MAX_RETRIES must be between 0 and 5")
+        if not 1_000 <= self.llm_max_input_chars <= 5_000_000:
+            raise ValueError("LLM_MAX_INPUT_CHARS must be between 1000 and 5000000")
+        if not 1_000 <= self.analyst_max_evidence_total_chars <= 2_000_000:
+            raise ValueError("ANALYST_MAX_EVIDENCE_TOTAL_CHARS must be between 1000 and 2000000")
         return self
 
     @model_validator(mode="after")
@@ -341,6 +406,18 @@ class Settings(BaseSettings):
             ("DOCUMENT_MAX_UNCOMPRESSED_BYTES", self.document_max_uncompressed_bytes, 1_024, 2**32),
             ("DOCUMENT_MAX_PDF_PAGES", self.document_max_pdf_pages, 1, 100_000),
             ("DOCUMENT_MAX_EXTRACTED_CHARS", self.document_max_extracted_chars, 1_000, 10**9),
+            (
+                "DOCUMENT_EXTRACTION_TIMEOUT_SECONDS",
+                self.document_extraction_timeout_seconds,
+                1,
+                3_600,
+            ),
+            (
+                "DOCUMENT_EXTRACTION_MAX_CONCURRENCY",
+                self.document_extraction_max_concurrency,
+                1,
+                64,
+            ),
         ):
             if not low <= value <= high:
                 raise ValueError(f"{name} must be between {low} and {high}")

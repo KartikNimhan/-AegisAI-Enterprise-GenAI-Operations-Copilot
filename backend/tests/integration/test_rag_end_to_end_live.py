@@ -7,7 +7,9 @@ test_groq_live.py has no retrieval. Here the question's answer exists only in a 
 not from its own knowledge. A near-miss distractor document sits beside it.
 
 Gates (all three are required; a missing one skips): RUN_RAG_E2E_LIVE (it calls a paid provider),
-RUN_EMBEDDING_INTEGRATION (the real Sentence Transformers model) and GROQ_API_KEY. It also needs
+RUN_EMBEDDING_INTEGRATION (the real Sentence Transformers model) and GROQ_API_KEY, which the test
+harness blanks unless AEGIS_ALLOW_LIVE_LLM_TESTS=1 is set as well (rag-e2e-live.yml sets it).
+It also needs
 Postgres with pgvector through the shared `db_session` fixture, which fails instead of skipping
 under AEGIS_REQUIRE_SERVICES=1. All data is synthetic: nothing real is sent to the provider.
 Run remotely via `.github/workflows/rag-e2e-live.yml` (manual, approval-gated).

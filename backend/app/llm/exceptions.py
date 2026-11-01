@@ -59,6 +59,12 @@ class LLMProviderError(LLMError):
     """An unexpected, unmapped provider error occurred."""
 
 
+class LLMInputTooLargeError(LLMError):
+    """The prompt is larger than LLM_MAX_INPUT_CHARS (AIGSEC-009). Raised by the gateway before
+    the provider is called, so nothing is billed; not retried, since the same prompt would be
+    refused again."""
+
+
 class LLMOutputTruncatedError(LLMError):
     """The model reached its output limit (`finish_reason == "length"`) before producing any text
     or tool call, for example a reasoning model that spent the whole budget on hidden reasoning.

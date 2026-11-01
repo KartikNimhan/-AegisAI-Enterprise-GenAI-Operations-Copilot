@@ -17,7 +17,7 @@ from app.agents.tools.base import ToolRegistry
 from app.agents.tools.calculator import CALCULATOR_TOOL
 from app.agents.tools.document_metadata import build_document_metadata_tool
 from app.agents.tools.knowledge_base import build_knowledge_base_tool
-from app.agents.tools.memory import build_save_memory_tool
+from app.agents.tools.memory import MemoryWriteGuard, build_save_memory_tool
 from app.agents.tools.research_delegation import build_research_delegation_tool
 from app.config import Settings
 from app.db.repositories.document_repository import DocumentRepository
@@ -34,17 +34,22 @@ async def build_tool_registry(
     settings: Settings,
     auth_token: str | None = None,
     memory: AgentMemoryService | None = None,
+    memory_guard: MemoryWriteGuard | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(CALCULATOR_TOOL)
     registry.register(build_document_metadata_tool(documents))
     registry.register(build_knowledge_base_tool(retrieval))
     registry.register(build_research_delegation_tool(settings, auth_token))
-    # Writing memory is opt-in per request and off when the feature is disabled or has no budget.
+    # Writing memory is off when the feature is disabled or has no budget. When it is on, each
+    # write still needs the user's own explicit request in the current message (`MemoryWriteGuard`,
+    # AIGSEC-006); without a guard wired to the run, every write is refused.
     if memory is not None and memory.enabled and settings.agent_memory_max_writes_per_run > 0:
         registry.register(
             build_save_memory_tool(
-                memory, max_writes_per_run=settings.agent_memory_max_writes_per_run
+                memory,
+                max_writes_per_run=settings.agent_memory_max_writes_per_run,
+                guard=memory_guard or MemoryWriteGuard(),
             )
         )
 

@@ -17,6 +17,7 @@ from typing import Any
 
 import streamlit as st
 
+from components.safe_markdown import neutralize
 from services.api.copilot import AgentStatus, MultiAgentRunResult
 
 _WORKFLOW_STATUS = {
@@ -38,7 +39,7 @@ def render_response(result: MultiAgentRunResult) -> None:
     icon, label, kind = _WORKFLOW_STATUS.get(result.status, ("ℹ️", result.status.title(), "info"))
 
     if result.answer.strip():
-        st.markdown(result.answer)
+        st.markdown(neutralize(result.answer))
         if result.status != "completed":
             getattr(st, kind)(f"{icon} {label}")
     else:
@@ -75,7 +76,7 @@ def _render_agent_status(agent: AgentStatus) -> None:
         line += f" (retried {agent.retry_count}x)"
     st.markdown(line)
     if agent.error:
-        st.caption(agent.error)
+        st.caption(neutralize(agent.error))
 
 
 def _render_source(source: dict[str, Any]) -> None:
@@ -83,11 +84,13 @@ def _render_source(source: dict[str, Any]) -> None:
     if "expression" in source:
         # An Analyst calculation — not a document/evidence source.
         status_icon = "✅" if source.get("success") else "❌"
-        st.markdown(f"{status_icon} `{source['expression']}` = {source.get('result', '—')}")
+        st.markdown(
+            neutralize(f"{status_icon} `{source['expression']}` = {source.get('result', '—')}")
+        )
         return
 
     filename = source.get("filename")
-    line = f"📄 **{filename}**" if filename else "📄 Document"
+    line = f"📄 **{neutralize(filename)}**" if filename else "📄 Document"
     page = source.get("page_number")
     if page is not None:
         line += f" · page {page}"

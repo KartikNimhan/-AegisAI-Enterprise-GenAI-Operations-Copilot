@@ -63,6 +63,9 @@ async def run_migrations_online() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # As for the application engine (app.db.session.engine_options): a failed statement's
+        # bound values are kept out of the error text that ends up in logs (AIGSEC-004).
+        hide_parameters=True,
     )
 
     async with connectable.connect() as connection:

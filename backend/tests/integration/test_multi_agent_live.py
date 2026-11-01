@@ -10,11 +10,12 @@ Two tiers:
     independent of Groq/Postgres being available. Opt-in only via
     `RUN_MULTI_AGENT_LIVE_INTEGRATION`.
   * `test_real_groq_model_*`: the same real server, but the LLM gateway is
-    left as the real one. Additionally requires `GROQ_API_KEY`.
+    left as the real one. Additionally requires `GROQ_API_KEY` and
+    `AEGIS_ALLOW_LIVE_LLM_TESTS=1` (without the flag the harness blanks the key).
 
 Run explicitly via:
     RUN_MULTI_AGENT_LIVE_INTEGRATION=1 uv run pytest -m multi_agent_integration -v
-    RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \\
+    RUN_MULTI_AGENT_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \\
         uv run pytest -m multi_agent_integration -v
 """
 

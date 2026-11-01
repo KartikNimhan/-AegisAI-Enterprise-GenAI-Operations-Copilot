@@ -12,6 +12,9 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
+
+from app.core.exceptions import DocumentShareForbiddenError
 from app.domain.enums.document_visibility import DocumentVisibility
 from app.domain.models.document import Document
 
@@ -106,15 +109,36 @@ async def test_changing_visibility_commits_and_reports_the_updated_document() ->
     document = await _upload(service)
     commits_before = session.commit_count
 
-    updated = await service.set_visibility(document.id, DocumentVisibility.ORGANIZATION)
+    change = await service.set_visibility(document.id, DocumentVisibility.ORGANIZATION)
 
-    assert updated is not None and updated.visibility == DocumentVisibility.ORGANIZATION
+    assert change is not None
+    assert change.document.visibility == DocumentVisibility.ORGANIZATION
+    assert change.previous == DocumentVisibility.PRIVATE
     assert session.commit_count == commits_before + 1
+
+
+async def test_a_refused_share_commits_nothing() -> None:
+    class Refusing(FakeDocumentRepository):
+        async def set_visibility(self, document_id: Any, visibility: Any) -> Any:
+            raise DocumentShareForbiddenError()
+
+    service, documents, _, _, session = make_service()
+    document = await _upload(service)
+    refusing = Refusing()
+    refusing.documents = documents.documents
+    service._documents = refusing  # type: ignore[attr-defined]
+    commits_before = session.commit_count
+
+    with pytest.raises(DocumentShareForbiddenError):
+        await service.set_visibility(document.id, DocumentVisibility.ORGANIZATION)
+
+    assert session.commit_count == commits_before
+    assert document.visibility != DocumentVisibility.ORGANIZATION
 
 
 async def test_changing_visibility_of_a_document_you_cannot_manage_changes_nothing() -> None:
     class NoManagement(FakeDocumentRepository):
-        async def set_visibility(self, document_id: Any, visibility: Any) -> Document | None:
+        async def set_visibility(self, document_id: Any, visibility: Any) -> Any:
             return None
 
     service, documents, _, _, session = make_service()

@@ -119,8 +119,8 @@ def test_the_production_code_default_for_the_session_engine_is_not_echoing() -> 
 
     source = (Path(__file__).parents[3] / "app" / "db" / "session.py").read_text(encoding="utf-8")
 
-    assert "echo=settings.sql_echo" in source
-    assert "echo=settings.debug" not in source
+    assert '"echo": settings.sql_echo' in source
+    assert "settings.debug" not in source
 
 
 def test_the_container_image_defaults_to_a_non_local_environment() -> None:

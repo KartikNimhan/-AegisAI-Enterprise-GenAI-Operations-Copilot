@@ -58,6 +58,8 @@ def _document() -> Document:
         original_filename="policy.txt",
         content_type="text/plain",
         document_type=DocumentType.TXT,
+        owner_user_id=OWNER.user_id,
+        organization_id=OWNER.organization_id,
         file_size=10,
         checksum="a" * 64,
         status=DocumentStatus.PROCESSED,
@@ -76,7 +78,7 @@ async def test_updated_at_is_assigned_before_the_flush() -> None:
         document.id, DocumentVisibility.ORGANIZATION
     )
 
-    assert result is document
+    assert result is not None and result.document is document
     assert document.visibility == DocumentVisibility.ORGANIZATION
     assert before <= document.updated_at <= datetime.now(UTC) + timedelta(seconds=1)
     # It was already new when the flush happened, so nothing is left expired afterwards.

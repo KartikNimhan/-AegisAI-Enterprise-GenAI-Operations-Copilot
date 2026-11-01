@@ -26,10 +26,10 @@ conversation or document, and every query joins to that parent.
 
 **Rules** (implemented once, in `app.auth.scope.AccessScope`):
 
-| Data | Who may read | Who may delete / re-share |
+| Data | Who may read | Who may delete / change visibility |
 |---|---|---|
 | Conversation, its messages | its owner only (administrators included: no special access) | its owner |
-| Document, its chunks and embeddings | its owner; and, when `visibility = 'organization'`, members of the owner's organization | its owner, or an administrator of the owner's organization |
+| Document, its chunks and embeddings | its owner; and, when `visibility = 'organization'`, members of the owner's organization | delete or make private: its owner, or an administrator of the owner's organization. **Share with the organization: its owner only** (AIGSEC-001: an administrator sharing a private document would have made it readable to themselves; refused with 403 and audited) |
 | Operations summary (counts by status) | a member: counts over what they may read. An administrator: counts over the whole organization (aggregate numbers only) | n/a |
 
 A document is `private` by default; sharing is an explicit, reversible act
@@ -88,8 +88,9 @@ setup", for the exact upgrade sequence.
 
 - **Organization-wide access to everything:** rejected; membership alone should not expose a
   colleague's private conversations or documents.
-- **Letting administrators read members' data:** rejected for now; deletion and re-sharing cover
-  the operational need without that privilege.
+- **Letting administrators read members' data:** rejected for now; deletion and making a document
+  private cover the operational need without that privilege. Sharing on a member's behalf was
+  removed for the same reason (AIGSEC-001); an owner-consent flow would be a new feature.
 - **PostgreSQL row-level security:** deferred. It would be a sound second layer under the
   application-level scoping adopted here, but should be added only once this layer is verified
   against a real database.

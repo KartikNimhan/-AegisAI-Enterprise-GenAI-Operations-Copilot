@@ -10,6 +10,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.db.repositories.document_repository import VisibilityChange
+from app.domain.enums.document_visibility import DocumentVisibility
 from app.domain.models.document import Document
 from app.domain.models.document_chunk import DocumentChunk
 from app.storage.base import DocumentStorage
@@ -72,11 +74,15 @@ class FakeDocumentRepository:
     async def get_for_management(self, document_id: uuid.UUID) -> Document | None:
         return self.documents.get(document_id)
 
-    async def set_visibility(self, document_id: uuid.UUID, visibility: Any) -> Document | None:
+    async def set_visibility(
+        self, document_id: uuid.UUID, visibility: Any
+    ) -> VisibilityChange | None:
         document = self.documents.get(document_id)
-        if document is not None:
-            document.visibility = visibility
-        return document
+        if document is None:
+            return None
+        previous = document.visibility or DocumentVisibility.PRIVATE
+        document.visibility = visibility
+        return VisibilityChange(document=document, previous=previous, by_owner=True)
 
     async def lock_checksum(self, checksum: str) -> None:
         self.locked_checksums.append(checksum)

@@ -55,6 +55,7 @@ KNOWN_LLM_ERROR_TYPES = frozenset(
         "LLMInvalidRequestError",
         "LLMProviderError",
         "LLMOutputTruncatedError",
+        "LLMInputTooLargeError",
     }
 )
 _LABEL_VALUE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,31}")

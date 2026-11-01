@@ -198,7 +198,9 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": '"nosniff"',
     "X-Frame-Options": '"SAMEORIGIN"',
     "Referrer-Policy": '"strict-origin-when-cross-origin"',
-    "Content-Security-Policy": "\"frame-ancestors 'self'; object-src 'none'; base-uri 'self'\"",
+    # Written at container start from the configured origins (see test_frontend_entrypoint.py).
+    "Content-Security-Policy": "$aegis_csp",
+    "Strict-Transport-Security": "$aegis_hsts",
 }
 
 
@@ -222,11 +224,9 @@ def test_a_location_with_its_own_add_header_repeats_the_security_headers(templat
                 assert f"add_header {name} {value} always;" in body, f"{path} drops {name}"
 
 
-def test_the_policy_does_not_restrict_scripts_or_connections(template: str) -> None:
-    # The sign-in provider's origin is runtime configuration; restricting script-src or
-    # connect-src here would break sign-in without any way to test it in CI.
-    policies = re.findall(r'add_header Content-Security-Policy "([^"]*)"', template)
-    assert policies
-    for policy in policies:
-        for directive in ("script-src", "connect-src", "default-src"):
-            assert directive not in policy
+def test_the_policy_comes_from_the_start_up_script_never_a_fixed_string(template: str) -> None:
+    # AIGSEC-011: the full policy (script-src, connect-src, ...) depends on the configured API and
+    # sign-in origins, so it is computed at start-up; a literal here would bypass that.
+    assert not re.findall(r'add_header Content-Security-Policy "', template)
+    assert template.count("add_header Content-Security-Policy $aegis_csp always;") == 2
+    assert template.count("add_header Strict-Transport-Security $aegis_hsts always;") == 2
