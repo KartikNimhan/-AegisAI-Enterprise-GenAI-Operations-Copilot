@@ -57,13 +57,25 @@ from app.multi_agent.policies import RETRYABLE_A2A_EXCEPTIONS
 logger = structlog.get_logger(__name__)
 
 
-def _coerce_token_usage(raw: dict | None) -> dict | None:
+def _coerce_token_usage(raw: object) -> dict | None:
     """The A2A wire format round-trips numbers through a protobuf `Value`,
     which only has a double — an integer token count comes back as e.g.
-    `15.0`. Coerce back to int rather than silently storing a float."""
-    if raw is None:
+    `15.0`. Coerce back to int rather than silently storing a float.
+
+    Total (AIGSEC-014): token usage is metadata from another agent, so a malformed value (text,
+    a negative, infinity, a nested object) is recorded as unknown (None) rather than failing an
+    otherwise usable result."""
+    if not isinstance(raw, dict):
         return None
-    return {key: (int(value) if value is not None else None) for key, value in raw.items()}
+    return {str(key): _token_count(value) for key, value in raw.items()}
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        return None
+    return int(value)
 
 
 async def call_research_agent(
@@ -189,6 +201,26 @@ async def call_document_agent(
     )
 
 
+TRUNCATION_MARK = " [truncated]"
+
+
+def fit_evidence(evidence: list[str], max_total_chars: int) -> list[str]:
+    """The evidence, in order, within the analyst's total budget (AIGSEC-009): the item that
+    crosses the limit is cut (and marked), and later items are dropped."""
+    fitted: list[str] = []
+    remaining = max_total_chars
+    for item in evidence:
+        if len(item) <= remaining:
+            fitted.append(item)
+            remaining -= len(item)
+            continue
+        room = remaining - len(TRUNCATION_MARK)
+        if room > 0:
+            fitted.append(item[:room] + TRUNCATION_MARK)
+        break
+    return fitted
+
+
 async def call_analyst_agent(
     *, client: A2AClient, settings: Settings, context: AgentContext
 ) -> AgentResult:
@@ -208,7 +240,9 @@ async def call_analyst_agent(
                 payload={
                     "question": context.user_question,
                     "expressions": context.expressions,
-                    "evidence": context.evidence,
+                    "evidence": fit_evidence(
+                        context.evidence, settings.analyst_max_evidence_total_chars
+                    ),
                 },
             ),
             timeout=settings.multi_agent_agent_timeout_seconds,

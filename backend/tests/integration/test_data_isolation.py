@@ -10,8 +10,9 @@ Five people, two organizations:
 
 Every request goes through the real HTTP app, acting as one of them. The rules under test
 (see app/auth/scope.py): conversations are private to their owner; documents are private to
-their owner unless shared with the organization; an administrator may delete or re-share any
-document in their organization but cannot read a private one; nothing ever crosses
+their owner unless shared with the organization (by its owner only); an administrator may delete
+any document in their organization or make it private, but can neither read a private one nor
+share it (AIGSEC-001); nothing ever crosses
 organizations; and a resource the caller may not see is reported exactly like one that does
 not exist. Retrieval and agent-tool paths are tested at the repository level with
 deterministic vectors, so no embedding model or LLM is involved.
@@ -189,7 +190,7 @@ async def test_a_guessed_id_is_indistinguishable_from_a_foreign_one(
             ("PATCH", "/visibility", {"json": {"visibility": "organization"}}),
         ):
             if stranger is world.ada and method == "PATCH":
-                continue  # an administrator may re-share any document in their organization
+                continue  # an administrator manages it: 403, tested below (AIGSEC-001)
             real = await as_user(
                 client, stranger, method, f"/api/v1/documents/{foreign}{path}", **kwargs
             )
@@ -304,6 +305,54 @@ async def test_an_administrator_can_delete_a_members_private_document_without_re
     assert read.status_code == 404  # administrators cannot read private documents
     assert delete.status_code == 204  # but may remove them
     assert afterwards.status_code == 404
+
+
+async def test_an_administrator_cannot_share_a_members_private_document(
+    client: AsyncClient, world: World
+) -> None:
+    """AIGSEC-001: management rights must not turn into read access by widening visibility."""
+    document_id = await upload_id(client, world.alan)
+
+    share = await as_user(
+        client,
+        world.ada,
+        "PATCH",
+        f"/api/v1/documents/{document_id}/visibility",
+        json={"visibility": "organization"},
+    )
+    read = await as_user(client, world.ada, "GET", f"/api/v1/documents/{document_id}")
+    owner_view = await as_user(client, world.alan, "GET", f"/api/v1/documents/{document_id}")
+
+    assert share.status_code == 403
+    assert error_of(share)[1] == "forbidden"
+    assert read.status_code == 404  # still unreadable to the administrator
+    assert owner_view.status_code == 200 and owner_view.json()["visibility"] == "private"
+
+
+async def test_an_administrator_can_still_make_a_members_shared_document_private(
+    client: AsyncClient, world: World
+) -> None:
+    document_id = await upload_id(client, world.alan)
+    shared = await as_user(
+        client,
+        world.alan,
+        "PATCH",
+        f"/api/v1/documents/{document_id}/visibility",
+        json={"visibility": "organization"},
+    )
+    assert shared.status_code == 200
+
+    narrow = await as_user(
+        client,
+        world.ada,
+        "PATCH",
+        f"/api/v1/documents/{document_id}/visibility",
+        json={"visibility": "private"},
+    )
+    colleague = await as_user(client, world.alice, "GET", f"/api/v1/documents/{document_id}")
+
+    assert narrow.status_code == 200 and narrow.json()["visibility"] == "private"
+    assert colleague.status_code == 404
 
 
 async def test_an_administrator_of_another_organization_has_no_such_power(

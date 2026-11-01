@@ -75,9 +75,18 @@ def test_the_only_background_task_in_the_application_carries_no_user_data() -> N
             if needle in text:
                 spawners.setdefault(path.relative_to(APP_DIR).as_posix(), set()).add(needle)
 
-    assert spawners == {"main.py": {"create_task("}}, spawners
+    assert spawners == {
+        "main.py": {"create_task("},
+        "documents/isolated_extraction.py": {"run_in_executor"},
+    }, spawners
     main = (APP_DIR / "main.py").read_text(encoding="utf8")
     assert "_warm_up_embedding_model" in main  # loads the embedding model; touches no data
+    # Document extraction (AIGSEC-003) waits for its child process in an executor thread, inside
+    # the request that uploaded the file: it is given only that file's bytes and the limits,
+    # never an identity, a session or a repository.
+    extraction = (APP_DIR / "documents" / "isolated_extraction.py").read_text(encoding="utf8")
+    for forbidden in ("app.db", "AccessScope", "AsyncSession", "Principal", "Repository"):
+        assert forbidden not in extraction, forbidden
 
 
 # -- delegation: a repository that sees nothing yields "not found" ----------------------

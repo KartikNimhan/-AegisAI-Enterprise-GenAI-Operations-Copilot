@@ -20,6 +20,7 @@ from app.config import Settings, get_settings
 from app.llm.base import LLMProvider
 from app.llm.exceptions import (
     LLMError,
+    LLMInputTooLargeError,
     LLMOutputTruncatedError,
     LLMProviderUnavailableError,
     LLMRateLimitError,
@@ -44,6 +45,16 @@ _NO_OUTPUT_MESSAGE = "The model reached its output limit before producing any te
 T = TypeVar("T")
 
 
+def input_size(messages: list[ChatMessage]) -> int:
+    """Characters a prompt sends: every message's content plus any tool-call names/arguments."""
+    total = 0
+    for message in messages:
+        total += len(message.content or "")
+        for call in message.tool_calls or []:
+            total += len(call.name) + len(call.arguments or "")
+    return total
+
+
 class LLMGateway:
     def __init__(self, settings: Settings, provider: LLMProvider | None = None) -> None:
         self._settings = settings
@@ -56,6 +67,25 @@ class LLMGateway:
 
     def resolve_model(self, role: ModelRole) -> str:
         return self._model_by_role[role]
+
+    def _enforce_input_budget(self, messages: list[ChatMessage], model_role: ModelRole) -> None:
+        """Refuses a prompt over `llm_max_input_chars` before anything is sent (AIGSEC-009).
+
+        Every model call in the application goes through this gateway (chat, RAG, agents, the
+        A2A specialists, multi-agent), so no caller can bypass it. Counted in characters, the
+        unit every other input bound uses (ADR 016); tool-call arguments count too."""
+        size = input_size(messages)
+        if size > self._settings.llm_max_input_chars:
+            logger.warning(
+                "llm_input_too_large",
+                provider=self._provider.name,
+                model_role=model_role.value,
+                input_chars=size,
+                limit=self._settings.llm_max_input_chars,
+            )
+            raise LLMInputTooLargeError(
+                "The request is too large for the language model", provider=self._provider.name
+            )
 
     def model_metadata(self) -> dict[str, str]:
         """Exposes the active provider and the model configured for each role."""
@@ -74,6 +104,7 @@ class LLMGateway:
         tools: list[ToolSpec] | None = None,
     ) -> CompletionResponse:
         model = self.resolve_model(model_role)
+        self._enforce_input_budget(messages, model_role)
 
         async def call() -> CompletionResponse:
             response = await self._provider.complete(
@@ -108,6 +139,7 @@ class LLMGateway:
         """Streams normalized chunks. Not retried: partial output may already
         have reached the caller by the time a mid-stream failure occurs."""
         model = self.resolve_model(model_role)
+        self._enforce_input_budget(messages, model_role)
         start = time.perf_counter()
         logger.info(
             "llm_stream_started",

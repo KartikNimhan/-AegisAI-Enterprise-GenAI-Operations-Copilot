@@ -6,8 +6,10 @@ name: RAG integration (manual)
 # receives an API key. A real-LLM end-to-end test is deliberately not part of this workflow.
 #
 # Isolation: the database is this job's own throwaway service container on a GitHub-hosted runner,
-# reachable only at localhost there and destroyed with the job. `DATABASE_URL` is set explicitly
-# below (its credentials exist only inside that container), and `.env` is never part of a checkout.
+# reachable only at localhost there and destroyed with the job. `TEST_DATABASE_URL` (what the tests
+# use) and `DATABASE_URL` (what the migration step uses) are set explicitly below and name the same
+# `aegis_test` database (its credentials exist only inside that container); `.env` is never part
+# of a checkout.
 # Never point it at a real database, take it from a secret, or run this on a self-hosted runner.
 #
 # Known limitations:
@@ -41,17 +43,19 @@ jobs:
         env:
           POSTGRES_USER: aegis
           POSTGRES_PASSWORD: aegis
-          POSTGRES_DB: aegis
+          POSTGRES_DB: aegis_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aegis -d aegis"
+          --health-cmd "pg_isready -U aegis -d aegis_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      # This job's own disposable service above, and nothing else.
-      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis
+      # This job's own disposable service above, and nothing else. The tests read
+      # TEST_DATABASE_URL (it must end in `_test`); the migration step reads DATABASE_URL.
+      TEST_DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
+      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
       # An unreachable database FAILS the tests instead of skipping them
       # (backend/tests/integration/requirements.py).
       AEGIS_REQUIRE_SERVICES: "1"

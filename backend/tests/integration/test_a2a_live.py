@@ -16,11 +16,13 @@ Two tiers:
     a real subprocess-free server + extra sockets, so never on by default).
   * `test_real_groq_model_*`: the same real server, but the LLM gateway is
     left as the real one — exercises a genuine Groq call end-to-end
-    through the full A2A stack. Additionally requires `GROQ_API_KEY`.
+    through the full A2A stack. Additionally requires `GROQ_API_KEY` and
+    `AEGIS_ALLOW_LIVE_LLM_TESTS=1` (without the flag the harness blanks the key).
 
 Run explicitly via:
     RUN_A2A_LIVE_INTEGRATION=1 uv run pytest -m a2a_integration -v
-    RUN_A2A_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... uv run pytest -m a2a_integration -v
+    RUN_A2A_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \\
+        uv run pytest -m a2a_integration -v
 """
 
 from __future__ import annotations

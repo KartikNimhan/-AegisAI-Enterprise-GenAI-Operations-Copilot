@@ -57,7 +57,10 @@ EXPECTED_PYTEST_ARGV = [
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRETS_CONTEXT = re.compile(r"\bsecrets\b")
 GITHUB_TOKEN_CONTEXT = re.compile(r"\bgithub\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])")
-STEP_ENV_FORBIDDEN = {"DATABASE_URL", "REDIS_URL"}
+# The tests take their database from TEST_DATABASE_URL / TEST_REDIS_URL (backend/tests/isolation.py)
+# and the migration step from DATABASE_URL, so no step may override any of them.
+STEP_ENV_FORBIDDEN = {"DATABASE_URL", "REDIS_URL", "TEST_DATABASE_URL", "TEST_REDIS_URL"}
+TEST_DATABASE_URL = "postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test"
 ENVIRONMENT_FILE_WRITES = re.compile(r"GITHUB_ENV|GITHUB_PATH|::set-env|::add-path")
 
 
@@ -205,7 +208,9 @@ def test_its_database_is_its_own_disposable_service(job: dict[str, Any]) -> None
     assert set(job["services"]) == {"postgres"}
     assert postgres["image"] == ci_test_job["services"]["postgres"]["image"]
     assert "5432:5432" in postgres["ports"]
-    assert job["env"]["DATABASE_URL"] == "postgresql+asyncpg://aegis:aegis@localhost:5432/aegis"
+    assert postgres["env"]["POSTGRES_DB"] == "aegis_test"
+    assert job["env"]["TEST_DATABASE_URL"] == TEST_DATABASE_URL
+    assert job["env"]["DATABASE_URL"] == TEST_DATABASE_URL
     assert str(job["env"]["AEGIS_REQUIRE_SERVICES"]) == "1"
     assert str(job["env"]["RUN_EMBEDDING_INTEGRATION"]) == "1"
 
@@ -246,10 +251,14 @@ def test_the_check_runs_after_a_failed_pytest_step_and_knows_its_outcome(
 def test_the_evaluation_fixture_fails_instead_of_skipping_when_services_are_required() -> None:
     # Two of the four tests use this fixture. A bare `pytest.skip` here once turned an unreachable
     # database into a silent skip even with AEGIS_REQUIRE_SERVICES=1.
+    # It goes through the shared live check, whose skips all use `service_unavailable`.
     source = EVALUATION_CONFTEST.read_text(encoding="utf-8")
+    shared = (EVALUATION_CONFTEST.parents[1] / "live_database.py").read_text(encoding="utf-8")
 
     assert not re.search(r"\bpytest\.skip\(", source)
-    assert "service_unavailable(" in source
+    assert "await require_test_database()" in source
+    assert not re.search(r"\bpytest\.skip\(", shared)
+    assert shared.count("service_unavailable(") >= 2
 
 
 # -- the detectors themselves, on hand-made examples -------------------------------------------
@@ -303,10 +312,19 @@ def _check_of(job: dict[str, Any]) -> dict[str, Any]:
     [
         lambda j: _pytest_of(j).setdefault("env", {}).update(DATABASE_URL="postgresql://x/y"),
         lambda j: _pytest_of(j).setdefault("env", {}).update(REDIS_URL="redis://x:6379/0"),
+        lambda j: _pytest_of(j).setdefault("env", {}).update(TEST_DATABASE_URL="postgresql://x/y"),
+        lambda j: _pytest_of(j).setdefault("env", {}).update(TEST_REDIS_URL="redis://x:6379/15"),
         lambda j: j["steps"].insert(1, {"run": 'echo "DATABASE_URL=x" >> "$GITHUB_ENV"'}),
         lambda j: j["steps"].insert(1, {"run": 'echo "/opt/bin" >> "${GITHUB_PATH}"'}),
     ],
-    ids=["step-env-database", "step-env-redis", "github-env-write", "github-path-write"],
+    ids=[
+        "step-env-database",
+        "step-env-redis",
+        "step-env-test-database",
+        "step-env-test-redis",
+        "github-env-write",
+        "github-path-write",
+    ],
 )
 def test_the_redirection_detector_finds_overrides(workflow: dict[Any, Any], change: Any) -> None:
     assert database_redirections(_mutated(workflow, change)) != []

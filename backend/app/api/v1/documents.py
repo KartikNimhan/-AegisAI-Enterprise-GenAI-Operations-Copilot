@@ -25,7 +25,7 @@ from app.api.schemas.documents import (
 from app.api.schemas.embeddings import EmbeddingStatusResponse, EmbeddingTriggerResponse
 from app.config import Settings, get_settings
 from app.core import audit
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import DocumentShareForbiddenError, NotFoundError
 from app.core.rate_limit import EMBEDDING_RATE_LIMIT, UPLOAD_RATE_LIMIT
 from app.core.security import PrincipalDep
 from app.embeddings.service import EmbeddingService, get_embedding_service
@@ -106,20 +106,44 @@ async def set_document_visibility(
     document_service: DocumentServiceDep,
     principal: PrincipalDep,
 ) -> DocumentResponse:
-    """Share a document with the owner's organization, or make it private again. Allowed for its
-    owner and for an administrator of its organization; anyone else gets 404."""
-    document = await document_service.set_visibility(document_id, request.visibility)
+    """Share a document with the owner's organization (its owner only), or make it private again
+    (its owner, or an administrator of its organization). An administrator who tries to share a
+    member's document gets 403 and nothing changes; anyone else gets 404."""
+    try:
+        change = await document_service.set_visibility(document_id, request.visibility)
+    except DocumentShareForbiddenError:
+        audit.record(
+            "document.visibility_changed",
+            actor=principal,
+            resource_type="document",
+            resource_id=document_id,
+            outcome="forbidden",
+            visibility=request.visibility.value,
+        )
+        raise
+    if change is None:
+        audit.record(
+            "document.visibility_changed",
+            actor=principal,
+            resource_type="document",
+            resource_id=document_id,
+            outcome="not_found",
+            visibility=request.visibility.value,
+        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    # The actor both requested and authorized the change: only the owner may widen, so a change
+    # made by someone else (`by_owner=False`) is always an administrator narrowing it.
     audit.record(
         "document.visibility_changed",
         actor=principal,
         resource_type="document",
         resource_id=document_id,
-        outcome="success" if document is not None else "not_found",
+        outcome="success",
+        previous_visibility=change.previous.value,
         visibility=request.visibility.value,
+        by_owner=change.by_owner,
     )
-    if document is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
-    return DocumentResponse.from_document(document)
+    return DocumentResponse.from_document(change.document)
 
 
 @router.get("/{document_id}/chunks", response_model=PaginatedDocumentChunks)

@@ -20,6 +20,7 @@ from app.embeddings.exceptions import (
 from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMError,
+    LLMInputTooLargeError,
     LLMInvalidRequestError,
     LLMOutputTruncatedError,
     LLMProviderUnavailableError,
@@ -78,6 +79,18 @@ class UnauthorizedError(AppError):
 class ForbiddenError(AppError):
     def __init__(self, message: str = "Access denied") -> None:
         super().__init__(message, status_code=status.HTTP_403_FORBIDDEN, code="forbidden")
+
+
+class DocumentShareForbiddenError(ForbiddenError):
+    """Widening a document's visibility is the owner's decision alone (AIGSEC-001).
+
+    An administrator may delete a member's document or make it private, but sharing a private
+    document with the organization would let the administrator (and everyone else) read what the
+    owner kept private, so only the owner may do it. There is no owner-consent mechanism in the
+    product yet; until one exists, the owner shares the document themselves."""
+
+    def __init__(self) -> None:
+        super().__init__("Only the document's owner can share it with the organization")
 
 
 class AuthUnavailableError(AppError):
@@ -262,6 +275,20 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=_error_payload(request, code="llm_unavailable", message=str(exc)),
+        )
+
+    @app.exception_handler(LLMInputTooLargeError)
+    async def handle_llm_input_too_large_error(
+        request: Request, exc: LLMInputTooLargeError
+    ) -> JSONResponse:
+        # Refused before the provider was called (AIGSEC-009). A fixed message: no size detail.
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content=_error_payload(
+                request,
+                code="llm_input_too_large",
+                message="The request is too large for the language model",
+            ),
         )
 
     @app.exception_handler(LLMOutputTruncatedError)

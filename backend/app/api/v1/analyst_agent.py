@@ -9,23 +9,26 @@ result. Served only at this versioned path, not the well-known one (see
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.a2a.agent_card import agent_card_to_json_dict, build_analyst_agent_card
+from app.a2a.agent_card import agent_card_to_json_dict, build_analyst_agent_card, card_base_url
 from app.a2a.analyst_agent import AnalystAgentService
 from app.a2a.schemas import AnalystAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
 from app.api.schemas.common import EvidenceText, ExpressionText, OptionalUserMessage
 from app.config import get_settings
+from app.core.exceptions import AppError
 from app.core.limits import MAX_EVIDENCE_ITEMS, MAX_EXPRESSIONS
 from app.core.rate_limit import LLM_RATE_LIMIT
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
+from app.safety.output_guard import build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -62,9 +65,9 @@ AnalystAgentServiceDep = Annotated[AnalystAgentService, Depends(get_analyst_agen
 
 
 @card_router.get("/card")
-async def get_analyst_agent_card(request: Request) -> JSONResponse:
+async def get_analyst_agent_card() -> JSONResponse:
     settings = get_settings()
-    card = build_analyst_agent_card(settings, base_url=str(request.base_url).rstrip("/"))
+    card = build_analyst_agent_card(settings, base_url=card_base_url(settings))
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
@@ -72,6 +75,15 @@ async def get_analyst_agent_card(request: Request) -> JSONResponse:
 async def submit_analyst_task(
     request: AnalystTaskRequest, agent_service: AnalystAgentServiceDep
 ) -> JSONResponse:
+    # Each item is already bounded; the total is too (AIGSEC-009), before any model call. The
+    # multi-agent orchestrator trims its evidence to the same total, so it never trips this.
+    total = sum(len(item) for item in request.evidence)
+    if total > get_settings().analyst_max_evidence_total_chars:
+        raise AppError(
+            "The evidence is too large for one analyst task",
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            code="evidence_too_large",
+        )
     logger.info(
         "a2a.task_started",
         expression_count=len(request.expressions),
@@ -96,6 +108,10 @@ async def submit_analyst_task(
     else:
         logger.info("a2a.task_completed", status=result.status)
 
+    # The answer leaves this server: the output guard applies (AIGSEC-015).
+    guarded = build_output_guard(get_settings()).redact(result.answer)
+    log_findings("a2a_output_redacted", guarded.findings)
+    result = dataclasses.replace(result, answer=guarded.text)
     payload = {
         "answer": result.answer,
         "calculations": [

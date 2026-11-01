@@ -140,7 +140,7 @@ jobs:
           out="$RUNNER_TEMP/k8s"
           mkdir -p "$out"
           for name in postgres-statefulset postgres-service redis-deployment redis-service \
-            backend-pvc backend-service frontend-configmap frontend-service; do
+            data-tier-network-policy backend-pvc backend-service frontend-configmap frontend-service; do
             cp "infra/kubernetes/$name.yaml" "$out/$name.yaml"
           done
           for name in migration-job backend-deployment frontend-deployment; do
@@ -167,6 +167,10 @@ jobs:
             --from-literal=POSTGRES_PASSWORD="${password}"
           kubectl create secret generic aegisai-backend-secret \
             --from-literal=DATABASE_URL="postgresql+asyncpg://aegis:${password}@aegisai-postgres:5432/aegis"
+          redis_password="$(openssl rand -hex 24)"
+          echo "::add-mask::${redis_password}"
+          kubectl create secret generic aegisai-redis-secret \
+            --from-literal=REDIS_PASSWORD="${redis_password}"
 
       - name: Start PostgreSQL (pgvector) and Redis
         run: |
@@ -174,10 +178,18 @@ jobs:
           out="$RUNNER_TEMP/k8s"
           kubectl apply -f "$out/postgres-statefulset.yaml" -f "$out/postgres-service.yaml" \
             -f "$out/redis-deployment.yaml" -f "$out/redis-service.yaml"
+          # Data-tier isolation. Whether kind's network plugin enforces it is not asserted here;
+          # the backend's readiness check below proves the allowed paths still work.
+          kubectl apply -f "$out/data-tier-network-policy.yaml"
+          kubectl get networkpolicy aegisai-data-tier-default-deny aegisai-postgres-from-backend \
+            aegisai-redis-from-backend
           wait_rollout statefulset/aegisai-postgres app.kubernetes.io/name=aegisai-postgres 240
           wait_rollout deployment/aegisai-redis app.kubernetes.io/name=aegisai-redis 120
           kubectl exec statefulset/aegisai-postgres -- pg_isready -U aegis -d aegis
-          test "$(kubectl exec deployment/aegisai-redis -- redis-cli ping)" = "PONG"
+          # Redis requires its password: an unauthenticated ping must be refused ...
+          kubectl exec deployment/aegisai-redis -- redis-cli ping | grep -q NOAUTH
+          # ... and the authenticated one answered (the password is expanded inside the pod).
+          test "$(kubectl exec deployment/aegisai-redis -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping')" = "PONG"
 
       - name: Run the migration Job
         run: |

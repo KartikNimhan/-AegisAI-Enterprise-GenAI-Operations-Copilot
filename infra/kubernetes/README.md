@@ -63,13 +63,20 @@ the cluster database, for example through `kubectl port-forward`.
    # Only if self-hosting Postgres via postgres-statefulset.yaml:
    kubectl create secret generic aegisai-postgres-secret \
      --from-literal=POSTGRES_PASSWORD='<password>'
+   # Always (AIGSEC-005): Redis requires a password, and the backend authenticates with it.
+   kubectl create secret generic aegisai-redis-secret \
+     --from-literal=REDIS_PASSWORD="$(openssl rand -hex 24)"
    ```
+   Prefer your secret manager over typing values into a shell. Both the Redis Deployment and the
+   backend read `REDIS_PASSWORD` from `aegisai-redis-secret`; with a managed Redis, put its
+   password there instead.
    To enable `/metrics` (`METRICS_ENABLED=true` in the ConfigMap), add
    `--from-literal=METRICS_TOKEN="$(openssl rand -hex 32)"` to the backend Secret (the command
    substitution strips the trailing newline; keep the value for your scraper's credentials). Do
    not create it with `--from-file` or `echo` of a value ending in a newline: the API refuses to
    start with a token that has leading or trailing whitespace.
-2. If self-hosting Postgres/Redis: `kubectl apply -f postgres-statefulset.yaml -f postgres-service.yaml -f redis-deployment.yaml -f redis-service.yaml`.
+2. If self-hosting Postgres/Redis: `kubectl apply -f postgres-statefulset.yaml -f postgres-service.yaml -f redis-deployment.yaml -f redis-service.yaml`,
+   then `kubectl apply -f data-tier-network-policy.yaml` (see "Network policies" below).
    If using managed services instead, point `DATABASE_URL`/`REDIS_URL` at
    them and skip this step.
 3. `kubectl apply -f backend-configmap.yaml -f backend-pvc.yaml`
@@ -88,6 +95,41 @@ Update `image:` in `backend-deployment.yaml`/`frontend-deployment.yaml`/
 `migration-job.yaml` to your own registry/tag first — see ADR 012,
 "Image tagging," for the strategy. There is no registry hostname assumed
 anywhere in these manifests.
+
+## Security settings (AIGSEC-005, -008, -010)
+
+### Network policies
+
+`data-tier-network-policy.yaml` denies all ingress to the PostgreSQL and Redis pods except from
+pods labelled `app.kubernetes.io/name: aegisai-backend` (the API and the migration Job), on 5432
+and 6379. Only ingress is restricted, so DNS and outbound traffic are unaffected, and the data-tier
+probes are `exec` probes, which NetworkPolicy does not touch. The selectors are checked against the
+manifests by `backend/tests/unit/test_k8s_network_policy.py`.
+
+**Enforcement depends on the cluster's network plugin (CNI).** On a plugin without NetworkPolicy
+support the objects are accepted and do nothing. Before relying on them, verify on the target
+cluster that a pod without the backend label cannot connect to `aegisai-redis:6379` or
+`aegisai-postgres:5432`, and that the backend's `/health/ready` still reports both as reachable.
+The manual smoke workflow applies the policies but does not prove enforcement.
+
+### Shared rate limits
+
+`RATE_LIMIT_BACKEND: "redis"` in the ConfigMap: every replica counts against one budget per user.
+If Redis is unreachable, the rate-limited (expensive) routes answer 503 rather than run unmetered.
+
+### Agent Cards and allowed hosts
+
+Set `A2A_PUBLIC_BASE_URL` to the public origin of the API if it differs from the first
+`TRUSTED_A2A_AGENTS` entry; Agent Cards never use the request's Host header. `ALLOWED_HOSTS`
+defaults to `["*"]`. To restrict it, list the public host names **and** whatever Host the
+kubelet's HTTP probes send (the pod IP by default, or set `httpHeaders` on the probes), or the
+probes will fail with 400.
+
+### HSTS
+
+The frontend sends `Strict-Transport-Security` only when `HSTS_MAX_AGE` is set in its environment.
+Set it only when the site is served over HTTPS end to end (TLS terminates at your ingress or load
+balancer); many ingress controllers add HSTS themselves, in which case leave it unset.
 
 ## What was actually validated
 

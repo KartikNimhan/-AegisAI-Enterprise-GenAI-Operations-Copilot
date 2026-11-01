@@ -23,8 +23,11 @@ as untrusted data, never instructions — the same discipline
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from app.a2a.schemas import AnalystAgentResult, CalculationResult
 from app.agents.tools.calculator import CALCULATOR_TOOL, CalculatorArgs
+from app.core.limits import MAX_EXPRESSION_CHARS
 from app.llm.gateway import LLMGateway
 from app.llm.schemas import ChatMessage, ChatRole, ModelRole
 
@@ -59,7 +62,18 @@ class AnalystAgentService:
         )
 
     async def _calculate(self, expression: str) -> CalculationResult:
-        result = await CALCULATOR_TOOL.executor(CalculatorArgs(expression=expression))
+        # Validated per item (AIGSEC-014): an expression the calculator would refuse (too long,
+        # empty) becomes a failed calculation instead of aborting every other one.
+        try:
+            args = CalculatorArgs(expression=expression)
+        except ValidationError:
+            return CalculationResult(
+                expression=expression[:MAX_EXPRESSION_CHARS],
+                success=False,
+                result=None,
+                error="The expression is empty or too long",
+            )
+        result = await CALCULATOR_TOOL.executor(args)
         return CalculationResult(
             expression=expression,
             success=result.success,

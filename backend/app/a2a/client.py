@@ -333,7 +333,14 @@ class A2AClient:
         return raw_url
 
 
-def _validate_card(card: dict, *, expected_name: str, expected_skill_id: str) -> None:
+def _validate_card(card: object, *, expected_name: str, expected_skill_id: str) -> None:
+    """Refuses any card that is not the expected agent with the expected skill. Total over any
+    JSON value (AIGSEC-014): a malformed card is `A2AInvalidCardError`, never a raw exception."""
+    if not isinstance(card, dict):
+        raise A2AInvalidCardError("Agent card is not a JSON object")
+    skills = card.get("skills", [])
+    if not isinstance(skills, list) or not all(isinstance(skill, dict) for skill in skills):
+        raise A2AInvalidCardError("Agent card skills are malformed")
     if card.get("name") != expected_name:
         raise A2AInvalidCardError(
             f"Agent card name {card.get('name')!r} does not match the expected {expected_name!r}"

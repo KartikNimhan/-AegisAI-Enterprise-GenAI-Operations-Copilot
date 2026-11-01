@@ -61,3 +61,49 @@ cat > "${TARGET}.tmp" <<EOF
 window.__AEGIS_CONFIG__ = { apiBaseUrl: "${API_BASE_URL}", oidc: { authority: "${OIDC_AUTHORITY}", clientId: "${OIDC_CLIENT_ID}" } };
 EOF
 mv -f "${TARGET}.tmp" "$TARGET"
+
+# Security headers (AIGSEC-011). The Content-Security-Policy allows scripts, styles, images and
+# fonts from this origin only (no inline code, no eval), and network connections and frames only
+# to this origin plus the two origins the app is configured to talk to: the API (when it is not
+# same-origin) and the sign-in provider (token requests, and the silent-renew frame). Both come
+# from the values validated above, so the policy can never be wider than the configuration.
+# HSTS is opt-in (HSTS_MAX_AGE, in seconds): send it only when this site is served over HTTPS
+# by whatever terminates TLS in front of it; it never includes includeSubDomains or preload.
+origin_of() {
+  printf '%s\n' "$1" | sed -n 's#^\(https\{0,1\}://[^/]*\).*#\1#p'
+}
+API_ORIGIN="$(origin_of "$API_BASE_URL")"
+OIDC_ORIGIN="$(origin_of "$OIDC_AUTHORITY")"
+CONNECT_SRC="'self'"
+FRAME_SRC="'self'"
+if [ -n "$API_ORIGIN" ]; then
+  CONNECT_SRC="$CONNECT_SRC $API_ORIGIN"
+fi
+if [ -n "$OIDC_ORIGIN" ]; then
+  CONNECT_SRC="$CONNECT_SRC $OIDC_ORIGIN"
+  FRAME_SRC="$FRAME_SRC $OIDC_ORIGIN"
+fi
+CSP="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src ${CONNECT_SRC}; frame-src ${FRAME_SRC}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+
+HSTS_MAX_AGE="${HSTS_MAX_AGE-}"
+case "$HSTS_MAX_AGE" in
+  "") HSTS="" ;;
+  *[!0-9]*)
+    echo "HSTS_MAX_AGE must be a whole number of seconds (or empty): refusing to start" >&2
+    exit 1
+    ;;
+  *) HSTS="max-age=${HSTS_MAX_AGE}" ;;
+esac
+if [ "$HSTS" = "max-age=0" ]; then
+  HSTS=""
+fi
+
+# Included by nginx at http level (conf.d/*.conf); the server block sends $aegis_csp and
+# $aegis_hsts. An empty value makes nginx omit the header.
+CONF_DIR="${AEGIS_NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+HEADERS="${CONF_DIR}/aegis-security-headers.conf"
+{
+  printf 'map $host $aegis_csp {\n    default "%s";\n}\n' "$CSP"
+  printf 'map $host $aegis_hsts {\n    default "%s";\n}\n' "$HSTS"
+} > "${HEADERS}.tmp"
+mv -f "${HEADERS}.tmp" "$HEADERS"

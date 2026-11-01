@@ -28,6 +28,7 @@ import pytest
 import yaml
 
 from tests.unit.test_rag_integration_workflow import (
+    TEST_DATABASE_URL,
     database_redirections,
     secret_or_token_expressions,
 )
@@ -180,9 +181,30 @@ def test_its_database_is_its_own_disposable_service(job: dict[str, Any]) -> None
     assert set(job["services"]) == {"postgres"}
     assert postgres["image"] == ci_test_job["services"]["postgres"]["image"]
     assert "5432:5432" in postgres["ports"]
-    assert job["env"]["DATABASE_URL"] == "postgresql+asyncpg://aegis:aegis@localhost:5432/aegis"
+    assert postgres["env"]["POSTGRES_DB"] == "aegis_test"
+    assert job["env"]["TEST_DATABASE_URL"] == TEST_DATABASE_URL
+    assert job["env"]["DATABASE_URL"] == TEST_DATABASE_URL
     for flag in ("AEGIS_REQUIRE_SERVICES", "RUN_EMBEDDING_INTEGRATION", "RUN_RAG_E2E_LIVE"):
         assert str(job["env"][flag]) == "1", flag
+
+
+def test_it_gives_the_explicit_live_llm_opt_in_alongside_the_secret(
+    workflow: dict[str, Any], job: dict[str, Any]
+) -> None:
+    # The test harness blanks GROQ_API_KEY unless AEGIS_ALLOW_LIVE_LLM_TESTS=1 is set too
+    # (backend/tests/isolation.py); without the flag this job's live test would always skip.
+    assert str(job["env"]["AEGIS_ALLOW_LIVE_LLM_TESTS"]) == "1"
+    assert "AEGIS_ALLOW_LIVE_LLM_TESTS" not in (workflow.get("env") or {})
+    for name, other in workflow["jobs"].items():
+        if other is not job:
+            assert "AEGIS_ALLOW_LIVE_LLM_TESTS" not in (other.get("env") or {}), name
+
+
+def test_no_other_workflow_opts_in_to_live_llm_tests() -> None:
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        if path == WORKFLOW_PATH:
+            continue
+        assert "AEGIS_ALLOW_LIVE_LLM_TESTS" not in path.read_text(encoding="utf-8"), path.name
 
 
 def test_no_step_can_point_the_tests_at_another_database(workflow: dict[Any, Any]) -> None:

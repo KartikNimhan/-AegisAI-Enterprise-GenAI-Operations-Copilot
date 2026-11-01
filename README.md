@@ -970,9 +970,10 @@ Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 ## Running checks
 
 ```bash
-uv run pytest       # unit + integration; integration tests skip without live
-                     # Postgres/Redis, the Groq live tests (chat + agent
-                     # tool selection) skip without a real GROQ_API_KEY, and
+uv run pytest       # unit + integration; integration tests skip without a
+                     # configured test database, the Groq live tests (chat + agent
+                     # tool selection) skip unless GROQ_API_KEY *and*
+                     # AEGIS_ALLOW_LIVE_LLM_TESTS=1 are both set, and
                      # the real-embedding-model tests (embeddings + RAG
                      # pipeline + Recall@K) skip unless explicitly opted
                      # into — none are required to pass
@@ -981,19 +982,39 @@ uv run ruff format .
 uv run pyright
 ```
 
-**The integration suites use whatever database `DATABASE_URL` names.** They create and delete
-their own organizations and users there (and the opt-in migration round trip creates and drops
-throwaway databases), so point `DATABASE_URL` at a disposable database before running the full
-suite, or run only `backend/tests/unit`. In CI the Postgres and Redis service containers are part of
-the `test` job, and `AEGIS_REQUIRE_SERVICES=1` makes an unreachable service **fail** the
-integration tests instead of skipping them (see `backend/tests/integration/requirements.py`); the
-job also passes `-rs`, so every skip is listed with its reason.
+**The tests never use your development database.** They use only the test database named by
+`TEST_DATABASE_URL` (environment, or `.env.test` copied from `.env.test.example`), which must be on
+this machine and end in `_test`; unit tests cannot connect to PostgreSQL at all. The integration
+suites create and delete their own organizations and users there (and the opt-in migration round
+trip creates and drops throwaway databases on the same server). See "Running tests safely" in
+[docs/development/setup.md](docs/development/setup.md#running-tests-safely), including
+`scripts/test_db.py` to check and migrate the test database. In CI the Postgres and Redis service
+containers (database `aegis_test`) are part of the `test` job, and `AEGIS_REQUIRE_SERVICES=1` makes
+an unreachable service **fail** the integration tests instead of skipping them (see
+`backend/tests/integration/requirements.py`); the job also passes `-rs`, so every skip is listed
+with its reason.
+
+**The test process never uses your development settings.** It does not read `.env`, removes any
+inherited variable named after an application setting (an editor may copy all of `.env` into a
+terminal), and runs with `DEBUG=false`. **Billed Groq tests need a two-part opt-in:** a
+`GROQ_API_KEY` in the shell *and* `AEGIS_ALLOW_LIVE_LLM_TESTS=1`. A key on its own is blanked for
+the tests, so it can never start a billed test by accident. Every command below that names
+`GROQ_API_KEY` needs the flag too.
 
 Run the opt-in real Groq tests explicitly with (covers plain chat and the
 agent's real tool-selection behavior):
 
 ```bash
-GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+```
+
+In PowerShell, set both for one run only, then remove them:
+
+```powershell
+$env:AEGIS_ALLOW_LIVE_LLM_TESTS = "1"
+$env:GROQ_API_KEY = [System.Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Groq key")).Password
+uv run pytest -m llm_integration -v
+Remove-Item Env:AEGIS_ALLOW_LIVE_LLM_TESTS, Env:GROQ_API_KEY
 ```
 
 Run the opt-in real-embedding-model tests explicitly with (downloads/loads
@@ -1012,22 +1033,23 @@ RUN_MCP_STDIO_INTEGRATION=1 uv run pytest -m mcp_integration -v
 ```
 
 Run the opt-in real A2A HTTP transport tests explicitly with (a real
-`uvicorn` server on a real socket; add `GROQ_API_KEY` for the tier that
-also makes a real Groq call through the full A2A stack):
+`uvicorn` server on a real socket; add `GROQ_API_KEY` and `AEGIS_ALLOW_LIVE_LLM_TESTS=1` for
+the tier that also makes a real Groq call through the full A2A stack):
 
 ```bash
 RUN_A2A_LIVE_INTEGRATION=1 uv run pytest -m a2a_integration -v
-RUN_A2A_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... uv run pytest -m a2a_integration -v
+RUN_A2A_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
+    uv run pytest -m a2a_integration -v
 ```
 
 Run the opt-in real multi-agent workflow tests explicitly with (the same
 real-socket pattern, through the full Research + Document + Analyst
-orchestration; add `GROQ_API_KEY` for the tier that also makes a real
-Groq call):
+orchestration; add `GROQ_API_KEY` and `AEGIS_ALLOW_LIVE_LLM_TESTS=1` for the tier that also
+makes a real Groq call):
 
 ```bash
 RUN_MULTI_AGENT_LIVE_INTEGRATION=1 uv run pytest -m multi_agent_integration -v
-RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
+RUN_MULTI_AGENT_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
     uv run pytest -m multi_agent_integration -v
 ```
 
@@ -1036,7 +1058,7 @@ then one real Groq answer, checked for grounding and citations; it writes synthe
 only against a disposable database):
 
 ```bash
-RUN_RAG_E2E_LIVE=1 RUN_EMBEDDING_INTEGRATION=1 GROQ_API_KEY=sk-... \
+RUN_RAG_E2E_LIVE=1 RUN_EMBEDDING_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
     uv run pytest backend/tests/integration/test_rag_end_to_end_live.py -v -rs
 ```
 
@@ -1046,7 +1068,8 @@ expected test ran and passed, so a skipped test is a failed run:
 
 - `rag-integration.yml`: the four real-embedding retrieval tests. No LLM and no secrets.
 - `rag-e2e-live.yml`: the live end-to-end test above. It runs in the `groq-live` environment and
-  reads that environment's `GROQ_API_KEY` secret. Set the environment up **before** adding the
+  reads that environment's `GROQ_API_KEY` secret; the job sets `AEGIS_ALLOW_LIVE_LLM_TESTS=1`,
+  the second half of the opt-in. Set the environment up **before** adding the
   secret (Settings → Environments): a required reviewer, so every run waits for an approval, and
   deployment branches limited to `main`; then the secret, a dedicated key with a spending cap.
   Store the key only as a `groq-live` environment secret, never as a repository or organization secret.

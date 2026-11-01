@@ -39,6 +39,7 @@ from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import CompletionResponse, ModelRole, StreamChunk
 from app.prompts.builder import PromptBuilder
 from app.prompts.history import HistoryLimits
+from app.safety.output_guard import OutputGuard, build_output_guard, log_findings
 
 _TITLE_MAX_LENGTH = 80
 
@@ -64,7 +65,9 @@ class ChatService:
         conversations: ConversationRepository,
         messages: MessageRepository,
         prompt_builder: PromptBuilder | None = None,
+        output_guard: OutputGuard | None = None,
     ) -> None:
+        self._output_guard = output_guard or OutputGuard()
         self._gateway = gateway
         self._session = session
         self._conversations = conversations
@@ -89,6 +92,10 @@ class ChatService:
         )
 
         completion = await self._gateway.chat_completion(model_role=model_role, messages=prompt)
+        # What is returned and what is stored are the guarded text (AIGSEC-015).
+        guarded = self._output_guard.redact(completion.content)
+        log_findings("chat_output_redacted", guarded.findings, conversation_id=str(conversation.id))
+        completion = completion.model_copy(update={"content": guarded.text})
 
         await self._messages.add(
             conversation_id=conversation.id,
@@ -130,12 +137,18 @@ class ChatService:
         input_tokens: int | None = None
         output_tokens: int | None = None
         total_tokens: int | None = None
+        # The same guard as the non-streaming path, applied as the text arrives (AIGSEC-015).
+        guard = self._output_guard.stream()
 
         try:
             async for chunk in self._gateway.stream_chat_completion(
                 model_role=model_role, messages=prompt
             ):
-                accumulated_content += chunk.delta
+                delta = guard.feed(chunk.delta)
+                if chunk.is_final:
+                    delta += guard.finish()
+                chunk = chunk.model_copy(update={"delta": delta})
+                accumulated_content += delta
                 final_model = chunk.model or final_model
                 request_id = chunk.request_id or request_id
                 if chunk.finish_reason:
@@ -155,6 +168,9 @@ class ChatService:
             await self._session.rollback()
             raise
 
+        # Normally a no-op (the final chunk released it); covers a stream with no final chunk.
+        accumulated_content += guard.finish()
+        log_findings("chat_output_redacted", guard.findings, conversation_id=str(conversation.id))
         await self._messages.add(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
@@ -198,5 +214,6 @@ def get_chat_service(
         session=session,
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),
+        output_guard=build_output_guard(settings),
         prompt_builder=PromptBuilder(history_limits=HistoryLimits.from_settings(settings)),
     )

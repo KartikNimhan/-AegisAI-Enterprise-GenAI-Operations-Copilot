@@ -161,9 +161,33 @@ def test_the_trivy_action_is_not_a_release_hit_by_the_march_2026_compromise(raw:
 # -- reporting only --------------------------------------------------------------------------
 
 
-def test_every_job_is_non_blocking(workflow: dict[str, Any]) -> None:
+def test_every_job_ends_by_enforcing_the_blocking_policy(workflow: dict[str, Any]) -> None:
+    # AIGSEC-007: no job may be marked non-blocking, and the policy step runs last, always, after
+    # the summary and the artifact, so its failure is the job's result.
+    scanner_of = {
+        "python-audit": "pip-audit",
+        "npm-audit": "npm-audit",
+        "secret-scan": "gitleaks",
+        "image-scan": "trivy",
+    }
     for name, job in workflow["jobs"].items():
-        assert job["continue-on-error"] is True, name
+        assert "continue-on-error" not in job, name
+        last = _steps(job)[-1]
+        assert last["name"] == "Enforce the blocking policy", name
+        assert last["if"] == "always()"
+        assert "continue-on-error" not in last
+        assert re.fullmatch(
+            rf"python3 (\.\./\.\./)?scripts/security_scan_policy\.py {scanner_of[name]} --dir \.",
+            last["run"].strip(),
+        ), last["run"]
+        assert "|| " not in last["run"]  # nothing can turn its failure into a pass
+
+
+def test_the_image_policy_step_sees_every_build_and_scan_outcome(workflow: dict[str, Any]) -> None:
+    policy = _steps(workflow["jobs"]["image-scan"])[-1]
+    summary = _step(workflow, "image-scan", "Summarise")
+
+    assert policy["env"] == summary["env"]
 
 
 def test_scan_commands_cannot_fail_their_step(workflow: dict[str, Any]) -> None:
@@ -1042,7 +1066,8 @@ def test_the_docs_never_present_a_partly_reviewed_baseline_as_clean() -> None:
 
     assert "have not been reviewed" in doc and "no reviewed baseline" in doc.lower()
     assert "does not claim the repository is free of vulnerabilities or secrets" in doc
-    assert "reporting-only" in doc.lower()
+    assert "reporting-only" in doc.lower()  # the history is stated, not hidden
+    assert "Blocking policy (AIGSEC-007)" in doc and "Expect the first blocking run to fail" in doc
     assert "NOT a clean result" in doc
     assert "Not reviewed yet: CI's `gitleaks-report`" in doc
 

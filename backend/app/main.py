@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.router import api_router, public_api_router
 from app.api.v1 import health
@@ -108,6 +109,9 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Outermost: a request for a Host that is not configured is refused (400) before anything
+    # else runs. ALLOWED_HOSTS defaults to ["*"] (accept any), see Settings.allowed_hosts.
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     register_exception_handlers(application)
 
     # Unversioned: liveness/readiness probes, and the A2A well-known Agent

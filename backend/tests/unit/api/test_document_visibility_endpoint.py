@@ -2,7 +2,9 @@
 
 The service is a fake: it returns None exactly where the real one does when the caller is
 neither the owner nor an administrator of the owner's organization, and the route must turn
-that into the same 404 as a document that does not exist.
+that into the same 404 as a document that does not exist. It raises
+`DocumentShareForbiddenError` where the real one does when an administrator tries to share a
+member's document (AIGSEC-001), and the route must turn that into a 403 that changes nothing.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.exceptions import DocumentShareForbiddenError
+from app.db.repositories.document_repository import VisibilityChange
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_type import DocumentType
 from app.domain.enums.document_visibility import DocumentVisibility
@@ -43,16 +47,33 @@ def _document(visibility: DocumentVisibility | None) -> Document:
 
 
 class _Service(DocumentService):
-    def __init__(self, *, manageable: bool, stored: DocumentVisibility | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        manageable: bool,
+        stored: DocumentVisibility | None = None,
+        forbidden: bool = False,
+        by_owner: bool = True,
+    ) -> None:
         self._manageable = manageable
         self._stored = stored
+        self._forbidden = forbidden
+        self._by_owner = by_owner
         self.requested: list[DocumentVisibility] = []
 
     async def set_visibility(
         self, document_id: uuid.UUID, visibility: DocumentVisibility
-    ) -> Document | None:
+    ) -> VisibilityChange | None:
         self.requested.append(visibility)
-        return _document(visibility) if self._manageable else None
+        if self._forbidden:
+            raise DocumentShareForbiddenError()
+        if not self._manageable:
+            return None
+        return VisibilityChange(
+            document=_document(visibility),
+            previous=self._stored or DocumentVisibility.PRIVATE,
+            by_owner=self._by_owner,
+        )
 
     async def get_document(self, document_id: uuid.UUID) -> Document | None:
         return _document(self._stored)
@@ -124,3 +145,18 @@ def test_a_document_without_a_stored_visibility_is_reported_as_private(
     response = client.get(f"/api/v1/documents/{DOCUMENT_ID}")
 
     assert response.json()["visibility"] == "private"
+
+
+def test_an_administrator_who_tries_to_share_a_members_document_gets_403(
+    client: TestClient, use_service: Any
+) -> None:
+    use_service(_Service(manageable=True, forbidden=True))
+
+    response = client.patch(
+        f"/api/v1/documents/{DOCUMENT_ID}/visibility", json={"visibility": "organization"}
+    )
+
+    assert response.status_code == 403
+    error = response.json()["error"]
+    assert error["code"] == "forbidden"
+    assert error["message"] == "Only the document's owner can share it with the organization"

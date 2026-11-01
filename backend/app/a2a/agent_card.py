@@ -26,11 +26,22 @@ from a2a.server.request_handlers.response_helpers import agent_card_to_dict
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 
 from app.config import Settings
+from app.core.exceptions import ServiceUnavailableError
 
 RESEARCH_SKILL_ID = "research_question"
 DOCUMENT_SKILL_ID = "document_analysis"
 CALCULATION_SKILL_ID = "calculation"
 SYNTHESIS_SKILL_ID = "synthesis"
+
+
+def card_base_url(settings: Settings) -> str:
+    """The configured base URL for the task endpoints a card advertises (AIGSEC-010). Built from
+    settings only, so a request's Host or X-Forwarded-Host header cannot redirect a client that
+    trusts the card to another server."""
+    base = settings.agent_card_base_url
+    if base is None:
+        raise ServiceUnavailableError("The agent card is not configured")
+    return base
 
 
 def build_research_agent_card(settings: Settings, *, base_url: str) -> AgentCard:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import streamlit as st
 
 from components.errors import friendly_message
+from components.safe_markdown import neutralize
 from services.api.client import BackendError
 from services.api.documents import (
     delete_document,
@@ -66,7 +67,7 @@ else:
             icon = _STATUS_ICON.get(document.status, "•")
             with st.container(border=True):
                 header_cols = st.columns([3, 1, 2])
-                header_cols[0].markdown(f"**{document.filename}**")
+                header_cols[0].markdown(f"**{neutralize(document.filename)}**")
                 header_cols[1].markdown(f"{icon} {document.status}")
                 header_cols[2].markdown(f"`{document.id}`")
 
@@ -81,7 +82,7 @@ else:
                     if document.character_count is not None:
                         detail_cols[1].write(f"Characters: {document.character_count}")
                     if document.error_message:
-                        st.error(document.error_message)
+                        st.error(neutralize(document.error_message))
 
                     action_cols = st.columns(3)
                     if action_cols[0].button("View chunks", key=f"chunks-{document.id}"):
