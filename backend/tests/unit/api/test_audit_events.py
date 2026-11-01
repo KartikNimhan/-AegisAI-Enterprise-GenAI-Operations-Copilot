@@ -120,6 +120,49 @@ def test_sharing_changes_are_recorded_with_the_new_visibility(
     assert event["visibility"] == DocumentVisibility.ORGANIZATION.value
     assert event["resource_id"] == str(document_id)
     assert_attributed_to_me(event)
+    if outcome == "success":
+        assert event["previous_visibility"] == DocumentVisibility.PRIVATE.value
+        assert event["by_owner"] is True
+
+
+def test_an_administrator_narrowing_a_members_document_is_recorded_as_not_by_the_owner(
+    client: TestClient, events: list[dict[str, Any]]
+) -> None:
+    app.dependency_overrides[get_document_service] = lambda: VisibilityService(
+        manageable=True, stored=DocumentVisibility.ORGANIZATION, by_owner=False
+    )
+
+    response = client.patch(
+        f"/api/v1/documents/{uuid.uuid4()}/visibility", json={"visibility": "private"}
+    )
+
+    assert response.status_code == 200
+    event = only(events)
+    assert event["audit_outcome"] == "success"
+    assert event["previous_visibility"] == "organization"
+    assert event["visibility"] == "private"
+    assert event["by_owner"] is False
+    assert_attributed_to_me(event)
+
+
+def test_a_refused_share_is_recorded_as_forbidden(
+    client: TestClient, events: list[dict[str, Any]]
+) -> None:
+    app.dependency_overrides[get_document_service] = lambda: VisibilityService(
+        manageable=True, forbidden=True
+    )
+    document_id = uuid.uuid4()
+
+    response = client.patch(
+        f"/api/v1/documents/{document_id}/visibility", json={"visibility": "organization"}
+    )
+
+    assert response.status_code == 403
+    event = only(events)
+    assert event["audit_outcome"] == "forbidden"
+    assert event["visibility"] == "organization"
+    assert event["resource_id"] == str(document_id)
+    assert_attributed_to_me(event)
 
 
 def test_an_embedding_request_is_recorded_on_success(

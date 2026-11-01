@@ -17,6 +17,7 @@ import streamlit as st
 
 from components.errors import friendly_message
 from components.response import render_response
+from components.safe_markdown import neutralize
 from services.api.client import BackendError
 from services.api.copilot import run_multi_agent_workflow
 from services.state import ChatTurn, append_turn, clear_history, get_history
@@ -25,6 +26,12 @@ st.set_page_config(page_title="AegisAI Copilot", page_icon=":shield:", layout="w
 
 st.title("AegisAI")
 st.caption("Enterprise GenAI Operations Copilot")
+# AIGSEC-012 / ADR 017 D-12: this UI has no sign-in, so a backend with authentication enabled
+# refuses every request it makes (the backend enforces that, not this page).
+st.caption(
+    "Legacy interface without sign-in: it cannot be used with a backend that requires "
+    "authentication. The supported interface is the React app."
+)
 
 with st.sidebar:
     st.subheader("Copilot")
@@ -47,7 +54,7 @@ if not history:
 for turn in history:
     with st.chat_message(turn.role):
         if turn.role == "user":
-            st.markdown(turn.content)
+            st.markdown(neutralize(turn.content))
         elif turn.result is not None:
             render_response(turn.result)
         else:
@@ -57,7 +64,7 @@ message = st.chat_input("Ask the Copilot...")
 if message:
     append_turn(ChatTurn(role="user", content=message))
     with st.chat_message("user"):
-        st.markdown(message)
+        st.markdown(neutralize(message))
 
     with st.chat_message("assistant"), st.spinner("Routing to the right agent(s)..."):
         try:

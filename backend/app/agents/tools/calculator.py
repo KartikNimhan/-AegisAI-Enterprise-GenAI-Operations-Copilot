@@ -22,6 +22,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.agents.tools.base import ToolDefinition, ToolResult
+from app.core.limits import MAX_EXPRESSION_CHARS
 
 # Deliberately excludes `@` (matrix multiply, meaningless for scalars) and
 # bitwise operators (not arithmetic a business question would ask for).
@@ -47,7 +48,7 @@ _UNARY_OPERATORS: dict[type[ast.unaryop], Any] = {
 # error instead of a resource exhaustion incident.
 _MAX_OPERAND_MAGNITUDE = 1_000_000_000
 _MAX_EXPONENT_MAGNITUDE = 100
-_MAX_EXPRESSION_LENGTH = 200
+_MAX_EXPRESSION_LENGTH = MAX_EXPRESSION_CHARS
 
 
 class CalculatorError(Exception):
@@ -98,6 +99,9 @@ def _evaluate(node: ast.AST) -> float:
                 f"Exponent magnitude exceeds the allowed limit ({_MAX_EXPONENT_MAGNITUDE})"
             )
         if isinstance(node.op, ast.Div | ast.FloorDiv | ast.Mod) and right == 0:
+            raise CalculatorError("Division by zero")
+        # `0 ** -n` is 1 / 0 ** n: Python raises ZeroDivisionError for it (AIGSEC-014).
+        if isinstance(node.op, ast.Pow) and left == 0 and right < 0:
             raise CalculatorError("Division by zero")
         try:
             result = operator_fn(left, right)

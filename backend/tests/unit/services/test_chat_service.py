@@ -178,7 +178,9 @@ async def test_streaming_yields_chunks_and_persists_accumulated_content() -> Non
         )
     ]
 
-    assert [c.chunk.delta for c in received] == ["He", "llo"]
+    # One chunk out per chunk in. The output guard (AIGSEC-015) releases text at word boundaries,
+    # so the unfinished word "He" is held until the rest of it arrives.
+    assert [c.chunk.delta for c in received] == ["", "Hello"]
     assert all(c.conversation_id == received[0].conversation_id for c in received)
 
     assert [m.role for m in messages.messages] == [MessageRole.USER, MessageRole.ASSISTANT]
@@ -206,7 +208,9 @@ async def test_interrupted_stream_rolls_back_and_does_not_persist_assistant_mess
         ):
             received.append(turn_chunk)
 
-    assert [c.chunk.delta for c in received] == ["partial"]
+    # One chunk out per chunk in; the unfinished word is still held by the output guard
+    # (AIGSEC-015) when the stream breaks, so it is never sent.
+    assert [c.chunk.delta for c in received] == [""]
     assert session.rollback_calls == 1
     # Only the user message was ever added; no assistant message/no touch.
     assert [m.role for m in messages.messages] == [MessageRole.USER]

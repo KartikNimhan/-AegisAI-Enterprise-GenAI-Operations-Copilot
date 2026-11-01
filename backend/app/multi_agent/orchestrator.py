@@ -52,6 +52,7 @@ from app.multi_agent.models import (
 )
 from app.multi_agent.policies import ORCHESTRATOR, is_transition_allowed
 from app.multi_agent.router import RoutingDecision, route
+from app.safety.output_guard import build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -68,6 +69,7 @@ class MultiAgentOrchestrator:
         self._gateway = gateway
         self._client = a2a_client
         self._aggregator = ResultAggregator()
+        self._output_guard = build_output_guard(settings)
 
     async def run(self, *, question: str) -> WorkflowResult:
         workflow_id = str(uuid.uuid4())
@@ -86,7 +88,7 @@ class MultiAgentOrchestrator:
         )
 
         if not decision.capabilities:
-            answer = await self._direct_answer(question)
+            answer = self._guard_answer(await self._direct_answer(question), workflow_id)
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
             logger.info(
                 "multi_agent.workflow_completed",
@@ -147,6 +149,7 @@ class MultiAgentOrchestrator:
             )
 
         answer, status = self._aggregator.combine(agent_results=agent_results)
+        answer = self._guard_answer(answer, workflow_id)
         token_usage = _aggregate_token_usage(agent_results)
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         logger.info(
@@ -166,6 +169,12 @@ class MultiAgentOrchestrator:
             token_usage=token_usage,
             duration_ms=duration_ms,
         )
+
+    def _guard_answer(self, answer: str, workflow_id: str) -> str:
+        """The final answer after the output guard (AIGSEC-015)."""
+        guarded = self._output_guard.redact(answer)
+        log_findings("multi_agent_output_redacted", guarded.findings, workflow_id=workflow_id)
+        return guarded.text
 
     async def _direct_answer(self, question: str) -> str:
         completion = await self._gateway.chat_completion(

@@ -2,9 +2,10 @@
 # — no credentials, no API keys. See backend-secret.example.yaml for what
 # is NOT here.
 #
-# REDIS_URL has no embedded credential in this project's default
-# configuration (no Redis auth is configured anywhere in app/db/redis.py),
-# so it is treated as non-secret config, not a Secret value. DATABASE_URL
+# REDIS_URL has no embedded credential: the Redis password is a separate
+# setting (REDIS_PASSWORD), which the backend Deployment reads from the
+# `aegisai-redis-secret` Secret (see redis-secret.example.yaml), so the URL
+# is treated as non-secret config, not a Secret value. DATABASE_URL
 # embeds the Postgres password (`postgresql+asyncpg://user:PASSWORD@host/
 # db`) and is deliberately NOT here — see backend-secret.example.yaml.
 apiVersion: v1
@@ -41,9 +42,11 @@ data:
   AUTH_ISSUER: ""
   AUTH_AUDIENCE: ""
   AUTH_JWKS_URL: ""
-  # Rate limits: per signed-in user, counted in memory PER POD (replicas do not share counts, so the
-  # effective limit is limit x replicas). 0 switches one limit off. Starting points to review.
+  # Rate limits: per signed-in user, counted in Redis and shared by every replica (AIGSEC-008), so
+  # switching pods does not reset a budget; a Redis outage refuses those requests with 503.
+  # 0 switches one limit off. Starting points to review.
   RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_BACKEND: "redis"
   RATE_LIMIT_WINDOW_SECONDS: "60"
   RATE_LIMIT_LLM_REQUESTS: "30"
   RATE_LIMIT_DOCUMENT_UPLOADS: "10"

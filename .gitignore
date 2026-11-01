@@ -17,6 +17,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.test.example
 
 # Testing & tooling caches
 .pytest_cache/
@@ -48,6 +49,12 @@ data/processed/*
 !data/processed/.gitkeep
 data/evaluation/*
 !data/evaluation/.gitkeep
+# Runtime document uploads (DOCUMENT_STORAGE_DIR), user data, never source (AIGSEC-016).
+# An ignore rule does not untrack a file Git already tracks: the committed sample PDF stays.
+data/uploads/*
+
+# Redis persistence snapshots a local Redis writes into its working directory (dump.rdb).
+*.rdb
 
 # Logs
 *.log

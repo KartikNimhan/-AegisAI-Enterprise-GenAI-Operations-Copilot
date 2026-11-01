@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -51,11 +51,11 @@ jobs:
         env:
           POSTGRES_USER: aegis
           POSTGRES_PASSWORD: aegis
-          POSTGRES_DB: aegis
+          POSTGRES_DB: aegis_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aegis -d aegis"
+          --health-cmd "pg_isready -U aegis -d aegis_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -69,11 +69,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis
-      REDIS_URL: redis://localhost:6379/0
+      # The tests use only TEST_DATABASE_URL / TEST_REDIS_URL (backend/tests/isolation.py refuses a
+      # database whose name does not end in `_test`). DATABASE_URL is for the migration step, which
+      # uses the application's settings, and names the same test database.
+      TEST_DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
+      TEST_REDIS_URL: redis://localhost:6379/15
+      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
       # The service database role is a superuser, so the migration round-trip tests can create and
-      # drop their own throwaway databases (they never touch the `aegis` database). Locally they
-      # are opt-in; here they run, covering migrations 0005-0007 and the legacy-data assignment.
+      # drop their own throwaway databases (they never touch the `aegis_test` database). Locally
+      # they are opt-in; here they run, covering migrations 0005-0007 and the legacy-data
+      # assignment.
       RUN_MIGRATION_ROUNDTRIP: "1"
       # The services above are part of this job, so an unreachable Postgres or Redis FAILS the
       # integration tests instead of skipping them (otherwise a broken service container would
@@ -84,7 +89,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -106,7 +111,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -126,7 +131,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -148,23 +153,23 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build backend image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
           push: false
           tags: aegisai-backend:ci
       - name: Build React frontend image (default UI)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend/web
           file: frontend/web/Dockerfile
           push: false
           tags: aegisai-frontend:ci
       - name: Build Streamlit frontend image (legacy UI)
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: frontend/streamlit/Dockerfile
@@ -183,7 +188,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # no job token left in .git/config
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true

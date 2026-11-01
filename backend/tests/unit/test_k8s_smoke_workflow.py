@@ -36,6 +36,7 @@ APPLIED = {
     "postgres-service",
     "redis-deployment",
     "redis-service",
+    "data-tier-network-policy",
     "backend-configmap",
     "backend-pvc",
     "migration-job",
@@ -265,6 +266,11 @@ def test_the_secrets_come_from_a_generated_masked_password(job: dict[str, Any]) 
     assert script.index('echo "::add-mask::${password}"') < script.index("kubectl create secret")
     assert "kubectl create secret generic aegisai-postgres-secret" in script
     assert "kubectl create secret generic aegisai-backend-secret" in script
+    # Redis requires a password too (AIGSEC-005), generated and masked the same way.
+    assert 'redis_password="$(openssl rand -hex 24)"' in script
+    assert script.index('echo "::add-mask::${redis_password}"') < script.index(
+        "kubectl create secret generic aegisai-redis-secret"
+    )
     assert "--from-file" not in script
 
 
@@ -278,7 +284,9 @@ def test_every_layer_of_the_stack_is_checked(job: dict[str, Any]) -> None:
         "wait_rollout statefulset/aegisai-postgres",
         "pg_isready -U aegis -d aegis",
         "wait_rollout deployment/aegisai-redis",
-        'redis-cli ping)" = "PONG"',
+        "redis-cli ping | grep -q NOAUTH",  # unauthenticated access is refused
+        """REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping')" = "PONG\"""",
+        'kubectl apply -f "$out/data-tier-network-policy.yaml"',
         "wait_job aegisai-migrate",
         "FROM pg_extension WHERE extname = 'vector'",
         "SELECT version_num FROM alembic_version",

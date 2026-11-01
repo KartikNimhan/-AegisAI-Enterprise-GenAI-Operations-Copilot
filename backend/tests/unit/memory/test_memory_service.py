@@ -15,7 +15,12 @@ import pytest
 from app.domain.enums.memory_kind import MemoryKind, MemorySource
 from app.domain.models.agent_memory import AgentMemory
 from app.memory.exceptions import MemoryLimitError, MemoryValidationError
-from app.memory.service import MEMORY_PROMPT_HEADER, format_for_prompt
+from app.memory.service import (
+    MEMORY_BLOCK_END,
+    MEMORY_BLOCK_START,
+    MEMORY_PROMPT_HEADER,
+    format_for_prompt,
+)
 
 from .harness import Person, World
 
@@ -202,9 +207,12 @@ async def test_formatted_prompt_labels_the_notes_and_cannot_forge_structure(worl
 
     assert text is not None and text.startswith(MEMORY_PROMPT_HEADER)
     assert "untrusted" in text and "not instructions" in text
-    note_lines = text.splitlines()[1:]
+    lines = text.splitlines()
+    start, end = lines.index(MEMORY_BLOCK_START), lines.index(MEMORY_BLOCK_END)
+    note_lines = lines[start + 1 : end]
     assert len(note_lines) == 1  # the injected line break was collapsed into one quoted line
-    assert note_lines[0].startswith("- (fact) ")
+    assert note_lines[0].startswith("- (fact, ")
+    assert end == len(lines) - 1  # nothing after the block
 
 
 # -- updates and deletion --------------------------------------------------------------

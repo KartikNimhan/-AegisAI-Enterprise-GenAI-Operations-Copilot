@@ -1,6 +1,7 @@
 # Security scanning
 
-**Status: configured, reporting-only, has run; the baseline is partly reviewed.** GitHub's public
+**Status: configured, BLOCKING since AIGSEC-007 (not yet run in CI in that form); the baseline is
+partly reviewed.** Until that change every job was reporting-only. GitHub's public
 run list shows every job completing on `main`, most recently in run #59 on commit `f164c04`
 (2026-10-27). Because every job is reporting-only, "completed successfully" only means the jobs
 finished: the findings are in the run summaries and artifacts, which need a signed-in GitHub account.
@@ -31,12 +32,35 @@ advisories appear without code changes) and manual dispatch. Dependabot (`depend
 weekly update pull requests for `uv`, `npm`, GitHub Actions and the three Dockerfile directories; it
 merges nothing.
 
-## Reporting-only means
+## Blocking policy (AIGSEC-007)
 
-- Every job has `continue-on-error: true`, every scan command tolerates a non-zero exit, and Trivy
-  and gitleaks run with `exit-code 0`. A finding never fails a run.
-- **A green run is not a clean result.** Check the summary, not the colour.
-- No blocking threshold is set on purpose: the existing baseline must be understood first.
+Until AIGSEC-007 every job was reporting-only (`continue-on-error: true`), so a finding never failed
+a run. Now the last step of each job, **Enforce the blocking policy**, runs
+`scripts/security_scan_policy.py` on the reports the job just wrote and fails the job:
+
+| Scanner | Blocks on | Reported only |
+|---|---|---|
+| pip-audit | any known vulnerability **with a released fix** (pip-audit reports carry no severity, so every fixable advisory blocks: stricter than High/Critical) | advisories with no fix yet; skipped packages (listed as NOT audited) |
+| npm audit | advisories rated **high** or **critical** | moderate, low, info |
+| gitleaks | **any** potential secret (values are never printed) | — |
+| Trivy | SARIF level `error`, which Trivy uses for **CRITICAL** and **HIGH** | medium, low |
+
+Three exit codes keep the reasons apart: `0` pass, `1` blocking findings, `2` the scan did not
+complete (a failed export, a scanner error, a missing, unreadable or contradictory report, an image
+that was not built or not scanned). A failed scan is never a pass.
+
+**Exceptions** are narrow and expire: `.github/security-scan-exceptions.json` lists one advisory id
+(CVE, GHSA, PYSEC, ...) for one scanner per entry, each with a reason and an `expires` date at most
+180 days ahead. An expired entry stops applying (and is reported as expired); a wildcard, a missing
+reason or a far-off expiry fails the run. A gitleaks false positive is excluded in `.gitleaks.toml`
+instead, in review. The file starts empty.
+
+The scan commands themselves still tolerate a non-zero exit (`|| code=$?`, Trivy and gitleaks with
+exit code 0) so that every report is written, kept as an artifact and summarised before the policy
+decides. The summaries still label every incomplete result `NOT a clean result`.
+
+**Expect the first blocking run to fail** if the current, partly unreviewed baseline contains a
+fixable or high-severity finding: triage it (fix, or add a justified, expiring exception).
 
 ## How outcomes are told apart
 

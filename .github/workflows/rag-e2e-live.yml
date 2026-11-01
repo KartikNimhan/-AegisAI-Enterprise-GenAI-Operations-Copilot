@@ -12,8 +12,9 @@ name: RAG end-to-end with a live LLM (manual, approval-gated)
 # the single pytest step only. Without it the tests skip, and the final check fails the job.
 #
 # Isolation: the database is this job's own throwaway service container on a GitHub-hosted runner,
-# reachable only at localhost there. `DATABASE_URL` is set explicitly below, and `.env` is never
-# part of a checkout. All test data is synthetic. Never point this at a real database, take the
+# reachable only at localhost there. `TEST_DATABASE_URL` (what the tests use) and `DATABASE_URL`
+# (what the migration step uses) are set explicitly below and name the same `aegis_test` database,
+# and `.env` is never part of a checkout. All test data is synthetic. Never point this at a real database, take the
 # database URL from a secret, or run it on a self-hosted runner.
 #
 # Known limitations: `pgvector/pgvector:pg16` is a floating tag (the same one ci.yml uses), the
@@ -45,22 +46,27 @@ jobs:
         env:
           POSTGRES_USER: aegis
           POSTGRES_PASSWORD: aegis
-          POSTGRES_DB: aegis
+          POSTGRES_DB: aegis_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aegis -d aegis"
+          --health-cmd "pg_isready -U aegis -d aegis_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
-      # This job's own disposable service above, and nothing else.
-      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis
+      # This job's own disposable service above, and nothing else. The tests read
+      # TEST_DATABASE_URL (it must end in `_test`); the migration step reads DATABASE_URL.
+      TEST_DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
+      DATABASE_URL: postgresql+asyncpg://aegis:aegis@localhost:5432/aegis_test
       # An unreachable database FAILS the tests instead of skipping them.
       AEGIS_REQUIRE_SERVICES: "1"
       # The opt-in gates of the live tests (the key is added on the pytest step only).
       RUN_EMBEDDING_INTEGRATION: "1"
       RUN_RAG_E2E_LIVE: "1"
+      # The second half of the Groq opt-in: without it the test harness blanks GROQ_API_KEY
+      # (backend/tests/isolation.py), so a key alone can never start a billed test.
+      AEGIS_ALLOW_LIVE_LLM_TESTS: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -68,7 +74,7 @@ jobs:
           # Do not leave the job's token in .git/config, where test code or a dependency could
           # read it. Nothing later in this job needs Git credentials.
           persist-credentials: false
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true

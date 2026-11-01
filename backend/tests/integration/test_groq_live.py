@@ -1,11 +1,13 @@
 """Opt-in integration test against the real Groq API.
 
 Skips automatically when GROQ_API_KEY is not set in the environment — a
-real key is never required for a normal `pytest` run. Uses the FAST model
-role (small/cheap model) to keep this quick when it does run.
+real key is never required for a normal `pytest` run. The test harness blanks
+the key unless AEGIS_ALLOW_LIVE_LLM_TESTS=1 is set as well
+(`backend/tests/isolation.py`), so a key on its own never runs this. Uses the
+FAST model role (small/cheap model) to keep this quick when it does run.
 
 Run explicitly with a real key via:
-    GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+    AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
 """
 
 from __future__ import annotations

@@ -1,5 +1,8 @@
-"""Memory inside the agent workflow: the `save_memory` tool (bounded, validated, failure-safe) and
-recall into the agent's prompt (own notes only, labelled untrusted, never fatal).
+"""Memory inside the agent workflow: the `save_memory` tool (bounded, validated, failure-safe, and
+only for what the user explicitly asked to remember) and recall into the agent's prompt (own notes
+only, a labelled untrusted data block in the user's turn, never fatal).
+
+The provenance rules themselves (AIGSEC-006) are proven in test_memory_provenance.py.
 """
 
 from __future__ import annotations
@@ -9,11 +12,12 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from app.agents.service import AgentService
+from app.agents.service import USER_MESSAGE_LABEL, AgentService
+from app.agents.tools.memory import MemoryWriteGuard
 from app.agents.tools.registry import build_tool_registry
 from app.config import Settings
 from app.llm.schemas import ChatRole, CompletionResponse
-from app.memory.service import MEMORY_PROMPT_HEADER
+from app.memory.service import MEMORY_BLOCK_END, MEMORY_BLOCK_START, MEMORY_PROMPT_HEADER
 from app.rag.retrieval.service import RetrievalService
 
 from ..agents.doubles import (
@@ -43,12 +47,14 @@ async def make_agent(
         **overrides,  # type: ignore[arg-type]
     )
     memory = world.service(person)
+    guard = MemoryWriteGuard()
     messages = FakeMessageRepository()
     registry = await build_tool_registry(
         documents=FakeDocumentRepository(),  # type: ignore[arg-type]
         retrieval=RetrievalService(strategy=FakeRetrievalStrategy(), settings=settings),
         settings=settings,
         memory=memory,
+        memory_guard=guard,
     )
     agent = AgentService(
         session=FakeSession(),  # type: ignore[arg-type]
@@ -58,6 +64,7 @@ async def make_agent(
         messages=messages,  # type: ignore[arg-type]
         tool_registry=registry,
         memory=memory,
+        memory_guard=guard,
     )
     return agent, messages
 
@@ -102,7 +109,9 @@ async def test_one_run_can_only_save_a_few_notes(world: World) -> None:
     )
     agent, _ = await make_agent(world, Person(), gateway)
 
-    result = await agent.run(conversation_id=None, message="remember lots")
+    result = await agent.run(
+        conversation_id=None, message="remember note one, note two and note three"
+    )
 
     usage = result.tool_calls[0]
     assert (usage.success_count, usage.failure_count) == (2, 1)  # max_writes_per_run = 2
@@ -115,7 +124,7 @@ async def test_an_invalid_note_fails_the_tool_call_but_not_the_run(world: World)
     )
     agent, _ = await make_agent(world, Person(), gateway)
 
-    result = await agent.run(conversation_id=None, message="remember something")
+    result = await agent.run(conversation_id=None, message="remember this bad note")
 
     assert result.answer == "I could not save that."
     assert result.tool_calls[0].failure_count == 1
@@ -129,7 +138,7 @@ async def test_a_full_memory_is_reported_to_the_model_not_raised() -> None:
         gateway = ScriptedAgentGateway(effects=[save("no room"), make_final_completion("Full.")])
         agent, _ = await make_agent(w, alice, gateway)
 
-        result = await agent.run(conversation_id=None, message="remember this")
+        result = await agent.run(conversation_id=None, message="remember: no room")
 
         tool_message = [
             m for m in gateway.chat_completion_calls[1]["messages"] if m.role == ChatRole.TOOL
@@ -149,7 +158,7 @@ async def test_a_database_failure_while_saving_is_contained(world: World) -> Non
     world.adapter.fail_next_execute = RuntimeError("deadlock detected")
     world.adapter.fail_only_statements_starting = "DELETE"
 
-    result = await agent.run(conversation_id=None, message="remember x")
+    result = await agent.run(conversation_id=None, message="remember that this will fail")
 
     assert result.tool_calls[0].failure_count == 1
     assert result.answer == "ok"
@@ -189,19 +198,29 @@ async def test_the_save_tool_cannot_delete_or_edit_memory(world: World) -> None:
 # -- recall into the prompt ------------------------------------------------------------
 
 
-async def test_notes_reach_the_model_as_a_labelled_untrusted_system_block(world: World) -> None:
+async def test_notes_reach_the_model_as_a_delimited_data_block_in_the_users_turn(
+    world: World,
+) -> None:
     alice = Person()
     await world.service(alice).remember("Works on the Berlin team")
     gateway = ScriptedAgentGateway(effects=[make_final_completion("Hi")])
-    agent, _ = await make_agent(world, alice, gateway)
+    agent, messages_repo = await make_agent(world, alice, gateway)
 
     await agent.run(conversation_id=None, message="Where do I work?")
 
     messages = gateway.chat_completion_calls[0]["messages"]
-    block = next(m for m in messages if m.content.startswith(MEMORY_PROMPT_HEADER))
-    assert block.role == ChatRole.SYSTEM
-    assert "Works on the Berlin team" in block.content
-    assert messages.index(block) == 1  # right after the agent's own system prompt
+    # AIGSEC-006: never with the authority of a system message.
+    assert [m.role for m in messages if MEMORY_PROMPT_HEADER in m.content] == [ChatRole.USER]
+    assert all(MEMORY_PROMPT_HEADER not in m.content for m in messages if m.role == ChatRole.SYSTEM)
+    turn = messages[-1].content
+    assert turn.startswith(MEMORY_PROMPT_HEADER)
+    start, end = turn.index(MEMORY_BLOCK_START), turn.index(MEMORY_BLOCK_END)
+    assert start < turn.index("Works on the Berlin team") < end
+    assert turn.endswith(f"{USER_MESSAGE_LABEL}\nWhere do I work?")
+    # Only what the user typed is stored as their message.
+    stored = [m.content for m in messages_repo.messages]  # type: ignore[attr-defined]
+    assert "Where do I work?" in stored
+    assert all(MEMORY_PROMPT_HEADER not in content for content in stored)
 
 
 async def test_without_notes_the_prompt_has_no_memory_block(world: World) -> None:
