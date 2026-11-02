@@ -2,22 +2,35 @@
 
 Every query applies the caller's `AccessScope` (see `app.auth.scope`): reads see
 the caller's own documents and organization-visible ones in their organization;
-deleting or re-sharing additionally allows an administrator of the organization.
+deleting or making a document private additionally allows an administrator of the
+organization. Sharing a document with the organization is for its owner only.
 A document outside the scope is simply "not found".
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.scope import AccessScope
+from app.core.exceptions import DocumentShareForbiddenError
 from app.domain.enums.document_status import DocumentStatus
 from app.domain.enums.document_visibility import DocumentVisibility
 from app.domain.models.document import Document
+
+
+@dataclass(frozen=True)
+class VisibilityChange:
+    """A visibility change that was applied: the document, what its visibility was before, and
+    whether its owner made the change (the audit trail records both)."""
+
+    document: Document
+    previous: DocumentVisibility
+    by_owner: bool
 
 
 class DocumentRepository:
@@ -64,6 +77,23 @@ class DocumentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def lock_checksum(self, checksum: str) -> None:
+        """Serializes concurrent uploads of the same bytes by the same user (PostgreSQL
+        transaction-scoped advisory lock, released at commit/rollback). Without it two simultaneous
+        uploads both pass the duplicate check and store the file twice: `checksum` is indexed but
+        not unique (a unique index needs a data-dependent migration; see ADR 016). Other databases
+        have no such lock, so this does nothing there. Different users, or different content, never
+        wait on each other."""
+        if self._scope.user_id is None:
+            return
+        bind = self._session.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"document-upload:{self._scope.user_id}:{checksum}"},
+        )
+
     async def get_by_checksum(self, checksum: str) -> Document | None:
         """The caller's OWN oldest document with this content. Duplicate detection never
         looks at anyone else's documents, so an upload cannot reveal that another user or
@@ -104,17 +134,31 @@ class DocumentRepository:
 
     async def set_visibility(
         self, document_id: uuid.UUID, visibility: DocumentVisibility
-    ) -> Document | None:
+    ) -> VisibilityChange | None:
+        """Changes who may read a document. Narrowing (making it private) needs management
+        rights; widening (sharing a document that is not yet shared) needs ownership, so an
+        administrator cannot turn a member's private document into one they can read
+        (AIGSEC-001). Raises `DocumentShareForbiddenError` for that case."""
         document = await self.get_for_management(document_id)
         if document is None:
             return None
+        previous = document.visibility or DocumentVisibility.PRIVATE
+        widening = (
+            visibility == DocumentVisibility.ORGANIZATION
+            and previous != DocumentVisibility.ORGANIZATION
+        )
+        is_owner = document.owner_user_id is not None and (
+            document.owner_user_id == self._scope.user_id
+        )
+        if widening and not is_owner and not self._scope.unrestricted:
+            raise DocumentShareForbiddenError()
         document.visibility = visibility
         # Assigned explicitly (the project's convention, as in DocumentService): the column's
         # server-side `onupdate=func.now()` would otherwise leave `updated_at` expired after the
         # flush, and reading it in async code raises MissingGreenlet.
         document.updated_at = datetime.now(UTC)
         await self._session.flush()
-        return document
+        return VisibilityChange(document=document, previous=previous, by_owner=is_owner)
 
     async def delete(self, document_id: uuid.UUID) -> bool:
         document = await self.get_for_management(document_id)

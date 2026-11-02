@@ -54,6 +54,34 @@ _JSON_SCHEMA_TYPES: dict[str, type] = {
 }
 
 
+def ensure_server_trusted(server: object, *, settings: Settings) -> MCPServer:
+    """The trust boundary for MCP servers (AIGSEC-013).
+
+    Only the in-process transport is supported: the server must be an `MCPServer` object built
+    by this application, never a URL, a command line or a remote session, so nothing a user or a
+    configuration value supplies can point the agent at another server. Anything else fails
+    closed. Its name must be the one this application builds AND be allowlisted. (Adding a
+    remote transport would need its own identity, destination and redirect checks; it is
+    deliberately not supported.)"""
+    if not isinstance(server, MCPServer):
+        raise MCPServerNotTrustedError(
+            f"Only the in-process MCP transport is supported; refusing {type(server).__name__!r}"
+        )
+    name = getattr(server, "name", None)
+    if name != MCP_SERVER_NAME or name not in settings.trusted_mcp_servers:
+        raise MCPServerNotTrustedError(f"MCP server {name!r} is not in trusted_mcp_servers")
+    return server
+
+
+def ensure_reported_identity_matches(reported_name: str | None, *, expected: str) -> None:
+    """The identity the server reports when the session starts must be the one that was
+    trusted: a mismatch means the connection is not to the server we checked."""
+    if reported_name is not None and reported_name != expected:
+        raise MCPServerNotTrustedError(
+            f"MCP server reported identity {reported_name!r}, expected {expected!r}"
+        )
+
+
 def ensure_tool_trusted(tool_name: str, *, settings: Settings) -> None:
     """Raises `MCPToolNotTrustedError` unless `tool_name` is explicitly
     allowlisted — a discovered tool is never registered just because the
@@ -70,10 +98,7 @@ async def discover_mcp_tools(*, server: MCPServer, settings: Settings) -> list[A
     test that wants to assert the failure mode directly can call this
     function itself instead.
     """
-    if MCP_SERVER_NAME not in settings.trusted_mcp_servers:
-        raise MCPServerNotTrustedError(
-            f"MCP server {MCP_SERVER_NAME!r} is not in trusted_mcp_servers"
-        )
+    ensure_server_trusted(server, settings=settings)
 
     try:
         # `except*` (not plain `except`): cancelling `client.list_tools()` via
@@ -83,9 +108,19 @@ async def discover_mcp_tools(*, server: MCPServer, settings: Settings) -> list[A
         # `except TimeoutError` would never match it, silently misreporting
         # every real timeout as a generic connection failure.
         async with Client(server) as client:
+            reported = client.server_info
+            ensure_reported_identity_matches(
+                reported.name if reported is not None else None, expected=MCP_SERVER_NAME
+            )
             result = await asyncio.wait_for(
                 client.list_tools(), timeout=settings.mcp_client_timeout_seconds
             )
+    except* MCPServerNotTrustedError as excgroup:
+        # The client's task group may nest the refusal in more than one group.
+        refusal: BaseException = excgroup
+        while isinstance(refusal, BaseExceptionGroup):
+            refusal = refusal.exceptions[0]
+        raise refusal from None
     except* TimeoutError as excgroup:
         raise MCPTimeoutError("MCP tool discovery timed out") from excgroup
     except* Exception as excgroup:

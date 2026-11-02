@@ -3,7 +3,7 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlparse
 
 from pydantic import SecretStr, field_validator, model_validator
@@ -18,6 +18,7 @@ ALLOWED_AUTH_ALGORITHMS = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
 )
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+MIN_METRICS_TOKEN_CHARS = 16
 
 
 _UNSAFE_URL_CHARS = re.compile(r"[\x00-\x20\x7f\\]")
@@ -59,6 +60,11 @@ class Settings(BaseSettings):
     # chosen to avoid colliding with any locally installed Postgres/Redis.
     database_url: str = "postgresql+asyncpg://aegis:aegis@localhost:5433/aegis"
     redis_url: str = "redis://localhost:6380/0"
+    # Redis AUTH password, kept out of REDIS_URL so the URL stays safe to log and needs no
+    # percent-encoding. Unset (the default) connects without a password, as a local Redis for
+    # Windows does; Docker Compose and Kubernetes set it (AIGSEC-002, AIGSEC-005). A password
+    # written into REDIS_URL itself still takes precedence, as redis-py defines.
+    redis_password: SecretStr | None = None
 
     # http://localhost:8501 is the legacy Streamlit UI; :3000 is the React
     # app's Docker-published port; :5173 is Vite's local dev server.
@@ -77,6 +83,25 @@ class Settings(BaseSettings):
     safety_llm_model: str = "openai/gpt-oss-safeguard-20b"
     llm_timeout_seconds: float = 30.0
     llm_max_retries: int = 2
+    # Upper bound on the characters one model call may send (all messages together), checked by
+    # LLMGateway before the provider is called (AIGSEC-009): an oversized prompt fails fast with
+    # 413 instead of being billed, and is never retried. About 50,000 tokens by default.
+    llm_max_input_chars: int = 200_000
+    # Output guard (AIGSEC-015, app.safety.output_guard): credential-like values and
+    # high-confidence personal data (payment card and SSN-shaped numbers) are redacted from
+    # answers and tool results. E-mail addresses and phone numbers are often legitimate content,
+    # so redacting them is opt-in. Deterministic patterns: not complete detection.
+    output_guard_enabled: bool = True
+    output_guard_redact_contact_details: bool = False
+    # Total characters of evidence one Analyst Agent task accepts, across all items (AIGSEC-009).
+    analyst_max_evidence_total_chars: int = 50_000
+    # Largest request body the API will read (bytes), whatever its Content-Type. The one
+    # exception is the document upload route: DOCUMENT_MAX_UPLOAD_SIZE_BYTES plus 1 MiB of
+    # multipart framing. The largest legitimate JSON request is analyst evidence.
+    max_request_body_bytes: int = 16 * 1024 * 1024
+    # A stream can trickle for as long as the provider keeps it open; the per-request timeout only
+    # bounds waiting for data. This bounds the whole stream (seconds), then it fails as a timeout.
+    llm_stream_total_timeout_seconds: float = 300.0
 
     # Document ingestion (Milestone 3). Stored outside backend/app on
     # purpose — see app.storage. document_allowed_types holds raw strings
@@ -88,6 +113,17 @@ class Settings(BaseSettings):
     document_chunk_size: int = 1000  # characters, not tokens — see ADR 005
     document_chunk_overlap: int = 150  # characters
     document_allowed_types: list[str] = ["pdf", "docx", "txt", "markdown"]
+    # What a small file may EXPAND to (the upload limit only bounds the file itself): a DOCX's total
+    # decompressed size, a PDF's page count, and the size of the extracted text of any format.
+    # Exceeding one fails that document with a clear message (ADR 016).
+    document_max_uncompressed_bytes: int = 64 * 1024 * 1024
+    document_max_pdf_pages: int = 2_000
+    document_max_extracted_chars: int = 20_000_000
+    # Text extraction runs in a separate process with a hard deadline (AIGSEC-003): a file whose
+    # parsing takes longer than this fails instead of holding a worker. The concurrency bound
+    # caps how many extraction processes one server process runs at once.
+    document_extraction_timeout_seconds: float = 60.0
+    document_extraction_max_concurrency: int = 2
 
     # Embeddings (Milestone 4). embedding_model_version is an
     # application-level label (not the HF revision hash) — it exists so we
@@ -128,6 +164,11 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 10
     agent_timeout_seconds: float = 60.0
 
+    # Conversation history replayed into prompts (ADR 016): a window of the most recent messages
+    # within BOTH limits (characters stand in for tokens). Older turns stay stored, just not sent.
+    chat_history_max_messages: int = 40
+    chat_history_max_chars: int = 24_000
+
     # Agent memory (ADR 015). Facts and preferences the agent keeps about ONE user across
     # conversations; private to that user, never shared. Every limit is a hard bound:
     # per item (chars), per user (rows), per run (writes), per prompt (items and chars), and a
@@ -164,7 +205,21 @@ class Settings(BaseSettings):
     # served by this same application (see ADR 009) — the allowlist still
     # enforces the real A2A trust boundary, not an implementation detail.
     a2a_client_timeout_seconds: float = 15.0
+    # Hard bounds on one exchange with a (trusted, but fallible) agent: the response body is read
+    # incrementally and refused above the byte cap, and the whole exchange (card + task) has a
+    # deadline on top of the per-phase HTTP timeout, which a slow-drip response would never trip.
+    a2a_max_response_bytes: int = 1_048_576
+    a2a_total_timeout_seconds: float = 30.0
     trusted_a2a_agents: list[str] = ["http://localhost:8000"]
+    # The base URL this server's public Agent Cards advertise for their task endpoints
+    # (AIGSEC-010). Never taken from the request's Host header, which any client controls. Unset,
+    # it is the first TRUSTED_A2A_AGENTS entry: the origin this application's own A2A client
+    # already uses to reach these agents.
+    a2a_public_base_url: str | None = None
+    # Host names the API answers to (TrustedHostMiddleware), e.g. ["api.example.com"]. "*" (the
+    # default) accepts any Host. Restricting it is a deployment decision: Kubernetes HTTP probes
+    # send the pod IP as the Host, so that must be allowed too (see docs/security/README.md).
+    allowed_hosts: list[str] = ["*"]
     research_agent_name: str = "AegisAI Research Agent"
     document_agent_name: str = "AegisAI Document Agent"
     analyst_agent_name: str = "AegisAI Analyst Agent"
@@ -210,7 +265,7 @@ class Settings(BaseSettings):
     auth_jwks_failure_cooldown_seconds: float = 5.0
 
     # Rate limits (see app/core/rate_limit.py). Per authenticated user, in a sliding window,
-    # enforced in memory PER PROCESS (not shared between workers or replicas). A limit of 0
+    # in memory per process or shared through Redis (`rate_limit_backend`). A limit of 0
     # switches that one bucket off; rate_limit_enabled=false switches all of them off. The
     # numbers below are starting points for you to review, not recommendations.
     rate_limit_enabled: bool = True
@@ -221,6 +276,18 @@ class Settings(BaseSettings):
     # Upper bound on (bucket, user) counters held in memory; if it is reached with every entry still
     # live the limiter fails closed (503) instead of letting requests through unmetered.
     rate_limit_max_tracked_keys: int = 100_000
+    # Where the counters live (AIGSEC-008): "memory" (this process only; the local default) or
+    # "redis" (shared by every worker and replica, through REDIS_URL / REDIS_PASSWORD). With
+    # "redis", a Redis outage or a reply slower than the timeout refuses the request with 503.
+    rate_limit_backend: Literal["memory", "redis"] = "memory"
+    rate_limit_redis_timeout_seconds: float = 1.0
+
+    # Application metrics (app.observability). OFF by default: nothing is recorded or exposed.
+    # When enabled, GET /metrics is served outside the OIDC-protected API and requires
+    # `Authorization: Bearer <METRICS_TOKEN>`; outside local development the API refuses to start
+    # without a token (see `validate_for_serving`). The token is a secret: never log or return it.
+    metrics_enabled: bool = False
+    metrics_token: SecretStr | None = None
 
     @field_validator("auth_issuer", "auth_audience", "auth_jwks_url", mode="before")
     @classmethod
@@ -267,7 +334,23 @@ class Settings(BaseSettings):
             # The caller's bearer token is forwarded to these agents.
             for agent_url in self.trusted_a2a_agents:
                 _check_url("TRUSTED_A2A_AGENTS entry", agent_url, require_https=True)
+        if self.a2a_public_base_url:
+            _check_url("A2A_PUBLIC_BASE_URL", self.a2a_public_base_url, require_https=non_local)
+            parsed = urlparse(self.a2a_public_base_url)
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+                raise ValueError("A2A_PUBLIC_BASE_URL must be an origin (scheme, host, port) only")
+        if not self.allowed_hosts:
+            raise ValueError('ALLOWED_HOSTS must not be empty (use ["*"] to accept any host)')
         return self
+
+    @property
+    def agent_card_base_url(self) -> str | None:
+        """Where this server's Agent Cards say their tasks live; never the request's Host."""
+        if self.a2a_public_base_url:
+            return self.a2a_public_base_url.rstrip("/")
+        if self.trusted_a2a_agents:
+            return self.trusted_a2a_agents[0].rstrip("/")
+        return None
 
     @model_validator(mode="after")
     def _validate_rate_limits(self) -> Self:
@@ -282,6 +365,70 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} must be between 0 (unlimited) and 1000000")
         if not 1_000 <= self.rate_limit_max_tracked_keys <= 10_000_000:
             raise ValueError("RATE_LIMIT_MAX_TRACKED_KEYS must be between 1000 and 10000000")
+        if not 0.05 <= self.rate_limit_redis_timeout_seconds <= 30:
+            raise ValueError("RATE_LIMIT_REDIS_TIMEOUT_SECONDS must be between 0.05 and 30")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_request_body_limit(self) -> Self:
+        if not 1_024 <= self.max_request_body_bytes <= 256 * 1024 * 1024:
+            raise ValueError("MAX_REQUEST_BODY_BYTES must be between 1024 and 268435456")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_stream_deadline(self) -> Self:
+        if not 1 <= self.llm_stream_total_timeout_seconds <= 3600:
+            raise ValueError("LLM_STREAM_TOTAL_TIMEOUT_SECONDS must be between 1 and 3600")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_llm_cost_bounds(self) -> Self:
+        # Every retry is another billed call: the number of them is bounded explicitly.
+        if not 0 <= self.llm_max_retries <= 5:
+            raise ValueError("LLM_MAX_RETRIES must be between 0 and 5")
+        if not 1_000 <= self.llm_max_input_chars <= 5_000_000:
+            raise ValueError("LLM_MAX_INPUT_CHARS must be between 1000 and 5000000")
+        if not 1_000 <= self.analyst_max_evidence_total_chars <= 2_000_000:
+            raise ValueError("ANALYST_MAX_EVIDENCE_TOTAL_CHARS must be between 1000 and 2000000")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_a2a_limits(self) -> Self:
+        if not 1_024 <= self.a2a_max_response_bytes <= 64 * 1024 * 1024:
+            raise ValueError("A2A_MAX_RESPONSE_BYTES must be between 1024 and 67108864")
+        if not 0 < self.a2a_total_timeout_seconds <= 600:
+            raise ValueError("A2A_TOTAL_TIMEOUT_SECONDS must be greater than 0 and at most 600")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_document_limits(self) -> Self:
+        for name, value, low, high in (
+            ("DOCUMENT_MAX_UNCOMPRESSED_BYTES", self.document_max_uncompressed_bytes, 1_024, 2**32),
+            ("DOCUMENT_MAX_PDF_PAGES", self.document_max_pdf_pages, 1, 100_000),
+            ("DOCUMENT_MAX_EXTRACTED_CHARS", self.document_max_extracted_chars, 1_000, 10**9),
+            (
+                "DOCUMENT_EXTRACTION_TIMEOUT_SECONDS",
+                self.document_extraction_timeout_seconds,
+                1,
+                3_600,
+            ),
+            (
+                "DOCUMENT_EXTRACTION_MAX_CONCURRENCY",
+                self.document_extraction_max_concurrency,
+                1,
+                64,
+            ),
+        ):
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_chat_history(self) -> Self:
+        if not 1 <= self.chat_history_max_messages <= 500:
+            raise ValueError("CHAT_HISTORY_MAX_MESSAGES must be between 1 and 500")
+        if not 1_000 <= self.chat_history_max_chars <= 500_000:
+            raise ValueError("CHAT_HISTORY_MAX_CHARS must be between 1000 and 500000")
         return self
 
     @model_validator(mode="after")
@@ -298,6 +445,22 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} must be between {low} and {high}")
         return self
 
+    @model_validator(mode="after")
+    def _validate_metrics_token(self) -> Self:
+        # Presence is enforced when serving; a token that IS set must not be trivially guessable.
+        token = self.metrics_token.get_secret_value() if self.metrics_token else ""
+        if token and token != token.strip():
+            # A trailing newline from `kubectl create secret --from-file` or `echo` never matches
+            # what a scraper sends, so /metrics would 401 forever with no hint why.
+            raise ValueError("METRICS_TOKEN must not have leading or trailing whitespace")
+        if token and len(token) < MIN_METRICS_TOKEN_CHARS:
+            raise ValueError(f"METRICS_TOKEN must be at least {MIN_METRICS_TOKEN_CHARS} characters")
+        return self
+
+    @property
+    def metrics_token_configured(self) -> bool:
+        return self.metrics_token is not None and bool(self.metrics_token.get_secret_value())
+
     @property
     def auth_configured(self) -> bool:
         return bool(self.auth_issuer and self.auth_audience and self.auth_jwks_url)
@@ -312,7 +475,37 @@ class Settings(BaseSettings):
         """Refuses to let the API start outside local development without
         authentication configured. Called when the application is built;
         deliberately not part of settings loading (see the note in
-        `_validate_auth_settings`)."""
+        `_validate_auth_settings`). Also refuses an embedding dimension the schema cannot store."""
+        # Imported here: the model module imports the database layer, which imports this module.
+        from app.domain.models.chunk_embedding import EMBEDDING_DIMENSION
+
+        if self.embedding_dimension != EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"EMBEDDING_DIMENSION is {self.embedding_dimension} but the chunk_embeddings "
+                f"vector column stores {EMBEDDING_DIMENSION}-dimensional vectors. Every chunk "
+                "write and every retrieval would fail. Changing the dimension needs a new "
+                "migration (a new column or table), not just a new setting."
+            )
+        if self.environment != "local" and "*" in self.cors_origins:
+            # The API allows credentials on cross-origin requests, and Starlette answers a "*"
+            # list with the caller's own origin, so "*" would let ANY site make credentialed
+            # calls. Outside local development the origins must be listed explicitly.
+            raise ValueError(
+                "CORS_ORIGINS contains '*': list the frontend origins explicitly outside local "
+                "development (credentials are allowed on cross-origin requests)."
+            )
+        if (
+            self.metrics_enabled
+            and not self.metrics_token_configured
+            and (self.environment != "local")
+        ):
+            raise ValueError(
+                "METRICS_ENABLED is true but METRICS_TOKEN is not set: /metrics requires a "
+                f"bearer token outside local development (at least {MIN_METRICS_TOKEN_CHARS} "
+                "characters). The API refuses to start without it."
+            )
+        # In local development an enabled endpoint without a token is mounted but answers 401
+        # to everyone (it fails closed; app.main logs this once).
         if self.environment == "local" or self.auth_configured:
             return
         missing = [

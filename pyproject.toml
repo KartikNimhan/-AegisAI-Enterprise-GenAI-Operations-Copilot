@@ -16,7 +16,9 @@ dependencies = [
     "redis>=5.2",
     "structlog>=24.4",
     "groq>=1.7,<2",
-    "pypdf>=5.0",
+    # Floor raised for GHSA-42gh-23hr-vphw / -5849-834g-hvw5 / -cggf-277g-3q54 / -mfr5-77xh-9j7h and
+    # others (denial of service while parsing untrusted PDFs): first fixed release 6.21.4.
+    "pypdf>=6.21.4",
     "python-docx>=1.1",
     "python-multipart>=0.0.9",
     "sentence-transformers>=3.0",
@@ -32,10 +34,13 @@ dependencies = [
     # why this project never needs the CUDA build.
     "torch",
     "pgvector>=0.3",
-    "langgraph>=1.2.12",
+    # Floor raised for GHSA-3fx2-cqw9-xr3c (fixed in langgraph 1.2.14 / langgraph-sdk 0.4.6).
+    "langgraph>=1.2.14",
     "mcp>=2.3.0",
     "a2a-sdk>=1.2.1",
     "pyjwt[crypto]>=2.15.1",
+    # Application metrics (app.observability): a dedicated registry, no default collectors.
+    "prometheus-client>=0.20",
 ]
 
 [dependency-groups]
@@ -53,6 +58,13 @@ frontend = [
 
 [tool.uv]
 package = false
+# Security floors for TRANSITIVE dependencies. Constraints only limit which versions uv may resolve;
+# they do not make these packages direct dependencies. Remove an entry once the packages that pull
+# it in require the fixed version themselves.
+#   pyasn1: GHSA-2qm8-x737-gmw5, -9m75-vc3g-4x39, -fm9c-5rcf-2q5p, -mm57-4v3p-rchx (fixed in 0.6.5),
+#           via a2a-sdk -> google-api-core -> google-auth -> pyasn1-modules.
+#   langgraph-sdk: GHSA-3fx2-cqw9-xr3c (fixed in 0.4.6), via langgraph.
+constraint-dependencies = ["pyasn1>=0.6.5", "langgraph-sdk>=0.4.6"]
 
 # CPU-only PyTorch index — scoped to `torch` only (`explicit = true` means
 # this index is never consulted for any other package, so nothing else's

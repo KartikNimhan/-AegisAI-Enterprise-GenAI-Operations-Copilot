@@ -26,7 +26,15 @@ import uuid
 import structlog
 
 from app.a2a.client import A2AClient, parse_research_result
-from app.a2a.exceptions import A2AError
+from app.a2a.exceptions import (
+    A2AConnectionError,
+    A2AError,
+    A2AInvalidCardError,
+    A2AResponseError,
+    A2ATaskFailedError,
+    A2ATimeoutError,
+    A2AUntrustedAgentError,
+)
 from app.config import Settings
 from app.multi_agent.capabilities import (
     AGENT_ANALYST,
@@ -49,13 +57,25 @@ from app.multi_agent.policies import RETRYABLE_A2A_EXCEPTIONS
 logger = structlog.get_logger(__name__)
 
 
-def _coerce_token_usage(raw: dict | None) -> dict | None:
+def _coerce_token_usage(raw: object) -> dict | None:
     """The A2A wire format round-trips numbers through a protobuf `Value`,
     which only has a double — an integer token count comes back as e.g.
-    `15.0`. Coerce back to int rather than silently storing a float."""
-    if raw is None:
+    `15.0`. Coerce back to int rather than silently storing a float.
+
+    Total (AIGSEC-014): token usage is metadata from another agent, so a malformed value (text,
+    a negative, infinity, a nested object) is recorded as unknown (None) rather than failing an
+    otherwise usable result."""
+    if not isinstance(raw, dict):
         return None
-    return {key: (int(value) if value is not None else None) for key, value in raw.items()}
+    return {str(key): _token_count(value) for key, value in raw.items()}
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value != value or value in (float("inf"), float("-inf")) or value < 0:
+        return None
+    return int(value)
 
 
 async def call_research_agent(
@@ -93,7 +113,7 @@ async def call_research_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=result.error or "The research agent reported task failure",
+            error="The research agent reported task failure",
             duration_ms=duration_ms,
         )
     return AgentResult(
@@ -156,7 +176,7 @@ async def call_document_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=_status_error_message(task) or "The document agent reported task failure",
+            error="The document agent reported task failure",
             duration_ms=duration_ms,
         )
 
@@ -181,6 +201,26 @@ async def call_document_agent(
     )
 
 
+TRUNCATION_MARK = " [truncated]"
+
+
+def fit_evidence(evidence: list[str], max_total_chars: int) -> list[str]:
+    """The evidence, in order, within the analyst's total budget (AIGSEC-009): the item that
+    crosses the limit is cut (and marked), and later items are dropped."""
+    fitted: list[str] = []
+    remaining = max_total_chars
+    for item in evidence:
+        if len(item) <= remaining:
+            fitted.append(item)
+            remaining -= len(item)
+            continue
+        room = remaining - len(TRUNCATION_MARK)
+        if room > 0:
+            fitted.append(item[:room] + TRUNCATION_MARK)
+        break
+    return fitted
+
+
 async def call_analyst_agent(
     *, client: A2AClient, settings: Settings, context: AgentContext
 ) -> AgentResult:
@@ -200,7 +240,9 @@ async def call_analyst_agent(
                 payload={
                     "question": context.user_question,
                     "expressions": context.expressions,
-                    "evidence": context.evidence,
+                    "evidence": fit_evidence(
+                        context.evidence, settings.analyst_max_evidence_total_chars
+                    ),
                 },
             ),
             timeout=settings.multi_agent_agent_timeout_seconds,
@@ -221,7 +263,7 @@ async def call_analyst_agent(
             task_id=context.task_id,
             status=STATUS_FAILED,
             answer="",
-            error=_status_error_message(task) or "The analyst agent reported task failure",
+            error="The analyst agent reported task failure",
             duration_ms=duration_ms,
         )
 
@@ -253,12 +295,47 @@ def _first_artifact_data(task: dict) -> dict | None:
     return None
 
 
-def _status_error_message(task: dict) -> str | None:
-    message = task.get("status", {}).get("message", {})
-    for part in message.get("parts", []):
-        if "text" in part:
-            return part["text"]
-    return None
+_CLIENT_ERRORS: dict[type[Exception], str] = {
+    A2AUntrustedAgentError: "The agent is not a trusted agent.",
+    A2AInvalidCardError: "The agent's identity could not be verified.",
+    A2AConnectionError: "The agent could not be reached.",
+    A2ATimeoutError: "The agent did not respond in time.",
+    A2AResponseError: "The agent returned an unusable response.",
+    A2ATaskFailedError: "The agent reported that the task failed.",
+}
+GENERIC_AGENT_ERROR = "The agent could not complete the task."
+
+
+def client_facing_error(exc: Exception) -> str:
+    """A fixed message per failure class. The exception text (which can carry hostnames, ports or
+    remote-supplied text) goes to the logs only; it never reaches an API response."""
+    return _CLIENT_ERRORS.get(type(exc), GENERIC_AGENT_ERROR)
+
+
+def unexpected_failure(
+    context: AgentContext, *, agent_name: str, capability: str, exc: Exception
+) -> AgentResult:
+    """An adapter raised something that is not an `A2AError` (a bug or a response shape nobody
+    anticipated). It becomes this one agent's failure, never the whole workflow's, and is not
+    retried."""
+    logger.warning(
+        "multi_agent.agent_failed",
+        agent=agent_name,
+        capability=capability,
+        correlation_id=context.correlation_id,
+        error_type=type(exc).__name__,
+        unexpected=True,
+    )
+    return AgentResult(
+        agent_name=agent_name,
+        capability=capability,
+        task_id=context.task_id,
+        status=STATUS_FAILED,
+        answer="",
+        error=GENERIC_AGENT_ERROR,
+        metadata={"retryable": False},
+        duration_ms=0.0,
+    )
 
 
 def _failed(
@@ -279,7 +356,7 @@ def _failed(
         task_id=context.task_id,
         status=STATUS_FAILED,
         answer="",
-        error=str(exc),
+        error=client_facing_error(exc),
         metadata={"retryable": isinstance(exc, RETRYABLE_A2A_EXCEPTIONS)},
         duration_ms=duration_ms,
     )

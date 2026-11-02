@@ -35,13 +35,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.core.security import AccessScopeDep
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
-from app.db.repositories.document_repository import DocumentRepository
+from app.db.repositories.document_repository import DocumentRepository, VisibilityChange
 from app.dependencies import DBSessionDep
 from app.documents.chunk_ids import compute_chunk_id
 from app.documents.chunking.base import Chunker
 from app.documents.chunking.recursive import RecursiveChunker
 from app.documents.exceptions import ExtractionError
-from app.documents.extractors import get_extractor
+from app.documents.extractors import ExtractionLimits, enforce_extracted_size
+from app.documents.isolated_extraction import ExtractionRunner, build_extraction_runner
 from app.documents.metadata import build_document_metadata
 from app.documents.normalization import normalize_text
 from app.documents.validation import (
@@ -79,6 +80,7 @@ class DocumentService:
         chunks: DocumentChunkRepository,
         storage: DocumentStorage,
         chunker: Chunker | None = None,
+        extraction: ExtractionRunner | None = None,
     ) -> None:
         self._session = session
         self._settings = settings
@@ -86,6 +88,8 @@ class DocumentService:
         self._chunks = chunks
         self._storage = storage
         self._chunker = chunker or RecursiveChunker()
+        # Untrusted files are parsed in a separate process with a hard deadline (AIGSEC-003).
+        self._extraction = extraction or build_extraction_runner(settings)
 
     # -- Upload -----------------------------------------------------------
 
@@ -102,6 +106,7 @@ class DocumentService:
 
         checksum = _compute_checksum(content)
 
+        await self._documents.lock_checksum(checksum)
         existing = await self._documents.get_by_checksum(checksum)
         if existing is not None:
             logger.info(
@@ -200,12 +205,13 @@ class DocumentService:
         await self._session.commit()
 
     async def _extract_normalize_and_chunk(self, document: Document) -> list[DocumentChunk]:
-        extractor = get_extractor(document.document_type)
+        limits = ExtractionLimits.from_settings(self._settings)
         raw_content = await self._storage.read(key=document.filename)
-        # Extraction/chunking are CPU-bound sync code; offload so a large
-        # document doesn't block the event loop.
-        extraction = await asyncio.to_thread(extractor.extract, raw_content)
+        # Parsing the untrusted file happens in a separate process with a hard deadline; a
+        # timeout or a parser crash fails the document (see app.documents.isolated_extraction).
+        extraction = await self._extraction.extract(document.document_type, limits, raw_content)
 
+        enforce_extracted_size(extraction, limits)
         if extraction.is_empty:
             raise ExtractionError("No extractable text content found in document")
 
@@ -265,18 +271,21 @@ class DocumentService:
 
     async def set_visibility(
         self, document_id: uuid.UUID, visibility: DocumentVisibility
-    ) -> Document | None:
-        """Share a document with its organization, or make it private again. Only its owner, or
-        an administrator of its organization, may; anyone else sees "not found"."""
-        document = await self._documents.set_visibility(document_id, visibility)
-        if document is not None:
+    ) -> VisibilityChange | None:
+        """Share a document with its organization (its owner only), or make it private again
+        (its owner, or an administrator of its organization). Anyone else sees "not found"; an
+        administrator who tries to share a member's document gets `DocumentShareForbiddenError`
+        and nothing changes."""
+        change = await self._documents.set_visibility(document_id, visibility)
+        if change is not None:
             await self._session.commit()
             logger.info(
                 "document_visibility_changed",
                 document_id=str(document_id),
+                previous_visibility=change.previous.value,
                 visibility=visibility.value,
             )
-        return document
+        return change
 
     async def delete_document(self, document_id: uuid.UUID) -> bool:
         # Deleting needs management rights (owner, or an administrator of the organization), not

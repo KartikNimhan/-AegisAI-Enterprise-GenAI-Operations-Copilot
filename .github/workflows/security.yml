@@ -1,13 +1,15 @@
 name: Security scanning
 
-# REPORTING ONLY (first stage). Nothing here fails a build: the baseline findings have not been
-# reviewed yet, so no blocking threshold exists. Every scan writes a report that is kept as a build
-# artifact and summarised on the run page.
-#
-# A green run is NOT a clean result. Each job records how its scanner ended (exit status files, step
-# outcomes) and the summary step tells apart: a complete scan with findings, a complete scan with
-# none, skipped/unaudited items, a missing or invalid report, and a scanner that failed. See
-# docs/operations/security-scanning.md.
+# BLOCKING (AIGSEC-007). Every scan writes a report that is kept as a build artifact and summarised
+# on the run page; then the last step of each job applies the blocking policy
+# (scripts/security_scan_policy.py) and fails the job on:
+#   - a finding the policy blocks on (pip-audit: any vulnerability with a released fix; npm audit:
+#     high/critical; gitleaks: any potential secret; Trivy: CRITICAL/HIGH), unless a documented,
+#     expiring exception in .github/security-scan-exceptions.json covers that exact advisory;
+#   - a scanner that did not complete, or a missing/invalid report (never treated as a pass).
+# Lower severities are reported, not blocking. The scan commands themselves still tolerate a
+# non-zero exit so every report is written and summarised before the policy decides. See
+# docs/operations/security-scanning.md, "Blocking policy".
 
 on:
   pull_request:
@@ -48,10 +50,11 @@ jobs:
   python-audit:
     name: Python dependency audit (pip-audit)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3.2.4
+        with:
+          persist-credentials: false # no job token left in .git/config
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
       - run: uv python install 3.12
@@ -192,17 +195,23 @@ jobs:
             requirements-*.txt
             requirements-*.status
           if-no-files-found: warn
+      - name: Enforce the blocking policy
+        # Last, after the summary and the artifact: fails the job on blocking findings (exit 1) or an
+        # incomplete scan (exit 2). Prints advisory ids and locations only, never a secret value.
+        if: always()
+        run: python3 scripts/security_scan_policy.py pip-audit --dir .
 
   npm-audit:
     name: npm dependency audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     defaults:
       run:
         working-directory: frontend/web
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          persist-credentials: false # no job token left in .git/config
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install from the lockfile without running scripts
@@ -285,15 +294,20 @@ jobs:
             frontend/web/npm-audit-*.json
             frontend/web/npm-audit-*.exit
           if-no-files-found: warn
+      - name: Enforce the blocking policy
+        # Last, after the summary and the artifact: fails the job on blocking findings (exit 1) or an
+        # incomplete scan (exit 2). Prints advisory ids and locations only, never a secret value.
+        if: always()
+        run: python3 ../../scripts/security_scan_policy.py npm-audit --dir .
 
   secret-scan:
     name: Secret scan (gitleaks, redacted)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # the whole history: a secret removed in a later commit is still leaked
+          persist-credentials: false # no job token left in .git/config
       - name: Download gitleaks (checksum-verified)
         run: |
           curl -sSfL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
@@ -378,23 +392,29 @@ jobs:
             gitleaks.sarif
             gitleaks.exit
           if-no-files-found: warn
+      - name: Enforce the blocking policy
+        # Last, after the summary and the artifact: fails the job on blocking findings (exit 1) or an
+        # incomplete scan (exit 2). Prints advisory ids and locations only, never a secret value.
+        if: always()
+        run: python3 scripts/security_scan_policy.py gitleaks --dir .
 
   image-scan:
     name: Container image scan (Trivy)
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
       security-events: write # only to offer SARIF to code scanning; the artifact is the fallback
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          persist-credentials: false # no job token left in .git/config
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Every build and scan step is independent (`continue-on-error`): one failure must not stop the
       # others, and the summary step reads each step's real `outcome`, so a failure stays visible.
       - name: Build backend image (not pushed)
         id: build_backend
         continue-on-error: true
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -404,7 +424,7 @@ jobs:
       - name: Build React frontend image (not pushed)
         id: build_frontend
         continue-on-error: true
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: frontend/web
           file: frontend/web/Dockerfile
@@ -414,7 +434,7 @@ jobs:
       - name: Build Streamlit frontend image (not pushed)
         id: build_streamlit
         continue-on-error: true
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: frontend/streamlit/Dockerfile
@@ -433,7 +453,7 @@ jobs:
           output: trivy-backend.sarif
           scanners: vuln
           ignore-unfixed: true
-          exit-code: "0" # reporting only
+          exit-code: "0" # the policy step decides; the report is always written
       - name: Scan React frontend image
         id: scan_frontend
         if: always()
@@ -446,7 +466,7 @@ jobs:
           output: trivy-frontend.sarif
           scanners: vuln
           ignore-unfixed: true
-          exit-code: "0" # reporting only
+          exit-code: "0" # the policy step decides; the report is always written
       - name: Scan Streamlit frontend image
         id: scan_streamlit
         if: always()
@@ -459,7 +479,7 @@ jobs:
           output: trivy-streamlit.sarif
           scanners: vuln
           ignore-unfixed: true
-          exit-code: "0" # reporting only
+          exit-code: "0" # the policy step decides; the report is always written
       - name: Summarise
         if: always()
         env:
@@ -520,21 +540,21 @@ jobs:
       - name: Offer SARIF to GitHub code scanning (backend)
         # Code scanning may not be enabled for this repository (or plan); that must not fail the run.
         # Only a report from a scan that succeeded is offered.
-        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && steps.scan_backend.outcome == 'success' && hashFiles('trivy-backend.sarif') != ''
         continue-on-error: true
         with:
           sarif_file: trivy-backend.sarif
           category: trivy-backend
       - name: Offer SARIF to GitHub code scanning (frontend)
-        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && steps.scan_frontend.outcome == 'success' && hashFiles('trivy-frontend.sarif') != ''
         continue-on-error: true
         with:
           sarif_file: trivy-frontend.sarif
           category: trivy-frontend
       - name: Offer SARIF to GitHub code scanning (streamlit)
-        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         if: always() && steps.scan_streamlit.outcome == 'success' && hashFiles('trivy-streamlit.sarif') != ''
         continue-on-error: true
         with:
@@ -546,3 +566,15 @@ jobs:
           name: trivy-reports
           path: trivy-*.sarif
           if-no-files-found: warn
+      - name: Enforce the blocking policy
+        # Last: fails the job on a CRITICAL/HIGH finding (exit 1) or on an image that was not built
+        # or not scanned completely (exit 2). The build/scan outcomes come from the step results.
+        if: always()
+        env:
+          BUILD_BACKEND: ${{ steps.build_backend.outcome }}
+          BUILD_FRONTEND: ${{ steps.build_frontend.outcome }}
+          BUILD_STREAMLIT: ${{ steps.build_streamlit.outcome }}
+          SCAN_BACKEND: ${{ steps.scan_backend.outcome }}
+          SCAN_FRONTEND: ${{ steps.scan_frontend.outcome }}
+          SCAN_STREAMLIT: ${{ steps.scan_streamlit.outcome }}
+        run: python3 scripts/security_scan_policy.py trivy --dir .

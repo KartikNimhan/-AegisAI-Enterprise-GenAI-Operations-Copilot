@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.agents.exceptions import AgentTimeoutError
+from app.core.middleware import SECURITY_HEADERS
 from app.documents.exceptions import DocumentValidationError
 from app.embeddings.exceptions import (
     DocumentNotReadyError,
@@ -19,7 +20,9 @@ from app.embeddings.exceptions import (
 from app.llm.exceptions import (
     LLMAuthenticationError,
     LLMError,
+    LLMInputTooLargeError,
     LLMInvalidRequestError,
+    LLMOutputTruncatedError,
     LLMProviderUnavailableError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -78,6 +81,18 @@ class ForbiddenError(AppError):
         super().__init__(message, status_code=status.HTTP_403_FORBIDDEN, code="forbidden")
 
 
+class DocumentShareForbiddenError(ForbiddenError):
+    """Widening a document's visibility is the owner's decision alone (AIGSEC-001).
+
+    An administrator may delete a member's document or make it private, but sharing a private
+    document with the organization would let the administrator (and everyone else) read what the
+    owner kept private, so only the owner may do it. There is no owner-consent mechanism in the
+    product yet; until one exists, the owner shares the document themselves."""
+
+    def __init__(self) -> None:
+        super().__init__("Only the document's owner can share it with the organization")
+
+
 class AuthUnavailableError(AppError):
     def __init__(self, message: str = "Authentication is temporarily unavailable") -> None:
         super().__init__(
@@ -85,14 +100,46 @@ class AuthUnavailableError(AppError):
         )
 
 
-def _error_payload(request: Request, *, code: str, message: str) -> dict[str, Any]:
-    return {
-        "error": {
-            "code": code,
-            "message": message,
-            "request_id": getattr(request.state, "request_id", None),
-        }
+def _error_payload(
+    request: Request, *, code: str, message: str, details: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": getattr(request.state, "request_id", None),
     }
+    if details is not None:
+        error["details"] = details
+    return {"error": error}
+
+
+# A 422 must say what is wrong without repeating what was sent: Pydantic's raw errors include the
+# rejected `input` (a 2 MB string comes back in full; a mistakenly pasted secret is echoed) and
+# parser internals (`ctx`). Only where (`loc`), what (`msg`) and the error `type` are returned.
+_MAX_VALIDATION_DETAILS = 20
+_MAX_LOC_PART_CHARS = 64
+_MAX_MSG_CHARS = 200
+
+
+def _validation_details(errors: Any) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for error in list(errors)[:_MAX_VALIDATION_DETAILS]:
+        if not isinstance(error, dict):
+            continue
+        loc = [str(part)[:_MAX_LOC_PART_CHARS] for part in error.get("loc", ())]
+        details.append(
+            {
+                "loc": loc,
+                "msg": str(error.get("msg", "Invalid value"))[:_MAX_MSG_CHARS],
+                "type": str(error.get("type", "value_error"))[:_MAX_LOC_PART_CHARS],
+            }
+        )
+    return details
+
+
+def _validation_message(details: list[dict[str, Any]]) -> str:
+    parts = [f"{'.'.join(d['loc']) or 'request'}: {d['msg']}" for d in details]
+    return "; ".join(parts) if parts else "The request is invalid"
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -109,9 +156,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        details = _validation_details(exc.errors())
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content=_error_payload(request, code="validation_error", message=str(exc.errors())),
+            content=_error_payload(
+                request,
+                code="validation_error",
+                message=_validation_message(details),
+                details=details,
+            ),
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -224,6 +277,37 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=_error_payload(request, code="llm_unavailable", message=str(exc)),
         )
 
+    @app.exception_handler(LLMInputTooLargeError)
+    async def handle_llm_input_too_large_error(
+        request: Request, exc: LLMInputTooLargeError
+    ) -> JSONResponse:
+        # Refused before the provider was called (AIGSEC-009). A fixed message: no size detail.
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content=_error_payload(
+                request,
+                code="llm_input_too_large",
+                message="The request is too large for the language model",
+            ),
+        )
+
+    @app.exception_handler(LLMOutputTruncatedError)
+    async def handle_llm_output_truncated_error(
+        request: Request, exc: LLMOutputTruncatedError
+    ) -> JSONResponse:
+        # The model used its whole output budget (often on hidden reasoning) before writing any
+        # text. Its own code lets a client tell this apart from a provider failure. The message is
+        # fixed, so nothing the provider sent can reach the caller.
+        logger.warning("llm_output_truncated", provider=exc.provider, request_id=exc.request_id)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content=_error_payload(
+                request,
+                code="llm_output_truncated",
+                message="The model reached its output limit before producing any text",
+            ),
+        )
+
     @app.exception_handler(LLMError)
     async def handle_llm_error(request: Request, exc: LLMError) -> JSONResponse:
         # Catch-all for unmapped LLM errors (e.g. LLMProviderError). Never
@@ -239,9 +323,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def handle_unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("unhandled_exception")
+        # The outermost ServerErrorMiddleware builds this response, outside CorrelationIdMiddleware,
+        # so the header is set here or a 500 would be the one response without it.
+        request_id = getattr(request.state, "request_id", None)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_payload(
                 request, code="internal_error", message="An unexpected error occurred"
             ),
+            headers={**SECURITY_HEADERS, **({"X-Request-ID": request_id} if request_id else {})},
         )

@@ -13,6 +13,12 @@ or point an MCP Inspector / client config at:
 
     uv run --directory backend python scripts/mcp_stdio_server.py
 
+Whose data it serves must be chosen explicitly (see `scripts/stdio_scope.py`); with nothing set it
+refuses to start:
+
+    MCP_STDIO_USER_ID=<uuid> MCP_STDIO_ORGANIZATION_ID=<uuid>   # one user's data (preferred)
+    MCP_STDIO_ALLOW_UNRESTRICTED=true                           # every organization's data
+
 Requires a reachable Postgres (the same `DATABASE_URL` the API uses) since
 `search_knowledge_base`/`get_document_metadata` query real tables through
 the same `RetrievalService`/`DocumentRepository` the API uses — this is
@@ -22,8 +28,11 @@ not a fake/demo server.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
-from app.auth.scope import AccessScope
+from stdio_scope import StdioScopeError, resolve_stdio_scope
+
 from app.config import get_settings
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
@@ -39,10 +48,8 @@ from app.rag.retrieval.strategy import VectorRetrievalStrategy
 
 async def main() -> None:
     settings = get_settings()
-    # This stdio server is an operator tool run by hand on the machine that hosts the database; it
-    # has no signed-in caller, so it sees every document (as before ownership existed). It is not
-    # reachable through the API, where every repository is built from the caller's own scope.
-    scope = AccessScope.unrestricted_for_operators()
+    # No signed-in caller exists here, so the scope comes from the operator and fails closed.
+    scope = resolve_stdio_scope(os.environ)
     async with AsyncSessionLocal() as session:
         documents = DocumentRepository(session, scope)
         embedding_service = EmbeddingService(
@@ -63,4 +70,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except StdioScopeError as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(2) from None

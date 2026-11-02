@@ -230,8 +230,10 @@ async def test_submit_research_task_raises_on_a_failed_remote_task(
     _install_transport(monkeypatch, handler)
     client = A2AClient(settings=settings)
 
-    with pytest.raises(A2ATaskFailedError, match="language model is down"):
+    with pytest.raises(A2ATaskFailedError) as raised:
         await client.submit_research_task(_BASE_URL, question="q")
+    # The remote error text is deliberately not forwarded (untrusted; it can name internals).
+    assert "language model is down" not in str(raised.value)
 
 
 async def test_submit_research_task_treats_a_malformed_response_as_a_failure(

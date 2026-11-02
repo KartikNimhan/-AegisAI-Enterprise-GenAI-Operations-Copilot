@@ -1,9 +1,11 @@
 """Migration 0005 upgrade -> downgrade -> upgrade, in a THROWAWAY database.
 
-Opt-in (`RUN_MIGRATION_ROUNDTRIP=1`): it creates and drops its own uniquely
-named database on the configured server and never touches the application
-database (`aegis`) — so it cannot disturb other tests or real data. Skips
-cleanly if the database role cannot create databases/extensions.
+Opt-in (`RUN_MIGRATION_ROUNDTRIP=1`): on the server of the test database (TEST_DATABASE_URL,
+already checked by the isolation guard), it connects to that server's `postgres` maintenance
+database to create its own uniquely named database `aegis_identity_<random>_test`, migrates it,
+and drops it again with `DROP DATABASE ... WITH (FORCE)` in a `finally` block. It never opens
+the application database (`aegis`) or the test database itself — so it cannot disturb other
+tests or real data. Needs a role that may create databases; skips cleanly if it cannot.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import get_settings
+
+from .requirements import service_unavailable
 
 pytestmark = [
     pytest.mark.integration,
@@ -61,7 +65,7 @@ async def _table_names(database_url: str) -> set[str]:
 
 async def test_identity_migration_round_trip_in_a_throwaway_database() -> None:
     base_url = make_url(get_settings().database_url)
-    name = f"aegis_migtest_{uuid.uuid4().hex[:12]}"
+    name = f"aegis_identity_{uuid.uuid4().hex[:12]}_test"
     admin_engine = create_async_engine(
         base_url.set(database="postgres"), isolation_level="AUTOCOMMIT"
     )
@@ -70,7 +74,9 @@ async def test_identity_migration_round_trip_in_a_throwaway_database() -> None:
             async with admin_engine.connect() as conn:
                 await conn.execute(text(f'CREATE DATABASE "{name}"'))
         except DBAPIError as exc:
-            pytest.skip(f"cannot create a throwaway database with this role: {type(exc).__name__}")
+            service_unavailable(
+                f"cannot create a throwaway database with this role: {type(exc).__name__}"
+            )
 
         throwaway_url = base_url.set(database=name).render_as_string(hide_password=False)
         try:

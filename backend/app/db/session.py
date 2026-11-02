@@ -2,16 +2,29 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 settings = get_settings()
 
-# SQL echo logs statements with their bound parameters (including identity data),
-# so it is tied to local development, not just to DEBUG.
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, echo=settings.sql_echo)
+
+def engine_options(settings: Settings) -> dict[str, Any]:
+    """Options for every application engine.
+
+    `hide_parameters=True` (AIGSEC-004): bound values (user ids, e-mail addresses, document text,
+    search queries) are kept out of the string form of a database error, which is what
+    `logger.exception` writes when a query fails, and out of SQL echo logging. The SQL text
+    itself, and so the useful context (which statement, which table), is still logged.
+
+    SQL echo is tied to local development, not just to DEBUG, and since the parameters are hidden
+    it shows statements only."""
+    return {"pool_pre_ping": True, "echo": settings.sql_echo, "hide_parameters": True}
+
+
+engine = create_async_engine(settings.database_url, **engine_options(settings))
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 

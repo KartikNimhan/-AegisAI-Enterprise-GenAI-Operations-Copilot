@@ -58,6 +58,7 @@ class FakeConversationRepository:
 class FakeMessageRepository:
     def __init__(self) -> None:
         self.messages: list[Message] = []
+        self.recent_limits: list[int] = []
 
     async def add(
         self,
@@ -80,6 +81,10 @@ class FakeMessageRepository:
 
     async def list_by_conversation(self, conversation_id: uuid.UUID) -> list[Message]:
         return [m for m in self.messages if m.conversation_id == conversation_id]
+
+    async def list_recent(self, conversation_id: uuid.UUID, *, limit: int) -> list[Message]:
+        self.recent_limits.append(limit)
+        return (await self.list_by_conversation(conversation_id))[-limit:]
 
 
 class ScriptedChatGateway(LLMGateway):

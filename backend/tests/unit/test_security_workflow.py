@@ -161,9 +161,33 @@ def test_the_trivy_action_is_not_a_release_hit_by_the_march_2026_compromise(raw:
 # -- reporting only --------------------------------------------------------------------------
 
 
-def test_every_job_is_non_blocking(workflow: dict[str, Any]) -> None:
+def test_every_job_ends_by_enforcing_the_blocking_policy(workflow: dict[str, Any]) -> None:
+    # AIGSEC-007: no job may be marked non-blocking, and the policy step runs last, always, after
+    # the summary and the artifact, so its failure is the job's result.
+    scanner_of = {
+        "python-audit": "pip-audit",
+        "npm-audit": "npm-audit",
+        "secret-scan": "gitleaks",
+        "image-scan": "trivy",
+    }
     for name, job in workflow["jobs"].items():
-        assert job["continue-on-error"] is True, name
+        assert "continue-on-error" not in job, name
+        last = _steps(job)[-1]
+        assert last["name"] == "Enforce the blocking policy", name
+        assert last["if"] == "always()"
+        assert "continue-on-error" not in last
+        assert re.fullmatch(
+            rf"python3 (\.\./\.\./)?scripts/security_scan_policy\.py {scanner_of[name]} --dir \.",
+            last["run"].strip(),
+        ), last["run"]
+        assert "|| " not in last["run"]  # nothing can turn its failure into a pass
+
+
+def test_the_image_policy_step_sees_every_build_and_scan_outcome(workflow: dict[str, Any]) -> None:
+    policy = _steps(workflow["jobs"]["image-scan"])[-1]
+    summary = _step(workflow, "image-scan", "Summarise")
+
+    assert policy["env"] == summary["env"]
 
 
 def test_scan_commands_cannot_fail_their_step(workflow: dict[str, Any]) -> None:
@@ -1029,13 +1053,39 @@ def _doc() -> str:
     return (ROOT / "docs" / "operations" / "security-scanning.md").read_text(encoding="utf-8")
 
 
-def test_the_docs_say_the_baseline_has_not_been_scanned() -> None:
-    doc = _doc()
+def _baseline_log_rows() -> list[str]:
+    log = _doc().split("## Baseline log", 1)[1].split("\n## ", 1)[0]
+    rows = [line.strip() for line in log.splitlines() if line.startswith("|")]
+    return rows[2:]  # after the header row and the separator
 
-    assert "never run" in doc and "no baseline" in doc.lower()
-    assert "reporting-only" in doc.lower()
+
+def test_the_docs_never_present_a_partly_reviewed_baseline_as_clean() -> None:
+    # Some reports were downloaded and reviewed; CI's Gitleaks reports and the later runs were not
+    # (the artifacts need a signed-in account). The doc must say so and not imply a clean result.
+    doc = " ".join(_doc().split())  # compare across line wraps
+
+    assert "have not been reviewed" in doc and "no reviewed baseline" in doc.lower()
+    assert "does not claim the repository is free of vulnerabilities or secrets" in doc
+    assert "reporting-only" in doc.lower()  # the history is stated, not hidden
+    assert "Blocking policy (AIGSEC-007)" in doc and "Expect the first blocking run to fail" in doc
     assert "NOT a clean result" in doc
-    assert "| _not yet scanned_ |" in doc
+    assert "Not reviewed yet: CI's `gitleaks-report`" in doc
+
+
+def test_every_baseline_log_entry_says_when_and_where_it_came_from() -> None:
+    rows = _baseline_log_rows()
+
+    assert rows, "the baseline log has no entries"
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert len(cells) == 4, row
+        date, scan, result, decision = cells
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", date), row
+        # A CI run with its commit, a local scan, or reports that came before a named fix.
+        assert re.search(r"run #\d+ \(`[0-9a-f]{7}`\)|\*\*locally\*\*|before the fixes", scan), row
+        assert result and decision, row
+        if "before the fixes" in scan:
+            assert re.search(r"`[0-9a-f]{7}`", decision), row  # the fix, named by its commit
 
 
 def test_the_docs_explain_how_each_outcome_is_told_apart() -> None:

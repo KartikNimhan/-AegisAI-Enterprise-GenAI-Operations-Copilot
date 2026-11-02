@@ -16,8 +16,11 @@ frontend image's nginx serves the app *and* proxies `/api/` to the
 cluster-internal `aegisai-backend` Service (`BACKEND_UPSTREAM` in
 `frontend-configmap.yaml`). The browser only ever talks to the frontend's
 own origin; the backend stays ClusterIP-only and needs no separate external
-URL or CORS configuration. (The previous "known gap" is closed by this; it has
-not been exercised in a real cluster — see "What was actually validated".)
+URL or CORS configuration. (The previous "known gap" is closed by this. The
+proxy was exercised in a disposable kind cluster in smoke run #2, where the
+proxied `/health` answered and an unauthenticated `/api/v1/auth/me` returned
+401; it has not been validated in staging or production — see "What was
+actually validated".)
 The frontend image is `nginx-unprivileged` (user 101, container port **8080**; the
 Service port stays 80), so the Deployment keeps `runAsNonRoot: true` and drops all
 capabilities. The proxy also forwards the exact path `/health` for the UI's
@@ -60,8 +63,20 @@ the cluster database, for example through `kubectl port-forward`.
    # Only if self-hosting Postgres via postgres-statefulset.yaml:
    kubectl create secret generic aegisai-postgres-secret \
      --from-literal=POSTGRES_PASSWORD='<password>'
+   # Always (AIGSEC-005): Redis requires a password, and the backend authenticates with it.
+   kubectl create secret generic aegisai-redis-secret \
+     --from-literal=REDIS_PASSWORD="$(openssl rand -hex 24)"
    ```
-2. If self-hosting Postgres/Redis: `kubectl apply -f postgres-statefulset.yaml -f postgres-service.yaml -f redis-deployment.yaml -f redis-service.yaml`.
+   Prefer your secret manager over typing values into a shell. Both the Redis Deployment and the
+   backend read `REDIS_PASSWORD` from `aegisai-redis-secret`; with a managed Redis, put its
+   password there instead.
+   To enable `/metrics` (`METRICS_ENABLED=true` in the ConfigMap), add
+   `--from-literal=METRICS_TOKEN="$(openssl rand -hex 32)"` to the backend Secret (the command
+   substitution strips the trailing newline; keep the value for your scraper's credentials). Do
+   not create it with `--from-file` or `echo` of a value ending in a newline: the API refuses to
+   start with a token that has leading or trailing whitespace.
+2. If self-hosting Postgres/Redis: `kubectl apply -f postgres-statefulset.yaml -f postgres-service.yaml -f redis-deployment.yaml -f redis-service.yaml`,
+   then `kubectl apply -f data-tier-network-policy.yaml` (see "Network policies" below).
    If using managed services instead, point `DATABASE_URL`/`REDIS_URL` at
    them and skip this step.
 3. `kubectl apply -f backend-configmap.yaml -f backend-pvc.yaml`
@@ -81,13 +96,74 @@ Update `image:` in `backend-deployment.yaml`/`frontend-deployment.yaml`/
 "Image tagging," for the strategy. There is no registry hostname assumed
 anywhere in these manifests.
 
+## Security settings (AIGSEC-005, -008, -010)
+
+### Network policies
+
+`data-tier-network-policy.yaml` denies all ingress to the PostgreSQL and Redis pods except from
+pods labelled `app.kubernetes.io/name: aegisai-backend` (the API and the migration Job), on 5432
+and 6379. Only ingress is restricted, so DNS and outbound traffic are unaffected, and the data-tier
+probes are `exec` probes, which NetworkPolicy does not touch. The selectors are checked against the
+manifests by `backend/tests/unit/test_k8s_network_policy.py`.
+
+**Enforcement depends on the cluster's network plugin (CNI).** On a plugin without NetworkPolicy
+support the objects are accepted and do nothing. Before relying on them, verify on the target
+cluster that a pod without the backend label cannot connect to `aegisai-redis:6379` or
+`aegisai-postgres:5432`, and that the backend's `/health/ready` still reports both as reachable.
+The manual smoke workflow applies the policies but does not prove enforcement.
+
+### Shared rate limits
+
+`RATE_LIMIT_BACKEND: "redis"` in the ConfigMap: every replica counts against one budget per user.
+If Redis is unreachable, the rate-limited (expensive) routes answer 503 rather than run unmetered.
+
+### Agent Cards and allowed hosts
+
+Set `A2A_PUBLIC_BASE_URL` to the public origin of the API if it differs from the first
+`TRUSTED_A2A_AGENTS` entry; Agent Cards never use the request's Host header. `ALLOWED_HOSTS`
+defaults to `["*"]`. To restrict it, list the public host names **and** whatever Host the
+kubelet's HTTP probes send (the pod IP by default, or set `httpHeaders` on the probes), or the
+probes will fail with 400.
+
+### HSTS
+
+The frontend sends `Strict-Transport-Security` only when `HSTS_MAX_AGE` is set in its environment.
+Set it only when the site is served over HTTPS end to end (TLS terminates at your ingress or load
+balancer); many ingress controllers add HSTS themselves, in which case leave it unset.
+
 ## What was actually validated
 
-`validate_manifests.py` (YAML syntax + required fields + a check that
-every Secret manifest is an obvious, non-functional template) — run via
-`make k8s-validate`. **Not** validated: a real `kubectl apply --dry-run`
-or `kubeconform`/`kubeval` run against a live API server's schema, and
-no manifest here was ever actually applied to a running cluster — see
-the Milestone 10 report for exactly what environment limitation caused
-that, and re-run those checks in an environment with a reachable
-cluster/kubectl context before trusting this foundation in anger.
+- **Static checks:** `validate_manifests.py` (YAML syntax + required
+  fields + a check that every Secret manifest is an obvious,
+  non-functional template), run via `make k8s-validate` and in CI.
+- **One deployment to a disposable cluster:** the manual smoke workflow
+  (`.github/workflows/k8s-smoke.yml`) passed in run #2 on commit
+  `e75e7ed` (2026-10-27). On a GitHub-hosted runner it built the backend
+  and React images (never pushed), created a single-node kind cluster,
+  and applied every manifest here except the `*.example.yaml` templates.
+  The only changes, made at run time, were the image tag and
+  identity-provider placeholders on the reserved `.invalid` domain; the
+  Secrets were generated for the run. Its deployment checks passed:
+  PostgreSQL (pgvector) and Redis ready, the migration Job complete at
+  Alembic `0008`, the backend's `/health/ready` ready, the frontend's `/`
+  and its proxied `/health` answering, and `/api/v1/auth/me` returning
+  401 without credentials. The cluster was then deleted. Run #1
+  (`c480369`) had failed because Redis could not start as root with every
+  capability dropped; `e75e7ed` fixed that.
+
+**Not validated.** That run was not a staging or production deployment.
+No cloud provider has been selected and no cloud infrastructure has been
+provisioned. Still untested:
+- cloud storage classes and persistent-volume permissions. kind's local
+  volumes are already writable by everyone, so they do not show that the
+  backend's `fsGroup` works on cloud storage;
+- the ingress example and TLS;
+- a real identity provider and sign-in;
+- an environment's own secrets;
+- more than one node, rolling updates and rollback;
+- backup and restore, load and failure testing, and production
+  monitoring;
+- `kubeconform`/`kubeval` schema checks.
+
+Before the smoke workflow existed, no manifest here had been applied to
+any cluster (see the Milestone 10 report).

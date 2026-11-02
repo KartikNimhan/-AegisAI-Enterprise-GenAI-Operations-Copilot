@@ -23,6 +23,7 @@ import structlog
 from fastapi import Depends
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.exceptions import AgentTimeoutError
@@ -39,24 +40,36 @@ from app.agents.schemas import (
     ToolUsageSummary,
 )
 from app.agents.tools.base import ToolRegistry
+from app.agents.tools.memory import SAVE_MEMORY_TOOL_NAME, MemoryWriteGuard
 from app.agents.tools.registry import build_tool_registry
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep, BearerTokenDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
-from app.dependencies import DBSessionDep
+from app.dependencies import DBSessionDep, SettingsDep
 from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole
 from app.memory.service import AgentMemoryService, build_memory_service, format_for_prompt
+from app.prompts.history import HistoryLimits
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
+from app.safety.output_guard import OutputGuard, build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
 _TITLE_MAX_LENGTH = 80
+USER_MESSAGE_LABEL = "USER MESSAGE:"
+
+
+def user_turn_with_notes(message: str, notes: str | None) -> str:
+    """The user's turn as the model sees it: the saved-notes data block (when there is one)
+    first, then the user's own message under a label, so the two cannot be confused."""
+    if not notes:
+        return message
+    return f"{notes}\n\n{USER_MESSAGE_LABEL}\n{message}"
 
 
 class AgentService:
@@ -70,24 +83,62 @@ class AgentService:
         messages: MessageRepository,
         tool_registry: ToolRegistry,
         memory: AgentMemoryService | None = None,
+        memory_guard: MemoryWriteGuard | None = None,
+        output_guard: OutputGuard | None = None,
     ) -> None:
+        self._output_guard = output_guard or build_output_guard(settings)
         self._session = session
         self._memory = memory
+        self._memory_guard = memory_guard
         self._settings = settings
         self._conversations = conversations
         self._messages = messages
         self._graph = build_agent_graph(
-            gateway=gateway, tool_registry=tool_registry, settings=settings
+            gateway=gateway,
+            tool_registry=tool_registry,
+            settings=settings,
+            output_guard=self._output_guard,
         )
+        # The same graph without `save_memory`, for runs whose user did not ask to remember
+        # anything: the model is not even offered the tool (AIGSEC-006).
+        self._graph_without_memory_writes = (
+            build_agent_graph(
+                gateway=gateway,
+                tool_registry=tool_registry.without({SAVE_MEMORY_TOOL_NAME}),
+                settings=settings,
+                output_guard=self._output_guard,
+            )
+            if tool_registry.get(SAVE_MEMORY_TOOL_NAME) is not None
+            else self._graph
+        )
+
+    def _guarded_answer(self, answer: str, run_id: uuid.UUID) -> str:
+        """The answer as returned and stored, after the output guard (AIGSEC-015)."""
+        guarded = self._output_guard.redact(answer)
+        log_findings("agent_output_redacted", guarded.findings, run_id=str(run_id))
+        return guarded.text
+
+    def _graph_for_this_run(self) -> CompiledStateGraph:
+        if self._memory_guard is not None and self._memory_guard.writes_requested:
+            return self._graph
+        return self._graph_without_memory_writes
 
     async def _prepare_run(
         self, *, conversation_id: uuid.UUID | None, message: str
     ) -> tuple[Conversation, AgentState]:
         conversation = await self._get_or_create_conversation(conversation_id, message)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=HistoryLimits.from_settings(self._settings).max_messages
+        )
+
+        # What the user actually said this run: the only evidence `save_memory` accepts.
+        if self._memory_guard is not None:
+            self._memory_guard.begin_run(message)
 
         # Notes this user saved earlier (never anyone else's: the repository is scoped to the
-        # caller). A failure here means no notes this time, not a failed run.
+        # caller). A failure here means no notes this time, not a failed run. They travel inside
+        # the user's turn as a delimited data block, never as a system message (AIGSEC-006), and
+        # only `message` itself is persisted, so the notes never leak into the stored history.
         notes = (
             format_for_prompt(await self._memory.recall_safely(message))
             if self._memory is not None
@@ -96,9 +147,8 @@ class AgentService:
 
         initial_messages: list[BaseMessage] = [
             SystemMessage(content=AEGIS_AGENT_SYSTEM_PROMPT.text),
-            *([SystemMessage(content=notes)] if notes else []),
-            *history_to_langchain_messages(history),
-            HumanMessage(content=message),
+            *history_to_langchain_messages(history, HistoryLimits.from_settings(self._settings)),
+            HumanMessage(content=user_turn_with_notes(message, notes)),
         ]
 
         await self._messages.add(
@@ -131,8 +181,9 @@ class AgentService:
         recursion_limit = self._settings.agent_max_steps * 2 + 10
 
         try:
+            graph = self._graph_for_this_run()
             final_state = await asyncio.wait_for(
-                self._graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit}),
+                graph.ainvoke(initial_state, config={"recursion_limit": recursion_limit}),
                 timeout=self._settings.agent_timeout_seconds,
             )
         except TimeoutError as exc:
@@ -157,7 +208,7 @@ class AgentService:
             raise
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        answer = final_answer_text(final_state["messages"])
+        answer = self._guarded_answer(final_answer_text(final_state["messages"]), run_id)
         sources = _extract_sources(final_state["messages"])
         tool_usage = _summarize_tool_usage(final_state["messages"])
 
@@ -225,7 +276,7 @@ class AgentService:
 
         try:
             async with asyncio.timeout(self._settings.agent_timeout_seconds):
-                async for update in self._graph.astream(
+                async for update in self._graph_for_this_run().astream(
                     initial_state,
                     config={"recursion_limit": recursion_limit},
                     stream_mode="updates",
@@ -284,7 +335,7 @@ class AgentService:
             raise
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        answer = final_answer_text(all_messages)
+        answer = self._guarded_answer(final_answer_text(all_messages), run_id)
 
         await self._messages.add(
             conversation_id=conversation.id, role=MessageRole.ASSISTANT, content=answer
@@ -409,18 +460,20 @@ async def get_agent_service(
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
     bearer_token: BearerTokenDep,
+    settings: SettingsDep,
 ) -> AgentService:
-    settings = get_settings()
     documents = DocumentRepository(session, scope)
     # The caller's token is forwarded (only to a validated trusted destination)
     # when the agent delegates to the Research Agent over A2A.
     memory = build_memory_service(session, scope, settings)
+    memory_guard = MemoryWriteGuard()
     tool_registry = await build_tool_registry(
         documents=documents,
         retrieval=retrieval,
         settings=settings,
         auth_token=bearer_token,
         memory=memory,
+        memory_guard=memory_guard,
     )
     return AgentService(
         session=session,
@@ -430,4 +483,5 @@ async def get_agent_service(
         messages=MessageRepository(session, scope),
         tool_registry=tool_registry,
         memory=memory,
+        memory_guard=memory_guard,
     )

@@ -16,17 +16,19 @@ task handling is synchronous".
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.a2a.agent_card import agent_card_to_json_dict, build_research_agent_card
+from app.a2a.agent_card import agent_card_to_json_dict, build_research_agent_card, card_base_url
 from app.a2a.research_agent import ResearchAgentService
 from app.a2a.schemas import ResearchResult
 from app.a2a.tasks import build_task, task_to_dict
+from app.api.schemas.common import UserMessage
 from app.config import get_settings
 from app.core.rate_limit import LLM_RATE_LIMIT
 from app.dependencies import SettingsDep
@@ -34,6 +36,7 @@ from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.rag.context.assembler import ContextAssembler
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
+from app.safety.output_guard import build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -45,7 +48,7 @@ router = APIRouter(prefix="/agents/research", tags=["a2a"])
 
 
 class ResearchTaskRequest(BaseModel):
-    question: str = Field(min_length=1, description="The research question.")
+    question: UserMessage = Field(description="The research question.")
 
 
 def get_research_agent_service(
@@ -64,18 +67,18 @@ ResearchAgentServiceDep = Annotated[ResearchAgentService, Depends(get_research_a
 
 
 @well_known_router.get("/.well-known/agent-card.json")
-async def get_well_known_agent_card(request: Request) -> JSONResponse:
+async def get_well_known_agent_card() -> JSONResponse:
     settings = get_settings()
-    card = build_research_agent_card(settings, base_url=str(request.base_url).rstrip("/"))
+    card = build_research_agent_card(settings, base_url=card_base_url(settings))
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
 @card_router.get("/card")
-async def get_research_agent_card(request: Request) -> JSONResponse:
+async def get_research_agent_card() -> JSONResponse:
     """A convenience alias for the well-known path, at a path under this
     project's own versioned API prefix."""
     settings = get_settings()
-    card = build_research_agent_card(settings, base_url=str(request.base_url).rstrip("/"))
+    card = build_research_agent_card(settings, base_url=card_base_url(settings))
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
@@ -99,5 +102,9 @@ async def submit_research_task(
     else:
         logger.info("a2a.task_completed", status=result.status)
 
+    # The answer leaves this server: the output guard applies (AIGSEC-015).
+    guarded = build_output_guard(get_settings()).redact(result.answer)
+    log_findings("a2a_output_redacted", guarded.findings)
+    result = dataclasses.replace(result, answer=guarded.text)
     task = build_task(question=request.question, result=result)
     return JSONResponse(content=task_to_dict(task))

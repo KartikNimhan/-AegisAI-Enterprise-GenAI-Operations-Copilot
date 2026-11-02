@@ -24,6 +24,7 @@ def _run(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
     base = {
         "PATH": str(Path(_SH or "").parent) + ":/usr/bin:/bin",
         "AEGIS_HTML_DIR": tmp_path.as_posix(),
+        "AEGIS_NGINX_CONF_DIR": tmp_path.as_posix(),
     }
     return subprocess.run(
         [_SH or "sh", _SCRIPT.as_posix()],
@@ -111,3 +112,96 @@ def test_unsafe_values_are_refused_and_no_config_is_written(
     assert result.returncode != 0
     assert "refusing to start" in result.stderr or "must be" in result.stderr
     assert not (tmp_path / "config.js").exists()
+
+
+# -- security headers (AIGSEC-011) --------------------------------------------------------------
+
+
+def _headers(tmp_path: Path) -> dict[str, str]:
+    text = (tmp_path / "aegis-security-headers.conf").read_text(encoding="utf-8")
+    values = dict(re.findall(r'map \$host \$(aegis_\w+) \{\n    default "([^"]*)";\n\}', text))
+    assert set(values) == {"aegis_csp", "aegis_hsts"}, text
+    return values
+
+
+def _directives(policy: str) -> dict[str, list[str]]:
+    parsed = {}
+    for part in policy.split(";"):
+        name, *sources = part.split()
+        parsed[name] = sources
+    return parsed
+
+
+def test_the_policy_allows_only_this_origin_and_the_configured_ones(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        API_BASE_URL="http://localhost:8000",
+        OIDC_AUTHORITY="http://localhost:18081/realms/aegisai-demo",
+        OIDC_CLIENT_ID="aegisai-web",
+    )
+
+    assert result.returncode == 0, result.stderr
+    policy = _directives(_headers(tmp_path)["aegis_csp"])
+    for name in ("default-src", "script-src", "style-src", "img-src", "font-src"):
+        assert policy[name] == ["'self'"], name
+    assert policy["connect-src"] == ["'self'", "http://localhost:8000", "http://localhost:18081"]
+    assert policy["frame-src"] == ["'self'", "http://localhost:18081"]  # silent renew
+    assert policy["object-src"] == ["'none'"]
+    assert policy["base-uri"] == ["'self'"]
+    assert policy["form-action"] == ["'self'"]
+    assert policy["frame-ancestors"] == ["'self'"]
+
+
+def test_the_policy_never_allows_inline_code_eval_or_wildcards(tmp_path: Path) -> None:
+    result = _run(tmp_path, OIDC_AUTHORITY="https://idp.example.test/r", OIDC_CLIENT_ID="web")
+
+    assert result.returncode == 0, result.stderr
+    policy = _headers(tmp_path)["aegis_csp"]
+    assert "unsafe-inline" not in policy and "unsafe-eval" not in policy
+    sources = {source for values in _directives(policy).values() for source in values}
+    # No wildcard and no whole-scheme source, which would allow any host.
+    assert not sources & {"*", "data:", "blob:", "http:", "https:"}
+    assert not [source for source in sources if "*" in source]
+
+
+def test_a_same_origin_api_adds_nothing_to_connect_src(tmp_path: Path) -> None:
+    result = _run(tmp_path, API_BASE_URL="", OIDC_AUTHORITY="https://idp.example.test/r/x")
+
+    assert result.returncode == 0, result.stderr
+    policy = _directives(_headers(tmp_path)["aegis_csp"])
+    assert policy["connect-src"] == ["'self'", "https://idp.example.test"]
+
+
+def test_without_sign_in_configured_frames_and_connections_stay_same_origin(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, API_BASE_URL="")
+
+    assert result.returncode == 0, result.stderr
+    policy = _directives(_headers(tmp_path)["aegis_csp"])
+    assert policy["connect-src"] == ["'self'"]
+    assert policy["frame-src"] == ["'self'"]
+
+
+def test_hsts_is_off_unless_asked_for(tmp_path: Path) -> None:
+    assert _run(tmp_path).returncode == 0
+    assert _headers(tmp_path)["aegis_hsts"] == ""  # nginx then omits the header
+
+
+def test_hsts_when_asked_for_has_no_subdomain_or_preload_flags(tmp_path: Path) -> None:
+    assert _run(tmp_path, HSTS_MAX_AGE="31536000").returncode == 0
+    assert _headers(tmp_path)["aegis_hsts"] == "max-age=31536000"
+
+
+def test_hsts_zero_means_off(tmp_path: Path) -> None:
+    assert _run(tmp_path, HSTS_MAX_AGE="0").returncode == 0
+    assert _headers(tmp_path)["aegis_hsts"] == ""
+
+
+@pytest.mark.parametrize("value", ["1y", "-1", "31536000; includeSubDomains", "60 "])
+def test_an_invalid_hsts_value_is_refused(tmp_path: Path, value: str) -> None:
+    result = _run(tmp_path, HSTS_MAX_AGE=value)
+
+    assert result.returncode != 0
+    assert "HSTS_MAX_AGE" in result.stderr
+    assert not (tmp_path / "aegis-security-headers.conf").exists()

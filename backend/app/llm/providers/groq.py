@@ -95,13 +95,14 @@ class GroqProvider(LLMProvider):
         max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         client = self._get_client()
+        # No `stream_options`: the SDK's `create()` does not accept it (a TypeError before any
+        # request is sent). Groq reports stream usage on the final chunk's `x_groq.usage` instead.
         kwargs = _build_create_kwargs(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-            stream_options={"include_usage": True},
         )
         try:
             stream = await client.chat.completions.create(**kwargs)
@@ -122,7 +123,6 @@ def _build_create_kwargs(
     response_format: dict[str, object] | None = None,
     tools: list[ToolSpec] | None = None,
     stream: bool | None = None,
-    stream_options: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Omits unset parameters entirely, rather than sending explicit nulls."""
     kwargs: dict[str, Any] = {
@@ -139,8 +139,6 @@ def _build_create_kwargs(
         kwargs["tools"] = [_tool_spec_to_groq_dict(tool) for tool in tools]
     if stream is not None:
         kwargs["stream"] = stream
-    if stream_options is not None:
-        kwargs["stream_options"] = stream_options
     return kwargs
 
 
@@ -174,11 +172,23 @@ def _tool_spec_to_groq_dict(tool: ToolSpec) -> dict[str, Any]:
 def _usage_from(usage: Any) -> TokenUsage | None:
     if usage is None:
         return None
+    # Only the count: the model's reasoning text (`message.reasoning`) is never read.
+    details = getattr(usage, "completion_tokens_details", None)
     return TokenUsage(
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         total_tokens=usage.total_tokens,
+        reasoning_tokens=getattr(details, "reasoning_tokens", None),
     )
+
+
+def _stream_usage_from(event: Any) -> TokenUsage | None:
+    """Groq sends stream usage on the final chunk's `x_groq.usage`; the top-level `usage` (the
+    OpenAI `stream_options` convention) is the fallback. Absent on every other chunk."""
+    usage = getattr(getattr(event, "x_groq", None), "usage", None)
+    if usage is None:
+        usage = getattr(event, "usage", None)
+    return _usage_from(usage)
 
 
 def _request_id_from(response: Any) -> str | None:
@@ -220,7 +230,7 @@ def _to_stream_chunk(event: Any) -> StreamChunk:
         model=event.model,
         finish_reason=finish_reason,
         is_final=finish_reason is not None,
-        usage=_usage_from(event.usage),
+        usage=_stream_usage_from(event),
         request_id=_request_id_from(event),
     )
 

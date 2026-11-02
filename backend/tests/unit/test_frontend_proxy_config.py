@@ -15,6 +15,7 @@ consistent, not that it works at runtime.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,41 @@ def test_dockerfile_uses_a_pinned_unprivileged_image_and_a_numeric_user() -> Non
     assert "chown 101:0 /usr/share/nginx/html" in dockerfile
 
 
+def test_runtime_package_fixes_are_narrow_minimum_versions() -> None:
+    """The runtime stage may only raise named Alpine packages to a minimum version.
+
+    The pinned base image predates six Alpine security fixes (Trivy, runs #47 and #53), so
+    the Dockerfile installs them on top. A blanket `apk upgrade` could replace the image's
+    nginx.org build of nginx with Alpine's own `nginx` package, and an exact `=` pin
+    breaks as soon as Alpine publishes the next revision. Remove the expected set
+    together with the Dockerfile step once the pinned digest contains these versions.
+    """
+    dockerfile = _text(_WEB / "Dockerfile")
+    runtime = re.sub(r"\\\n\s*", " ", dockerfile[dockerfile.index("AS runtime") :])
+    commands = [
+        line[4:] for line in runtime.splitlines() if line.startswith("RUN ") and "apk" in line
+    ]
+
+    assert "apk upgrade" not in runtime
+    assert len(commands) == 1
+    args = shlex.split(commands[0])
+    assert args[:3] == ["apk", "add", "--no-cache"]
+    packages = args[3:]
+    assert packages and all(">=" in arg for arg in packages)
+    floors = {name: floor for name, _, floor in (arg.partition(">=") for arg in packages)}
+    assert not any(name.startswith("nginx") for name in floors)
+    assert floors == {
+        "brotli-libs": "1.2.1-r0",
+        "curl": "8.23.0-r0",
+        "libcurl": "8.23.0-r0",
+        "musl": "1.2.6-r3",
+        "musl-utils": "1.2.6-r3",
+        "zlib": "1.3.2-r1",
+    }
+    # Installed while still root, before the final switch to the unprivileged user.
+    assert runtime.index("USER root") < runtime.index(commands[0]) < runtime.rindex("USER 101")
+
+
 def test_compose_maps_and_probes_the_unprivileged_port() -> None:
     frontend = _yaml(_ROOT / "docker-compose.yml")["services"]["frontend"]
 
@@ -154,3 +190,43 @@ def test_the_frontend_configmap_matches_the_template_variables(template: str) ->
     assert data["OIDC_CLIENT_ID"]  # the public client id has a default
     assert data["API_BASE_URL"] == ""  # same origin
     assert "${BACKEND_UPSTREAM}" in template
+
+
+# -- Browser security headers -----------------------------------------------------------
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": '"nosniff"',
+    "X-Frame-Options": '"SAMEORIGIN"',
+    "Referrer-Policy": '"strict-origin-when-cross-origin"',
+    # Written at container start from the configured origins (see test_frontend_entrypoint.py).
+    "Content-Security-Policy": "$aegis_csp",
+    "Strict-Transport-Security": "$aegis_hsts",
+}
+
+
+def _server_level(template: str) -> str:
+    """The server block's own directives, without its location blocks."""
+    return re.sub(r"^    location .*?^    \}\n", "", template, flags=re.M | re.S)
+
+
+def test_security_headers_are_sent_on_every_response(template: str) -> None:
+    server = _server_level(template)
+    for name, value in _SECURITY_HEADERS.items():
+        assert f"add_header {name} {value} always;" in server, name
+    assert "server_tokens off;" in server
+
+
+def test_a_location_with_its_own_add_header_repeats_the_security_headers(template: str) -> None:
+    # nginx rule: a location that declares any add_header inherits NONE from the server block.
+    for _modifier, path, body in _locations(template):
+        if "add_header" in body:
+            for name, value in _SECURITY_HEADERS.items():
+                assert f"add_header {name} {value} always;" in body, f"{path} drops {name}"
+
+
+def test_the_policy_comes_from_the_start_up_script_never_a_fixed_string(template: str) -> None:
+    # AIGSEC-011: the full policy (script-src, connect-src, ...) depends on the configured API and
+    # sign-in origins, so it is computed at start-up; a literal here would bypass that.
+    assert not re.findall(r'add_header Content-Security-Policy "', template)
+    assert template.count("add_header Content-Security-Policy $aegis_csp always;") == 2
+    assert template.count("add_header Strict-Transport-Security $aegis_hsts always;") == 2

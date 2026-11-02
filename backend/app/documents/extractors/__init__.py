@@ -4,7 +4,12 @@ Each format's parsing library is isolated to its own module — nothing
 outside `extractors/` imports `pypdf` or `docx` directly.
 """
 
-from app.documents.extractors.base import DocumentExtractor, ExtractionResult
+from app.documents.extractors.base import (
+    DocumentExtractor,
+    ExtractionLimits,
+    ExtractionResult,
+    enforce_extracted_size,
+)
 from app.documents.extractors.docx import DocxExtractor
 from app.documents.extractors.markdown import MarkdownExtractor
 from app.documents.extractors.pdf import PdfExtractor
@@ -19,12 +24,23 @@ EXTRACTORS: dict[DocumentType, DocumentExtractor] = {
 }
 
 
-def get_extractor(document_type: DocumentType) -> DocumentExtractor:
+def get_extractor(
+    document_type: DocumentType, limits: ExtractionLimits | None = None
+) -> DocumentExtractor:
+    """The extractor for a type; with `limits`, one configured with those ceilings."""
+    if limits is None:
+        return EXTRACTORS[document_type]
+    if document_type is DocumentType.PDF:
+        return PdfExtractor(limits)
+    if document_type is DocumentType.DOCX:
+        return DocxExtractor(limits)
     return EXTRACTORS[document_type]
 
 
 __all__ = [
     "DocumentExtractor",
+    "ExtractionLimits",
     "ExtractionResult",
+    "enforce_extracted_size",
     "get_extractor",
 ]

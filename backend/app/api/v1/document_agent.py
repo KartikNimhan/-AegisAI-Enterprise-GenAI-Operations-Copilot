@@ -14,22 +14,25 @@ task handling is synchronous").
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.a2a.agent_card import agent_card_to_json_dict, build_document_agent_card
+from app.a2a.agent_card import agent_card_to_json_dict, build_document_agent_card, card_base_url
 from app.a2a.document_agent import DocumentAgentService
 from app.a2a.schemas import DocumentAgentResult
 from app.a2a.tasks import build_generic_task, task_to_dict
 from app.config import get_settings
+from app.core.limits import MAX_TASK_ITEMS
 from app.core.security import AccessScopeDep
 from app.db.repositories.document_repository import DocumentRepository
 from app.dependencies import DBSessionDep
+from app.safety.output_guard import build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -41,7 +44,9 @@ DOCUMENT_RESULT_ARTIFACT_NAME = "document_result"
 
 
 class DocumentTaskRequest(BaseModel):
-    document_ids: list[uuid.UUID] = Field(min_length=1, description="Document ids to look up.")
+    document_ids: list[uuid.UUID] = Field(
+        min_length=1, max_length=MAX_TASK_ITEMS, description="Document ids to look up."
+    )
 
 
 def get_document_agent_service(
@@ -54,9 +59,9 @@ DocumentAgentServiceDep = Annotated[DocumentAgentService, Depends(get_document_a
 
 
 @card_router.get("/card")
-async def get_document_agent_card(request: Request) -> JSONResponse:
+async def get_document_agent_card() -> JSONResponse:
     settings = get_settings()
-    card = build_document_agent_card(settings, base_url=str(request.base_url).rstrip("/"))
+    card = build_document_agent_card(settings, base_url=card_base_url(settings))
     return JSONResponse(content=agent_card_to_json_dict(card))
 
 
@@ -75,6 +80,10 @@ async def submit_document_task(
     else:
         logger.info("a2a.task_completed", status=result.status)
 
+    # The answer leaves this server: the output guard applies (AIGSEC-015).
+    guarded = build_output_guard(get_settings()).redact(result.answer)
+    log_findings("a2a_output_redacted", guarded.findings)
+    result = dataclasses.replace(result, answer=guarded.text)
     payload = {
         "answer": result.answer,
         "documents": [

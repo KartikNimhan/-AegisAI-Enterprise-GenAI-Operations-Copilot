@@ -21,24 +21,25 @@ import structlog
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
-from app.dependencies import DBSessionDep
+from app.dependencies import DBSessionDep, SettingsDep
 from app.domain.enums.message_role import MessageRole
 from app.domain.models.conversation import Conversation
 from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole, StreamChunk
+from app.prompts.history import HistoryLimits
 from app.rag.citations import StreamingCitationSanitizer, sanitize_citations
 from app.rag.context.assembler import AssembledSource, ContextAssembler
 from app.rag.prompts.builder import RAGPromptBuilder
 from app.rag.retrieval.schemas import RetrievalFilters
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
 from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
+from app.safety.output_guard import OutputGuard, build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +61,7 @@ class RAGService:
         conversations: ConversationRepository,
         messages: MessageRepository,
         documents: DocumentRepository,
+        output_guard: OutputGuard | None = None,
     ) -> None:
         self._session = session
         self._retrieval = retrieval
@@ -69,6 +71,7 @@ class RAGService:
         self._conversations = conversations
         self._messages = messages
         self._documents = documents
+        self._output_guard = output_guard or OutputGuard()
 
     async def answer(
         self,
@@ -83,7 +86,9 @@ class RAGService:
         conversation = await self._get_or_create_conversation(conversation_id, message)
         applied = (filters or RetrievalFilters()).with_document_id(document_id)
         await self._validate_document_filter(applied.document_id)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
 
         start = time.perf_counter()
         outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
@@ -140,11 +145,14 @@ class RAGService:
                 conversation_id=str(conversation.id),
                 removed=list(checked.report.removed),
             )
+        # Then the output guard (AIGSEC-015): its markers are not citation-shaped.
+        guarded = self._output_guard.redact(checked.text)
+        log_findings("rag_output_redacted", guarded.findings, conversation_id=str(conversation.id))
 
         await self._messages.add(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
-            content=checked.text,
+            content=guarded.text,
             model=completion.model,
             provider=completion.provider,
             finish_reason=completion.finish_reason,
@@ -171,7 +179,7 @@ class RAGService:
 
         return RAGAnswer(
             conversation_id=conversation.id,
-            answer=checked.text,
+            answer=guarded.text,
             has_context=True,
             sources=[
                 _to_rag_source(source, cited=source.source_id in checked.report.cited)
@@ -214,7 +222,9 @@ class RAGService:
         conversation = await self._get_or_create_conversation(conversation_id, message)
         applied = (filters or RetrievalFilters()).with_document_id(document_id)
         await self._validate_document_filter(applied.document_id)
-        history = await self._messages.list_by_conversation(conversation.id)
+        history = await self._messages.list_recent(
+            conversation.id, limit=self._prompt_builder.history_limits.max_messages
+        )
 
         outcome = await self._retrieval.retrieve(query=message, top_k=top_k, filters=applied)
 
@@ -248,6 +258,7 @@ class RAGService:
             context_text=assembled.text, question=message, history=history
         )
         citations = StreamingCitationSanitizer(source.source_id for source in assembled.sources)
+        guard = self._output_guard.stream()
 
         accumulated_content = ""
         final_model: str | None = None
@@ -262,9 +273,9 @@ class RAGService:
                 model_role=model_role, messages=prompt
             ):
                 # What is sent to the client, and what is stored, is the validated text.
-                delta = citations.feed(chunk.delta)
+                delta = guard.feed(citations.feed(chunk.delta))
                 if chunk.is_final:
-                    delta += citations.finish()
+                    delta += guard.feed(citations.finish()) + guard.finish()
                 accumulated_content += delta
                 final_model = chunk.model or final_model
                 request_id = chunk.request_id or request_id
@@ -294,7 +305,8 @@ class RAGService:
             raise
 
         # Normally a no-op (the final chunk released it); covers a stream with no final chunk.
-        accumulated_content += citations.finish()
+        accumulated_content += guard.feed(citations.finish()) + guard.finish()
+        log_findings("rag_output_redacted", guard.findings, conversation_id=str(conversation.id))
         if citations.report.removed:
             logger.warning(
                 "rag_invalid_citations_removed",
@@ -358,13 +370,14 @@ def get_rag_service(
     scope: AccessScopeDep,
     gateway: Annotated[LLMGateway, Depends(get_llm_gateway)],
     retrieval: Annotated[RetrievalService, Depends(get_retrieval_service)],
+    settings: SettingsDep,
 ) -> RAGService:
-    settings = get_settings()
     return RAGService(
         session=session,
         retrieval=retrieval,
         context_assembler=ContextAssembler(max_context_chars=settings.rag_max_context_chars),
-        prompt_builder=RAGPromptBuilder(),
+        prompt_builder=RAGPromptBuilder(history_limits=HistoryLimits.from_settings(settings)),
+        output_guard=build_output_guard(settings),
         gateway=gateway,
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),

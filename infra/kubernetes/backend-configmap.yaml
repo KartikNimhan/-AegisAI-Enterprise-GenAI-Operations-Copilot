@@ -2,9 +2,10 @@
 # — no credentials, no API keys. See backend-secret.example.yaml for what
 # is NOT here.
 #
-# REDIS_URL has no embedded credential in this project's default
-# configuration (no Redis auth is configured anywhere in app/db/redis.py),
-# so it is treated as non-secret config, not a Secret value. DATABASE_URL
+# REDIS_URL has no embedded credential: the Redis password is a separate
+# setting (REDIS_PASSWORD), which the backend Deployment reads from the
+# `aegisai-redis-secret` Secret (see redis-secret.example.yaml), so the URL
+# is treated as non-secret config, not a Secret value. DATABASE_URL
 # embeds the Postgres password (`postgresql+asyncpg://user:PASSWORD@host/
 # db`) and is deliberately NOT here — see backend-secret.example.yaml.
 apiVersion: v1
@@ -41,10 +42,29 @@ data:
   AUTH_ISSUER: ""
   AUTH_AUDIENCE: ""
   AUTH_JWKS_URL: ""
-  # Rate limits: per signed-in user, counted in memory PER POD (replicas do not share counts, so the
-  # effective limit is limit x replicas). 0 switches one limit off. Starting points to review.
+  # Rate limits: per signed-in user, counted in Redis and shared by every replica (AIGSEC-008), so
+  # switching pods does not reset a budget; a Redis outage refuses those requests with 503.
+  # 0 switches one limit off. Starting points to review.
   RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_BACKEND: "redis"
   RATE_LIMIT_WINDOW_SECONDS: "60"
   RATE_LIMIT_LLM_REQUESTS: "30"
   RATE_LIMIT_DOCUMENT_UPLOADS: "10"
   RATE_LIMIT_EMBEDDING_JOBS: "5"
+  # Input and resource bounds (ADR 016). Defaults shown; the code has the same defaults, so these
+  # lines only matter when you change them. EMBEDDING_DIMENSION is deliberately NOT here: it must
+  # equal the database column (384) and the API refuses to start otherwise.
+  CHAT_HISTORY_MAX_MESSAGES: "40"
+  CHAT_HISTORY_MAX_CHARS: "24000"
+  DOCUMENT_MAX_UNCOMPRESSED_BYTES: "67108864"
+  DOCUMENT_MAX_PDF_PAGES: "2000"
+  DOCUMENT_MAX_EXTRACTED_CHARS: "20000000"
+  MAX_REQUEST_BODY_BYTES: "16777216"
+  A2A_MAX_RESPONSE_BYTES: "1048576"
+  A2A_TOTAL_TIMEOUT_SECONDS: "30"
+  LLM_STREAM_TOTAL_TIMEOUT_SECONDS: "300"
+  AGENT_MEMORY_ENABLED: "true"
+  # Metrics (docs/operations/observability.md): OFF by default. To enable, set this to "true" AND
+  # add METRICS_TOKEN to the backend Secret (never to this file): the API refuses to start
+  # outside local development with metrics enabled and no token.
+  METRICS_ENABLED: "false"

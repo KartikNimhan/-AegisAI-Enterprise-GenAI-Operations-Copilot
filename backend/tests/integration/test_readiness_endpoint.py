@@ -13,12 +13,14 @@ from app.db.redis import check_redis
 from app.db.session import check_database
 from app.main import app
 
+from .requirements import service_unavailable
+
 pytestmark = pytest.mark.integration
 
 
 async def test_readiness_is_ok_with_live_dependencies() -> None:
     if not await check_database(timeout=2.0) or not await check_redis(timeout=2.0):
-        pytest.skip("Postgres/Redis not reachable — start them via `docker compose up -d`")
+        service_unavailable("Postgres/Redis not reachable — start them via `docker compose up -d`")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as async_client:

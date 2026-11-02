@@ -6,6 +6,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from app.api.schemas.common import UserMessage
 from app.llm.schemas import ModelRole, TokenUsage
 
 
@@ -14,7 +15,7 @@ class ChatCompletionRequest(BaseModel):
         default=None,
         description="Existing conversation to continue. Omit to start a new one.",
     )
-    message: str = Field(min_length=1, description="The user message to send to the model.")
+    message: UserMessage = Field(description="The user message to send to the model.")
     model_role: ModelRole = ModelRole.PRIMARY
 
 

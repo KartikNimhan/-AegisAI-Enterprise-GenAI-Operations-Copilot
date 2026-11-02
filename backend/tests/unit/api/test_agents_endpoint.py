@@ -244,3 +244,31 @@ def test_run_agent_stream_emits_error_event_on_failure(
 
     assert response.status_code == 200
     assert "LLMTimeoutError" in body
+
+
+def test_run_agent_stream_completed_event_carries_the_conversation_id(
+    client: TestClient, override_agent_service: Any
+) -> None:
+    import json as json_module
+
+    override_agent_service(
+        FakeAgentService(
+            stream_events=[
+                ("answer_delta", {"delta": "hi"}),
+                ("completed", {"status": "completed"}),
+            ]
+        )
+    )
+
+    with client.stream("POST", "/api/v1/agents/run/stream", json={"message": "q"}) as response:
+        body = b"".join(response.iter_bytes()).decode()
+
+    frames = [f for f in body.split("\n\n") if f.strip()]
+    events = {
+        f.splitlines()[0].removeprefix("event: "): json_module.loads(
+            f.splitlines()[1].removeprefix("data: ")
+        )
+        for f in frames
+    }
+    assert events["completed"] == {"status": "completed", "conversation_id": str(_CONVERSATION_ID)}
+    assert "conversation_id" not in events["answer_delta"]  # only the final event gains it

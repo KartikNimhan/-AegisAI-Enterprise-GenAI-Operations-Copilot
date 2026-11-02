@@ -29,21 +29,59 @@ spec:
         app.kubernetes.io/name: aegisai-redis
         app.kubernetes.io/part-of: aegisai
     spec:
+      # No pod here talks to the Kubernetes API, so none gets a service-account token: a
+      # compromised container then has no cluster credential to use.
+      automountServiceAccountToken: false
+      # Run as the image's own `redis` user (uid 999, gid 1000 in the official image). The image
+      # has no USER: started as root, its entrypoint switches to `redis` with setpriv, which needs
+      # CAP_SETUID. That capability is dropped below, so the switch failed ("setresuid failed:
+      # Operation not permitted", CrashLoopBackOff). Started as 999, the entrypoint skips the
+      # switch and runs redis-server directly, with no capability at all.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           # Pinned, not `:latest` — matches docker-compose.yml.
           image: redis:7-alpine
+          # Password authentication (AIGSEC-005), from the `aegisai-redis-secret` Secret (see
+          # redis-secret.example.yaml). The password is written to a config file readable only
+          # by this user instead of being passed as `--requirepass`, so it is not in the process
+          # list. Without a password, Redis refuses to start. Still started as uid 999, so the
+          # image's entrypoint is not needed to switch users.
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ -z "$REDIS_PASSWORD" ]; then
+                echo "REDIS_PASSWORD must be set (Secret aegisai-redis-secret)" >&2
+                exit 1
+              fi
+              umask 077
+              printf 'requirepass %s\n' "$REDIS_PASSWORD" > /tmp/redis.conf
+              exec redis-server /tmp/redis.conf
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aegisai-redis-secret
+                  key: REDIS_PASSWORD
           ports:
             - name: redis
               containerPort: 6379
+          # Exec probes run inside the container, so the NetworkPolicy does not affect them.
+          # REDISCLI_AUTH keeps the password off the command line; an authentication error
+          # does not count as healthy.
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["sh", "-c", 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["sh", "-c", 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:

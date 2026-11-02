@@ -13,13 +13,22 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from app.documents.exceptions import ExtractionError
-from app.documents.extractors.base import DocumentExtractor, ExtractionResult
+from app.documents.extractors.base import DocumentExtractor, ExtractionLimits, ExtractionResult
 
 
 class PdfExtractor(DocumentExtractor):
+    def __init__(self, limits: ExtractionLimits | None = None) -> None:
+        self._limits = limits or ExtractionLimits()
+
     def extract(self, content: bytes) -> ExtractionResult:
         try:
             reader = PdfReader(BytesIO(content))
+            page_count = len(reader.pages)
+            if page_count > self._limits.max_pdf_pages:
+                raise ExtractionError(
+                    f"The PDF has {page_count} pages, over the limit of "
+                    f"{self._limits.max_pdf_pages}"
+                )
             pages = [page.extract_text() or "" for page in reader.pages]
             doc_info = reader.metadata
         except PyPdfError as exc:

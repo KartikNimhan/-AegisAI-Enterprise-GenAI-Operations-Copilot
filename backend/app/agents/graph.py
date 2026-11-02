@@ -34,12 +34,13 @@ from app.agents.schemas import (
     STATUS_MAX_TOOL_CALLS_EXCEEDED,
     AgentState,
 )
-from app.agents.tools.base import ToolRegistry
+from app.agents.tools.base import ToolRegistry, ToolResult
 from app.agents.tools.research_delegation import RESEARCH_AGENT_TOOL_NAME
 from app.config import Settings
 from app.llm.gateway import LLMGateway
 from app.llm.schemas import ModelRole, ToolSpec
 from app.mcp.client import MCP_TOOL_NAME_PREFIX
+from app.safety.output_guard import OutputGuard, log_findings
 
 logger = structlog.get_logger(__name__)
 
@@ -61,11 +62,12 @@ def build_agent_graph(
     tool_registry: ToolRegistry,
     settings: Settings,
     model_role: ModelRole = ModelRole.PRIMARY,
+    output_guard: OutputGuard | None = None,
 ) -> CompiledStateGraph:
     tool_specs = tool_registry.to_tool_specs()
 
     agent_node = _make_agent_node(gateway=gateway, tool_specs=tool_specs, model_role=model_role)
-    tool_node = _make_tool_node(tool_registry)
+    tool_node = _make_tool_node(tool_registry, output_guard or OutputGuard())
     should_continue = _make_should_continue(settings)
 
     graph = StateGraph(AgentState)
@@ -94,6 +96,22 @@ def build_agent_graph(
     return graph.compile()
 
 
+# Marker for a tool call whose arguments the model produced but that are not a JSON object. The call
+# stays in the transcript (the provider requires every tool call to be answered) and is answered
+# with a validation error instead of crashing the run or executing with guessed arguments.
+_INVALID_ARGUMENTS_KEY = "__invalid_arguments__"
+
+
+def _parse_tool_arguments(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {_INVALID_ARGUMENTS_KEY: True}
+    return parsed if isinstance(parsed, dict) else {_INVALID_ARGUMENTS_KEY: True}
+
+
 def _make_agent_node(*, gateway: LLMGateway, tool_specs: list[ToolSpec], model_role: ModelRole):
     async def agent_node(state: AgentState) -> dict:
         chat_messages = to_chat_messages(state["messages"])
@@ -105,7 +123,7 @@ def _make_agent_node(*, gateway: LLMGateway, tool_specs: list[ToolSpec], model_r
             tool_calls=[
                 {
                     "name": tool_call.name,
-                    "args": json.loads(tool_call.arguments),
+                    "args": _parse_tool_arguments(tool_call.arguments),
                     "id": tool_call.id,
                 }
                 for tool_call in (completion.tool_calls or [])
@@ -122,7 +140,19 @@ def _make_agent_node(*, gateway: LLMGateway, tool_specs: list[ToolSpec], model_r
     return agent_node
 
 
-def _make_tool_node(tool_registry: ToolRegistry):
+def _guard_tool_result(result: ToolResult, guard: OutputGuard, tool_name: str) -> ToolResult:
+    """Tool output is untrusted data (AIGSEC-015): a document, a remote agent or an MCP tool can
+    return a credential, which the model could then repeat. Every string in the result is passed
+    through the output guard before the model sees it; the structure is unchanged."""
+    data, data_findings = guard.redact_data(result.data)
+    error = guard.redact(result.error).text if result.error else result.error
+    log_findings("agent_tool_output_redacted", data_findings, tool_name=tool_name)
+    if not data_findings and error == result.error:
+        return result
+    return ToolResult(success=result.success, data=data, error=error, error_code=result.error_code)
+
+
+def _make_tool_node(tool_registry: ToolRegistry, guard: OutputGuard):
     async def tool_node(state: AgentState) -> dict:
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage):
@@ -138,7 +168,15 @@ def _make_tool_node(tool_registry: ToolRegistry):
             logger.info("agent.capability_selected", tool_name=name, capability=capability)
 
             start = time.perf_counter()
-            result = await tool_registry.execute(name, json.dumps(tool_call["args"]))
+            if tool_call["args"].get(_INVALID_ARGUMENTS_KEY):
+                result = ToolResult(
+                    success=False,
+                    error="Tool arguments were not a valid JSON object",
+                    error_code="validation_error",
+                )
+            else:
+                result = await tool_registry.execute(name, json.dumps(tool_call["args"]))
+            result = _guard_tool_result(result, guard, name)
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
 
             tool_call_count += 1

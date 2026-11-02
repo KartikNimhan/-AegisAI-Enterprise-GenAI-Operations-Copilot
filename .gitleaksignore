@@ -1,0 +1,15 @@
+# Gitleaks ignore list. One exact fingerprint per reviewed finding (commit:file:rule:start line).
+# Each one suppresses only that finding in that commit. The rules in .gitleaks.toml are unchanged,
+# and the same text added in any other commit is reported again. None of these is a credential.
+
+# Docstring prose in InvalidTokenError (two words joined by a slash), not a value.
+629da474ec6eac366f27056e712a604ac26aa63d:backend/app/auth/exceptions.py:generic-api-key:18
+
+# Usage docstring: the GROQ_API_KEY variable name with a truncated placeholder. No key material.
+7126d8bf1d35a4ba7583653ba551f7cd99d6db98:backend/tests/integration/test_agent_live.py:generic-api-key:15
+
+# Test fixture: a storage object key (a UUID plus a file extension), not an API key.
+edfc04b593aa52255fa351a0da56c8c9cb3cc069:backend/tests/unit/storage/test_local_storage.py:generic-api-key:69
+
+# Usage docstring: the same GROQ_API_KEY placeholder as test_agent_live.py. No key material.
+1d5eb712367419f36c10337694175c6ec28be1b0:backend/tests/integration/test_groq_live.py:generic-api-key:7

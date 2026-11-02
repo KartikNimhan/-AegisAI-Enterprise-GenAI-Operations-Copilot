@@ -9,8 +9,9 @@ Rules (see docs/architecture/decisions/013-data-isolation.md):
 - **Documents** (and so their chunks and embeddings) belong to one user inside one
   organization. They are readable by the owner and, when their visibility is
   `organization`, by members of that organization; never across organizations.
-  An administrator of the organization may *delete or re-share* any document in
-  it, but may not read a private one.
+  An administrator of the organization may *delete or make private* any document
+  in it, but may not read a private one, and may not share a member's private
+  document with the organization (only its owner may widen visibility; AIGSEC-001).
 - A row that is out of scope is reported as not found (404), never as forbidden,
   so a guessed id reveals nothing. A row with no owner yet (legacy data before the
   ownership backfill) matches no caller's scope and is therefore invisible.
@@ -101,8 +102,10 @@ class AccessScope:
         )
 
     def document_manage_filter(self, model: type[Document]) -> ColumnElement[bool]:
-        """Rows the caller may delete or re-share: their own, or (for an
-        administrator) any in their organization. This does NOT imply read access."""
+        """Rows the caller may delete or make private: their own, or (for an
+        administrator) any in their organization. This does NOT imply read access,
+        and it does not allow sharing: widening visibility is for the owner only
+        (`DocumentRepository.set_visibility`)."""
         if self.unrestricted:
             return true()
         if self.user_id is None or self.organization_id is None:

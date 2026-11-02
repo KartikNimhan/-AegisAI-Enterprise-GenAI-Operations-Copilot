@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installFetchMock } from '../test/mockFetch'
+import { useAccount } from './AccountContext'
 import { AuthGate } from './AuthGate'
 import { AuthStateContext, type AuthState, type AuthUser } from './AuthContext'
 import { setUnauthorizedHandler } from './token'
@@ -34,6 +35,12 @@ function renderGate(auth: AuthState) {
 }
 
 const ME = { user_id: 'u1', organization_id: 'o1', email: 'ada@example.test', role: 'member' }
+
+/** Stands in for the app: shows the account the gate provides. */
+function ShowAccount() {
+  const account = useAccount()
+  return <p>{account ? `${account.email} is ${account.role}` : 'no account'}</p>
+}
 
 afterEach(() => {
   setUnauthorizedHandler(null)
@@ -159,5 +166,18 @@ describe('AuthGate after sign-in', () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/me'))).toHaveLength(2),
     )
+  })
+
+  it.each(['admin', 'member'])('hands the app the confirmed account, role %s included', async (role) => {
+    installFetchMock(() => ({ status: 200, body: { ...ME, role } }))
+    render(
+      <AuthStateContext.Provider value={state()}>
+        <AuthGate>
+          <ShowAccount />
+        </AuthGate>
+      </AuthStateContext.Provider>,
+    )
+
+    expect(await screen.findByText(`ada@example.test is ${role}`)).toBeInTheDocument()
   })
 })

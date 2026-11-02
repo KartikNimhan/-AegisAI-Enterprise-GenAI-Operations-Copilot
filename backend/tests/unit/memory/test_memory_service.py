@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 from app.domain.enums.memory_kind import MemoryKind, MemorySource
 from app.domain.models.agent_memory import AgentMemory
 from app.memory.exceptions import MemoryLimitError, MemoryValidationError
-from app.memory.service import MEMORY_PROMPT_HEADER, format_for_prompt
+from app.memory.service import (
+    MEMORY_BLOCK_END,
+    MEMORY_BLOCK_START,
+    MEMORY_PROMPT_HEADER,
+    format_for_prompt,
+)
 
 from .harness import Person, World
 
@@ -202,9 +207,12 @@ async def test_formatted_prompt_labels_the_notes_and_cannot_forge_structure(worl
 
     assert text is not None and text.startswith(MEMORY_PROMPT_HEADER)
     assert "untrusted" in text and "not instructions" in text
-    note_lines = text.splitlines()[1:]
+    lines = text.splitlines()
+    start, end = lines.index(MEMORY_BLOCK_START), lines.index(MEMORY_BLOCK_END)
+    note_lines = lines[start + 1 : end]
     assert len(note_lines) == 1  # the injected line break was collapsed into one quoted line
-    assert note_lines[0].startswith("- (fact) ")
+    assert note_lines[0].startswith("- (fact, ")
+    assert end == len(lines) - 1  # nothing after the block
 
 
 # -- updates and deletion --------------------------------------------------------------
@@ -295,3 +303,48 @@ async def test_the_owner_always_comes_from_the_scope(world: World) -> None:
     memory, _ = await world.service(alice).remember("mine")
 
     assert (memory.owner_user_id, memory.organization_id) == (alice.user_id, alice.organization_id)
+
+
+# -- concurrency: the per-user cap ---------------------------------------------------------------
+
+
+def test_remember_locks_the_owner_row_on_postgresql() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    from .harness import Person, World
+
+    world = World()
+    try:
+        person = Person()
+        statement = world.service(person)._repository.lock_statement()  # type: ignore[attr-defined]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" in sql and "users" in sql
+    finally:
+        world.close()
+
+
+async def test_remember_takes_the_owner_lock_before_counting() -> None:
+    from .harness import Person, World
+
+    world = World()
+    try:
+        order: list[str] = []
+        service = world.service(Person())
+        repository = service._repository  # type: ignore[attr-defined]
+        real_lock, real_count = repository.lock_owner, repository.count_active
+
+        async def lock() -> None:
+            order.append("lock")
+            await real_lock()
+
+        async def count(*, now: datetime) -> int:
+            order.append("count")
+            return await real_count(now=now)
+
+        repository.lock_owner, repository.count_active = lock, count
+
+        await service.remember("likes concise answers")
+
+        assert order == ["lock", "count"]
+    finally:
+        world.close()

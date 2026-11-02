@@ -97,6 +97,16 @@ class ToolRegistry:
     def to_tool_specs(self) -> list[ToolSpec]:
         return [tool.to_spec() for tool in self._tools.values()]
 
+    def without(self, names: set[str]) -> ToolRegistry:
+        """A copy that does not offer (and cannot execute) the named tools. Used to hide a tool
+        from a run that must not use it, e.g. `save_memory` when the user did not ask to remember
+        anything (AIGSEC-006)."""
+        narrowed = ToolRegistry()
+        for name, tool in self._tools.items():
+            if name not in names:
+                narrowed.register(tool)
+        return narrowed
+
     async def execute(self, name: str, raw_arguments: str) -> ToolResult:
         """LLM-generated arguments -> schema validation -> execution
         (business/authorization validation happens inside each tool's

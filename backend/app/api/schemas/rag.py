@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.api.schemas.common import UserMessage
 from app.domain.enums.document_type import DocumentType
 from app.llm.schemas import ModelRole, TokenUsage
 from app.rag.retrieval.schemas import RetrievalFilters
@@ -22,7 +23,7 @@ from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
 
 
 class RAGChatRequest(BaseModel):
-    message: str = Field(min_length=1, description="The user's question.")
+    message: UserMessage = Field(description="The user's question.")
     conversation_id: uuid.UUID | None = Field(
         default=None, description="Existing conversation to continue. Omit to start a new one."
     )

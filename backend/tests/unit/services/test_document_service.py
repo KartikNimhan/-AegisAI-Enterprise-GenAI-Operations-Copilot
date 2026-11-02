@@ -206,3 +206,47 @@ async def test_delete_document_returns_false_for_unknown_id() -> None:
     import uuid
 
     assert await service.delete_document(uuid.uuid4()) is False
+
+
+async def test_the_checksum_is_locked_before_the_duplicate_check() -> None:
+    service, documents, *_ = make_service()
+    content = make_txt_bytes()
+
+    await service.upload(filename="a.txt", content_type="text/plain", content=content)
+    await service.upload(filename="b.txt", content_type="text/plain", content=content)
+
+    assert len(documents.locked_checksums) == 2
+    assert len(set(documents.locked_checksums)) == 1  # same bytes, same lock key
+
+
+def test_the_upload_lock_is_a_postgresql_advisory_lock_scoped_to_user_and_content() -> None:
+    import asyncio
+    import uuid
+
+    from sqlalchemy.dialects import postgresql, sqlite
+
+    from app.auth.scope import AccessScope
+    from app.db.repositories.document_repository import DocumentRepository
+
+    executed: list[tuple[str, dict]] = []
+
+    class Session:
+        def __init__(self, dialect: object) -> None:
+            self._dialect = dialect
+
+        def get_bind(self):
+            return type("Bind", (), {"dialect": self._dialect})()
+
+        async def execute(self, statement, params=None):
+            executed.append((str(statement), params or {}))
+
+    user = uuid.uuid4()
+    scope = AccessScope.for_user(user_id=user, organization_id=uuid.uuid4())
+
+    asyncio.run(DocumentRepository(Session(sqlite.dialect()), scope).lock_checksum("abc"))  # type: ignore[arg-type]
+    assert executed == []  # no advisory locks outside PostgreSQL
+
+    asyncio.run(DocumentRepository(Session(postgresql.dialect()), scope).lock_checksum("abc"))  # type: ignore[arg-type]
+    sql, params = executed[0]
+    assert "pg_advisory_xact_lock" in sql
+    assert params["key"] == f"document-upload:{user}:abc"  # per user AND per content

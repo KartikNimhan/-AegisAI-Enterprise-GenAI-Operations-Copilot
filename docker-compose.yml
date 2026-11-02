@@ -17,6 +17,10 @@ services:
       API_V1_PREFIX: /api/v1
       DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
       REDIS_URL: redis://redis:6379/0
+      # Redis requires a password (the `redis` service refuses to start without one); it is
+      # passed separately, never inside REDIS_URL. Set REDIS_PASSWORD in the host shell or the
+      # root .env file that `docker compose` reads; see .env.example.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       # Explicit (not left to the config default): the Dockerfile only
       # copies backend/app, not the whole repo, so the config's "relative
       # to the repo root" fallback would resolve to a different, surprising
@@ -43,12 +47,28 @@ services:
       AUTH_ISSUER: ${AUTH_ISSUER:-}
       AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
-      # Rate limits (per user, in memory per process; see .env.example). 0 switches one off.
+      # Rate limits (per user; see .env.example). 0 switches one off. Counted in Redis, so the
+      # budget is shared by every backend process (AIGSEC-008); a Redis outage refuses with 503.
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_BACKEND: ${RATE_LIMIT_BACKEND:-redis}
       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
       RATE_LIMIT_LLM_REQUESTS: ${RATE_LIMIT_LLM_REQUESTS:-30}
       RATE_LIMIT_DOCUMENT_UPLOADS: ${RATE_LIMIT_DOCUMENT_UPLOADS:-10}
       RATE_LIMIT_EMBEDDING_JOBS: ${RATE_LIMIT_EMBEDDING_JOBS:-5}
+      # Input and resource bounds (docs/architecture/decisions/016-input-bounds-and-history-limits.md).
+      CHAT_HISTORY_MAX_MESSAGES: ${CHAT_HISTORY_MAX_MESSAGES:-40}
+      CHAT_HISTORY_MAX_CHARS: ${CHAT_HISTORY_MAX_CHARS:-24000}
+      DOCUMENT_MAX_UNCOMPRESSED_BYTES: ${DOCUMENT_MAX_UNCOMPRESSED_BYTES:-67108864}
+      DOCUMENT_MAX_PDF_PAGES: ${DOCUMENT_MAX_PDF_PAGES:-2000}
+      DOCUMENT_MAX_EXTRACTED_CHARS: ${DOCUMENT_MAX_EXTRACTED_CHARS:-20000000}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-16777216}
+      A2A_MAX_RESPONSE_BYTES: ${A2A_MAX_RESPONSE_BYTES:-1048576}
+      A2A_TOTAL_TIMEOUT_SECONDS: ${A2A_TOTAL_TIMEOUT_SECONDS:-30}
+      LLM_STREAM_TOTAL_TIMEOUT_SECONDS: ${LLM_STREAM_TOTAL_TIMEOUT_SECONDS:-300}
+      AGENT_MEMORY_ENABLED: ${AGENT_MEMORY_ENABLED:-true}
+      # Metrics are opt-in (docs/operations/observability.md); the token has no default.
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
     volumes:
       - ./data/uploads:/data/uploads
     depends_on:
@@ -161,7 +181,9 @@ services:
       # Host port 5433 (not 5432) to avoid colliding with a locally
       # installed PostgreSQL. Container-to-container traffic (the backend
       # service) always uses the default 5432 and is unaffected.
-      - "5433:5432"
+      # Bound to 127.0.0.1 only (AIGSEC-002): reachable from this machine,
+      # never from the rest of the network.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -176,9 +198,29 @@ services:
       # Host port 6380 (not 6379) to avoid colliding with a locally
       # installed Redis. Container-to-container traffic (the backend
       # service) always uses the default 6379 and is unaffected.
-      - "6380:6379"
+      # Bound to 127.0.0.1 only (AIGSEC-002).
+      - "127.0.0.1:6380:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # Password authentication (AIGSEC-002). The password is written to a config file readable
+    # only by the `redis` user rather than passed as `--requirepass`, so it never appears in the
+    # process list. The image's own entrypoint still starts the server and drops to the
+    # unprivileged `redis` user. Without a password, Redis refuses to start.
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$$REDIS_PASSWORD" ]; then
+          echo "REDIS_PASSWORD must be set (see .env.example)" >&2
+          exit 1
+        fi
+        umask 077
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
+        chown redis:redis /tmp/redis.conf
+        exec docker-entrypoint.sh redis-server /tmp/redis.conf
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # REDISCLI_AUTH keeps the password off the command line here too.
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10

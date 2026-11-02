@@ -9,9 +9,13 @@ import pytest
 
 from app.db.session import check_database
 
+from .requirements import service_unavailable
+
 pytestmark = pytest.mark.integration
 
 
 async def test_can_connect_to_postgres() -> None:
     if not await check_database(timeout=2.0):
-        pytest.skip("Postgres is not reachable — start it via `docker compose up -d postgres`")
+        service_unavailable(
+            "Postgres is not reachable — start it via `docker compose up -d postgres`"
+        )

@@ -9,7 +9,19 @@ by default every test runs with `get_current_principal` / `get_bearer_token`
 overridden to a fixed test principal and token. Tests that exercise the REAL
 authentication path request the `real_auth` fixture (or `auth_env`, which also
 wires a test key set and in-memory identity tables) to opt out.
+
+Test isolation: the first thing this file does is run the guard in `isolation.py`, BEFORE any
+import of the application. It points this process at the test database and Redis named by
+`TEST_DATABASE_URL` / `TEST_REDIS_URL` (only after checking they are safe), or at an address where
+nothing listens. The application's engine and settings are created by the imports below, so they
+can only ever see the test targets, never `.env`'s development database.
 """
+
+# ruff: noqa: E402 -- the isolation guard below must run before anything imports the application.
+
+from .isolation import configure_test_process
+
+configure_test_process()
 
 import uuid
 from collections.abc import Iterator

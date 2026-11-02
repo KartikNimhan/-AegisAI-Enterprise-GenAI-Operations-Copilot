@@ -9,9 +9,11 @@ import pytest
 
 from app.db.redis import check_redis
 
+from .requirements import service_unavailable
+
 pytestmark = pytest.mark.integration
 
 
 async def test_can_connect_to_redis() -> None:
     if not await check_redis(timeout=2.0):
-        pytest.skip("Redis is not reachable — start it via `docker compose up -d redis`")
+        service_unavailable("Redis is not reachable — start it via `docker compose up -d redis`")

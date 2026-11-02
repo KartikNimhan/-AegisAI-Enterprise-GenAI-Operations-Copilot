@@ -1,0 +1,4 @@
+{
+  "_comment": "Accepted scan findings (AIGSEC-007). One entry per advisory id and scanner, with a reason and an expiry date at most 180 days ahead; expired entries stop applying. See docs/operations/security-scanning.md, 'Blocking policy'. Example entry: {\"id\": \"CVE-0000-00000\", \"scanner\": \"trivy\", \"reason\": \"why it cannot be fixed yet and why it is not exploitable here\", \"expires\": \"YYYY-MM-DD\"}",
+  "exceptions": []
+}

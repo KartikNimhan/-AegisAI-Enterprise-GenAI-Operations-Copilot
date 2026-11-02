@@ -189,7 +189,8 @@ earlier working numbering and are not redefined by this table.
   ever narrow what the caller may already read). Inline `[S1]` citations are
   checked against the sources that were actually retrieved: an id that was not
   retrieved is removed from the answer (streamed and stored text too) and
-  reported in `invalid_citations`; each returned source says whether the
+  reported in `invalid_citations` (this checks that a source was *retrieved*, not
+  that it *supports* the sentence it follows; it is not fact checking); each returned source says whether the
   answer `cited` it.
 - **Agentic AI** (`backend/app/agents/`) — a single LangGraph-orchestrated
   agent with explicit, controlled tool calling: `AgentService` builds a
@@ -236,7 +237,10 @@ earlier working numbering and are not redefined by this table.
   changes to support MCP. An MCP failure degrades to "no MCP tools,"
   never a broken agent. `scripts/mcp_stdio_server.py` runs the same
   server over the standard stdio transport for an external MCP client
-  (the MCP Inspector, an IDE). See
+  (the MCP Inspector, an IDE). It has no signed-in caller, so it **refuses to
+  start** unless you choose whose data it serves: `MCP_STDIO_USER_ID` +
+  `MCP_STDIO_ORGANIZATION_ID` (one user's data, same ownership rules as the API) or
+  `MCP_STDIO_ALLOW_UNRESTRICTED=true` (every organization's data). See
   [ADR 009](docs/architecture/decisions/009-mcp-a2a-architecture.md).
 - **A2A interoperability** (`backend/app/a2a/`) — one small, specialized
   remote **Research Agent** (`a2a-sdk==1.2.1`), reached only through a
@@ -305,7 +309,14 @@ earlier working numbering and are not redefined by this table.
   agent-execution metrics), and **System Status**
   (`pages/SystemStatusPage.tsx`, live Postgres/Redis checks plus
   configuration facts from `GET /api/v1/system/status`, clearly
-  distinguished from each other). `src/api/` is the one place every
+  distinguished from each other), plus **Conversations**
+  (`pages/ConversationsPage.tsx`: list, read, delete with confirmation, and
+  continue a saved conversation in the Copilot via `/?conversation=<id>`) and
+  **Memory** (`pages/MemoryPage.tsx`: list, add, edit, delete and "forget
+  everything" for the notes the agent keeps, against `/api/v1/memories`). The
+  Copilot's mode selector offers a streamed document answer, plain chat, an
+  agent (each tool it uses is shown as it runs) and the multi-agent workflow.
+  `src/api/` is the one place every
   backend call is made, normalizing every failure into a single
   `BackendError`. The original Streamlit app (`frontend/streamlit/`,
   same four pages, same API contracts) is still in the repo, still
@@ -684,7 +695,8 @@ Conversations and documents have an owner (see
   re-share it. An administrator can remove a member's private document without being able to read it.
 - Nothing is ever visible across organizations, and a resource you may not see is a `404`, the
   same as one that does not exist.
-- `GET /api/v1/system/status` (infrastructure facts) is for administrators only.
+- `GET /api/v1/system/status` (infrastructure facts) is for administrators only, and the web UI
+  lists its System Status page for administrators only (display only: the 403 is the protection).
 - `GET /api/v1/operations/summary` counts documents by status: a member's counts cover what they
   can read; an administrator's cover their whole organization (aggregate numbers only, never titles,
   owners or content).
@@ -725,6 +737,19 @@ being let through.
 | `RATE_LIMIT_DOCUMENT_UPLOADS` | `10` | uploads per user per window; `0` = unlimited |
 | `RATE_LIMIT_EMBEDDING_JOBS` | `5` | embedding jobs per user per window; `0` = unlimited |
 | `RATE_LIMIT_MAX_TRACKED_KEYS` | `100000` | cap on in-memory counters (see ADR 014) |
+
+Application metrics are opt-in (see [docs/operations/observability.md](docs/operations/observability.md)):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `METRICS_ENABLED` | `false` | `true` mounts `GET /metrics` and starts recording; otherwise nothing is recorded and the route is a 404 |
+| `METRICS_TOKEN` | unset | bearer token a scraper must send; required outside local development, at least 16 characters, no leading/trailing whitespace (a trailing newline from a secret file is rejected); keep it out of version control |
+| `MAX_REQUEST_BODY_BYTES` | `16777216` | largest request body, whatever its Content-Type. A request that declares a larger `Content-Length` gets 413 before its body is read; a chunked request without a declared length is cut off once it passes the limit, so the read stays bounded, but it may get 400 instead of 413. The upload route allows `DOCUMENT_MAX_UPLOAD_SIZE_BYTES` + 1 MiB |
+| `A2A_MAX_RESPONSE_BYTES` / `A2A_TOTAL_TIMEOUT_SECONDS` | `1048576` / `30` | cap on one agent response, and a deadline for the whole exchange (on top of the per-phase timeout) |
+| `LLM_STREAM_TOTAL_TIMEOUT_SECONDS` | `300` | deadline for a whole model stream |
+| `EMBEDDING_DIMENSION` | `384` | must equal the vector column; the API refuses to start otherwise |
+| `CHAT_HISTORY_MAX_MESSAGES` / `CHAT_HISTORY_MAX_CHARS` | `40` / `24000` | conversation history replayed to the model per turn: the newest whole messages within both bounds ([ADR 016](docs/architecture/decisions/016-input-bounds-and-history-limits.md)) |
+| `DOCUMENT_MAX_UNCOMPRESSED_BYTES` / `DOCUMENT_MAX_PDF_PAGES` / `DOCUMENT_MAX_EXTRACTED_CHARS` | `67108864` / `2000` / `20000000` | what an uploaded file may expand to; exceeding one fails that document with a clear message |
 
 The defaults are starting points to review, not recommendations. **Counts are kept in memory per
 process**: with several workers or replicas each keeps its own, so the effective limit is
@@ -772,8 +797,8 @@ cd frontend/web && npm install && npm run dev
 
 Then visit http://localhost:5173 — Vite's dev server, with
 `VITE_API_BASE_URL` (default `http://localhost:8000`) pointing it at the
-backend. The Copilot, Documents, Operations, and System Status pages are
-all in the left sidebar. The Copilot streams its answer over Server-Sent Events
+backend. The Copilot, Conversations, Documents, Memory and Operations pages are in the left
+sidebar, and so is System Status for administrators. The Copilot streams its answer over Server-Sent Events
 (`POST /api/v1/rag/chat/stream`, read with `fetch` so the bearer token can be sent): text
 appears as it is written, with a Stop button, sources when it finishes, and an explicit
 "Try again" after a failure (there is no automatic reconnect: a retry would repeat a request
@@ -945,9 +970,10 @@ Full setup instructions: [docs/development/setup.md](docs/development/setup.md).
 ## Running checks
 
 ```bash
-uv run pytest       # unit + integration; integration tests skip without live
-                     # Postgres/Redis, the Groq live tests (chat + agent
-                     # tool selection) skip without a real GROQ_API_KEY, and
+uv run pytest       # unit + integration; integration tests skip without a
+                     # configured test database, the Groq live tests (chat + agent
+                     # tool selection) skip unless GROQ_API_KEY *and*
+                     # AEGIS_ALLOW_LIVE_LLM_TESTS=1 are both set, and
                      # the real-embedding-model tests (embeddings + RAG
                      # pipeline + Recall@K) skip unless explicitly opted
                      # into — none are required to pass
@@ -956,11 +982,39 @@ uv run ruff format .
 uv run pyright
 ```
 
+**The tests never use your development database.** They use only the test database named by
+`TEST_DATABASE_URL` (environment, or `.env.test` copied from `.env.test.example`), which must be on
+this machine and end in `_test`; unit tests cannot connect to PostgreSQL at all. The integration
+suites create and delete their own organizations and users there (and the opt-in migration round
+trip creates and drops throwaway databases on the same server). See "Running tests safely" in
+[docs/development/setup.md](docs/development/setup.md#running-tests-safely), including
+`scripts/test_db.py` to check and migrate the test database. In CI the Postgres and Redis service
+containers (database `aegis_test`) are part of the `test` job, and `AEGIS_REQUIRE_SERVICES=1` makes
+an unreachable service **fail** the integration tests instead of skipping them (see
+`backend/tests/integration/requirements.py`); the job also passes `-rs`, so every skip is listed
+with its reason.
+
+**The test process never uses your development settings.** It does not read `.env`, removes any
+inherited variable named after an application setting (an editor may copy all of `.env` into a
+terminal), and runs with `DEBUG=false`. **Billed Groq tests need a two-part opt-in:** a
+`GROQ_API_KEY` in the shell *and* `AEGIS_ALLOW_LIVE_LLM_TESTS=1`. A key on its own is blanked for
+the tests, so it can never start a billed test by accident. Every command below that names
+`GROQ_API_KEY` needs the flag too.
+
 Run the opt-in real Groq tests explicitly with (covers plain chat and the
 agent's real tool-selection behavior):
 
 ```bash
-GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... uv run pytest -m llm_integration -v
+```
+
+In PowerShell, set both for one run only, then remove them:
+
+```powershell
+$env:AEGIS_ALLOW_LIVE_LLM_TESTS = "1"
+$env:GROQ_API_KEY = [System.Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Groq key")).Password
+uv run pytest -m llm_integration -v
+Remove-Item Env:AEGIS_ALLOW_LIVE_LLM_TESTS, Env:GROQ_API_KEY
 ```
 
 Run the opt-in real-embedding-model tests explicitly with (downloads/loads
@@ -979,24 +1033,47 @@ RUN_MCP_STDIO_INTEGRATION=1 uv run pytest -m mcp_integration -v
 ```
 
 Run the opt-in real A2A HTTP transport tests explicitly with (a real
-`uvicorn` server on a real socket; add `GROQ_API_KEY` for the tier that
-also makes a real Groq call through the full A2A stack):
+`uvicorn` server on a real socket; add `GROQ_API_KEY` and `AEGIS_ALLOW_LIVE_LLM_TESTS=1` for
+the tier that also makes a real Groq call through the full A2A stack):
 
 ```bash
 RUN_A2A_LIVE_INTEGRATION=1 uv run pytest -m a2a_integration -v
-RUN_A2A_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... uv run pytest -m a2a_integration -v
+RUN_A2A_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
+    uv run pytest -m a2a_integration -v
 ```
 
 Run the opt-in real multi-agent workflow tests explicitly with (the same
 real-socket pattern, through the full Research + Document + Analyst
-orchestration; add `GROQ_API_KEY` for the tier that also makes a real
-Groq call):
+orchestration; add `GROQ_API_KEY` and `AEGIS_ALLOW_LIVE_LLM_TESTS=1` for the tier that also
+makes a real Groq call):
 
 ```bash
 RUN_MULTI_AGENT_LIVE_INTEGRATION=1 uv run pytest -m multi_agent_integration -v
-RUN_MULTI_AGENT_LIVE_INTEGRATION=1 GROQ_API_KEY=sk-... \
+RUN_MULTI_AGENT_LIVE_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
     uv run pytest -m multi_agent_integration -v
 ```
+
+Run the opt-in live RAG end-to-end test explicitly with (real embeddings and pgvector retrieval,
+then one real Groq answer, checked for grounding and citations; it writes synthetic rows, so run it
+only against a disposable database):
+
+```bash
+RUN_RAG_E2E_LIVE=1 RUN_EMBEDDING_INTEGRATION=1 AEGIS_ALLOW_LIVE_LLM_TESTS=1 GROQ_API_KEY=sk-... \
+    uv run pytest backend/tests/integration/test_rag_end_to_end_live.py -v -rs
+```
+
+Two manual GitHub Actions workflows run the RAG tests on a GitHub-hosted runner against a
+throwaway pgvector service (Actions → the workflow → **Run workflow**). Both fail unless every
+expected test ran and passed, so a skipped test is a failed run:
+
+- `rag-integration.yml`: the four real-embedding retrieval tests. No LLM and no secrets.
+- `rag-e2e-live.yml`: the live end-to-end test above. It runs in the `groq-live` environment and
+  reads that environment's `GROQ_API_KEY` secret; the job sets `AEGIS_ALLOW_LIVE_LLM_TESTS=1`,
+  the second half of the opt-in. Set the environment up **before** adding the
+  secret (Settings → Environments): a required reviewer, so every run waits for an approval, and
+  deployment branches limited to `main`; then the secret, a dedicated key with a spending cap.
+  Store the key only as a `groq-live` environment secret, never as a repository or organization secret.
+  GitHub creates a missing environment on first use **without** any protection rules.
 
 Run the React frontend's checks (no real backend/network — every `fetch`
 call is mocked in its tests):

@@ -11,6 +11,12 @@ asks for `real_auth` — makes the HTTP app's test principal that same user, so 
 made through the app is owned by a row that exists. The few tests whose code under test
 commits (document uploads) would leave that user behind, so teardown removes everything
 the test's user owns, then the user and organization.
+
+Test isolation (see `backend/tests/isolation.py`): the database used here is only ever the test
+database named by `TEST_DATABASE_URL`, already checked to end in `_test`. Before the first test
+uses it, `tests/live_database.py` also asks the server which database it really is and which
+migration it is at, and stops the whole run if either is wrong. The evaluation suite's
+`db_session` uses the same module.
 """
 
 import uuid
@@ -21,15 +27,23 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_principal
-from app.db.session import AsyncSessionLocal, check_database
+from app.db.session import AsyncSessionLocal
 from app.domain.models.agent_memory import AgentMemory
 from app.domain.models.conversation import Conversation
 from app.domain.models.document import Document
 from app.domain.models.organization import Organization
 from app.domain.models.user import User
 from app.main import app
+from tests.live_database import require_test_database, verify_test_database_once
 
 from .scoping import TestUser, create_user
+
+
+@pytest.fixture(autouse=True)
+async def _isolated_test_database() -> None:
+    """Runs the live check before any integration test, including ones that connect through the
+    application without `db_session`."""
+    await verify_test_database_once()
 
 
 async def _remove_organizations(session: AsyncSession, organizations: set[uuid.UUID]) -> None:
@@ -56,8 +70,7 @@ async def _remove_everything_owned_by(session: AsyncSession, owner: TestUser) ->
 
 @pytest.fixture
 async def db_session(request: pytest.FixtureRequest) -> AsyncIterator[AsyncSession]:
-    if not await check_database(timeout=2.0):
-        pytest.skip("Postgres is not reachable — start it via `docker compose up -d postgres`")
+    await require_test_database()
     async with AsyncSessionLocal() as session:
         owner = await create_user(session)
         session.info["test_user"] = owner

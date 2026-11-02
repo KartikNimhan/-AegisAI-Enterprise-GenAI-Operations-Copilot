@@ -47,12 +47,16 @@ async def run_agent_stream(
 ) -> StreamingResponse:
     async def event_source() -> AsyncIterator[str]:
         try:
-            async for _conversation_id, event in agent_service.run_stream(
+            async for conversation_id, event in agent_service.run_stream(
                 conversation_id=request.conversation_id,
                 message=request.message,
                 model_role=request.model_role,
             ):
-                yield f"event: {event.event}\ndata: {json.dumps(event.data, default=str)}\n\n"
+                data = event.data
+                if event.event == "completed":
+                    # Lets a client continue the conversation a new run just created.
+                    data = {**data, "conversation_id": str(conversation_id)}
+                yield f"event: {event.event}\ndata: {json.dumps(data, default=str)}\n\n"
         except (LLMError, AgentTimeoutError) as exc:
             # Same reasoning as api/v1/chat.py and api/v1/rag.py: headers
             # are already committed once streaming starts, so a mid-stream
