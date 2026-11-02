@@ -101,9 +101,14 @@ jobs:
 
   # The default UI as of the React migration (see docker-compose.yml's
   # `frontend` service and README) — npm install/lint/build/test for
-  # frontend/web/, the same four checks a contributor runs locally.
+  # frontend/web/, the same checks a contributor runs locally. Since M10.0 it also runs the
+  # browser tests (Playwright, Chromium only): accessibility (axe) in both themes, layout at
+  # 375/768/1280 px, keyboard and focus, reduced motion, and the production build under the
+  # production Content-Security-Policy. They use mock data only: no backend, identity provider or
+  # model is called. The job name is unchanged, so it stays a required check.
   frontend-react-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend/web
@@ -120,6 +125,22 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm run test
+      # The browser version is pinned by @playwright/test in package-lock.json.
+      - name: Install the Playwright browser (Chromium)
+        run: npx playwright install --with-deps chromium
+      # Needs the production build from `npm run build` above (the CSP tests serve dist/).
+      - name: Browser tests (Playwright)
+        run: npm run test:e2e
+      - name: Keep the Playwright report when the browser tests fail
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: |
+            frontend/web/playwright-report
+            frontend/web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
 
   # The original Streamlit UI — no longer the default (see
   # docker-compose.yml's profile-gated `frontend-streamlit` service), but
