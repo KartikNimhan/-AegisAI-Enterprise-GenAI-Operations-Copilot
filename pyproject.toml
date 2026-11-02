@@ -37,7 +37,7 @@ dependencies = [
     # Floor raised for GHSA-3fx2-cqw9-xr3c (fixed in langgraph 1.2.14 / langgraph-sdk 0.4.6).
     "langgraph>=1.2.14",
     "mcp>=2.3.0",
-    "a2a-sdk>=1.2.1",
+    "a2a-sdk>=1.3.0",
     "pyjwt[crypto]>=2.15.1",
     # Application metrics (app.observability): a dedicated registry, no default collectors.
     "prometheus-client>=0.20",
