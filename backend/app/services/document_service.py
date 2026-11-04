@@ -38,13 +38,14 @@ from app.db.repositories.document_chunk_repository import DocumentChunkRepositor
 from app.db.repositories.document_repository import DocumentRepository, VisibilityChange
 from app.dependencies import DBSessionDep
 from app.documents.chunk_ids import compute_chunk_id
-from app.documents.chunking.base import Chunker
+from app.documents.chunking.base import ChunkData, Chunker
 from app.documents.chunking.recursive import RecursiveChunker
 from app.documents.exceptions import ExtractionError
 from app.documents.extractors import ExtractionLimits, enforce_extracted_size
 from app.documents.isolated_extraction import ExtractionRunner, build_extraction_runner
 from app.documents.metadata import build_document_metadata
 from app.documents.normalization import normalize_text
+from app.documents.sections import assign_sections, markdown_headings, positioned_headings
 from app.documents.validation import (
     determine_document_type,
     generate_storage_key,
@@ -62,6 +63,27 @@ from app.storage.base import DocumentStorage
 from app.storage.local import get_document_storage
 
 logger = structlog.get_logger(__name__)
+
+
+# The media type a stored original is served with (M10.6). It comes from the document type the
+# upload was validated as (extension, magic bytes and declared type all agreed), never from the
+# client-declared `content_type`, so a stored file can never be served as HTML or script.
+ORIGINAL_FILE_MEDIA_TYPES: dict[DocumentType, str] = {
+    DocumentType.PDF: "application/pdf",
+    DocumentType.DOCX: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    DocumentType.TXT: "text/plain; charset=utf-8",
+    DocumentType.MARKDOWN: "text/markdown; charset=utf-8",
+}
+
+
+@dataclass(frozen=True)
+class OriginalFile:
+    """A stored original file the caller may read. `filename` is the name it was uploaded with,
+    never the internal storage key."""
+
+    filename: str
+    media_type: str
+    content: bytes
 
 
 @dataclass(frozen=True)
@@ -226,6 +248,10 @@ class DocumentService:
             chunk_overlap=self._settings.document_chunk_overlap,
         )
 
+        chunks_data = _with_sections(
+            document.document_type, normalized_pages, chunks_data, extraction.headings
+        )
+
         document.character_count = normalized_character_count
         document.page_count = extraction.metadata.get("page_count")
         document.metadata_ = build_document_metadata(
@@ -269,6 +295,28 @@ class DocumentService:
             return None
         return await self._chunks.list_by_document(document_id, limit=limit, offset=offset)
 
+    async def get_original_file(self, document_id: uuid.UUID) -> OriginalFile | None:
+        """The original uploaded file, if the caller can CURRENTLY read the document (the same
+        scoped read as `get_document`). `None` covers "no such document", "not readable by this
+        caller" and "file missing from storage" alike, so the response reveals nothing more."""
+        document = await self._documents.get(document_id)
+        if document is None:
+            return None
+        try:
+            content = await self._storage.read(key=document.filename)
+        except (FileNotFoundError, ValueError) as exc:
+            logger.warning(
+                "document_original_file_unavailable",
+                document_id=str(document_id),
+                error_type=type(exc).__name__,
+            )
+            return None
+        return OriginalFile(
+            filename=document.original_filename,
+            media_type=ORIGINAL_FILE_MEDIA_TYPES[document.document_type],
+            content=content,
+        )
+
     async def set_visibility(
         self, document_id: uuid.UUID, visibility: DocumentVisibility
     ) -> VisibilityChange | None:
@@ -309,6 +357,22 @@ class DocumentService:
                     error_type=type(exc).__name__,
                 )
         return deleted
+
+
+def _with_sections(
+    document_type: DocumentType,
+    pages: list[str],
+    chunks: list[ChunkData],
+    headings: tuple[tuple[int, str], ...],
+) -> list[ChunkData]:
+    """Adds `metadata["section"]` to Markdown and DOCX chunks (M10.9); other formats unchanged."""
+    if len(pages) != 1:
+        return chunks
+    if document_type == DocumentType.MARKDOWN:
+        return assign_sections(pages[0], chunks, markdown_headings(pages[0]))
+    if document_type == DocumentType.DOCX and headings:
+        return assign_sections(pages[0], chunks, positioned_headings(pages[0], headings))
+    return chunks
 
 
 def _compute_checksum(content: bytes) -> str:

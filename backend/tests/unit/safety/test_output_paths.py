@@ -115,7 +115,7 @@ async def test_a_streamed_rag_answer_matches_the_stored_one_and_never_leaks() ->
 
     deltas = [
         chunk.delta
-        async for _id, chunk, _sources in service.answer_stream(
+        async for _id, chunk, _sources, _invalid, _mid in service.answer_stream(
             conversation_id=None, message="key?", model_role=ModelRole.FAST
         )
     ]

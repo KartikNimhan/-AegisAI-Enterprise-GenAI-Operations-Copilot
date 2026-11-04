@@ -1,7 +1,7 @@
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  background: var(--surface-card);
+  background: var(--surface-sidebar);
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
@@ -25,7 +25,7 @@
   height: 32px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
-  background: var(--accent-500);
+  background: var(--accent-solid);
   color: var(--text-on-accent);
   display: flex;
   align-items: center;
@@ -62,7 +62,7 @@
 }
 
 .navItem:hover {
-  background: var(--surface-sunken);
+  background: var(--surface-hover);
   color: var(--text-primary);
 }
 
@@ -88,4 +88,31 @@
 .toggle:hover {
   background: var(--surface-sunken);
   color: var(--text-primary);
+}
+
+/* The drawer's own Close button (rendered only while the drawer is open). */
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--surface-hover);
+}
+
+/* In the drawer (below 768 px) collapsing makes no sense: the drawer is the compact form. */
+@media (max-width: 767px) {
+  .toggle {
+    display: none;
+  }
 }

@@ -12,6 +12,7 @@ no-context steps chat doesn't have.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
 from app.core.security import AccessScopeDep
+from app.db.repositories.citation_repository import CitationRepository
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_repository import DocumentRepository
 from app.db.repositories.message_repository import MessageRepository
@@ -33,12 +35,13 @@ from app.llm.exceptions import LLMError
 from app.llm.gateway import LLMGateway, get_llm_gateway
 from app.llm.schemas import ModelRole, StreamChunk
 from app.prompts.history import HistoryLimits
+from app.rag.citation_records import CitationRecord, build_citation_records
 from app.rag.citations import StreamingCitationSanitizer, sanitize_citations
 from app.rag.context.assembler import AssembledSource, ContextAssembler
 from app.rag.prompts.builder import RAGPromptBuilder
 from app.rag.retrieval.schemas import RetrievalFilters
 from app.rag.retrieval.service import RetrievalService, get_retrieval_service
-from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
+from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource, RAGStreamItem
 from app.safety.output_guard import OutputGuard, build_output_guard, log_findings
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +64,7 @@ class RAGService:
         conversations: ConversationRepository,
         messages: MessageRepository,
         documents: DocumentRepository,
+        citations: CitationRepository,
         output_guard: OutputGuard | None = None,
     ) -> None:
         self._session = session
@@ -71,6 +75,7 @@ class RAGService:
         self._conversations = conversations
         self._messages = messages
         self._documents = documents
+        self._citations = citations
         self._output_guard = output_guard or OutputGuard()
 
     async def answer(
@@ -106,12 +111,13 @@ class RAGService:
                 similarity_threshold=outcome.similarity_threshold,
                 duration_ms=round((time.perf_counter() - start) * 1000, 2),
             )
-            await self._messages.add(
+            reply = await self._messages.add(
                 conversation_id=conversation.id,
                 role=MessageRole.ASSISTANT,
                 content=NO_CONTEXT_RESPONSE,
             )
             await self._conversations.touch(conversation)
+            await self._commit_reply()
             return RAGAnswer(
                 conversation_id=conversation.id,
                 answer=NO_CONTEXT_RESPONSE,
@@ -128,9 +134,13 @@ class RAGService:
                     embedding_model_version=outcome.embedding_model_version,
                     filters=outcome.filters.describe(),
                 ),
+                message_id=reply.id,
             )
 
         assembled = self._context_assembler.assemble(outcome.results)
+        # Built before the model is called: a broken invariant (a non-finite score) fails the
+        # request before any tokens are spent. `cited` is filled in once the answer is known.
+        records = build_citation_records(assembled.sources, ())
         prompt = self._prompt_builder.build(
             context_text=assembled.text, question=message, history=history
         )
@@ -149,7 +159,7 @@ class RAGService:
         guarded = self._output_guard.redact(checked.text)
         log_findings("rag_output_redacted", guarded.findings, conversation_id=str(conversation.id))
 
-        await self._messages.add(
+        reply = await self._messages.add(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
             content=guarded.text,
@@ -161,7 +171,12 @@ class RAGService:
             output_tokens=completion.usage.output_tokens,
             total_tokens=completion.usage.total_tokens,
         )
+        # Same transaction as the reply: a rolled-back answer leaves no citations behind.
+        await self._citations.add_for_message(
+            message_id=reply.id, records=_mark_cited(records, checked.report.cited)
+        )
         await self._conversations.touch(conversation)
+        await self._commit_reply()
 
         logger.info(
             "rag_answer_generated",
@@ -202,6 +217,7 @@ class RAGService:
             finish_reason=completion.finish_reason,
             request_id=completion.request_id,
             invalid_citations=checked.report.removed,
+            message_id=reply.id,
         )
 
     async def answer_stream(
@@ -213,11 +229,15 @@ class RAGService:
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
         filters: RetrievalFilters | None = None,
-    ) -> AsyncIterator[tuple[uuid.UUID, StreamChunk, list[RAGSource] | None]]:
-        """Yields `(conversation_id, chunk, sources)` — `sources` is `None`
-        on every chunk except the final one, mirroring how `StreamChunk.usage`
-        is only populated on the final chunk. Sources come from retrieval,
-        never from the LLM — the model is never asked to produce them.
+    ) -> AsyncIterator[RAGStreamItem]:
+        """Yields `RAGStreamItem`s: `sources`, `invalid_citations` and `message_id` are `None`
+        on every chunk except the final one, mirroring how `StreamChunk.usage` is only populated
+        on the final chunk. Sources come from retrieval, never from the LLM: the model is never
+        asked to produce them. `invalid_citations` are the ids the model cited that were never
+        retrieved (removed from the text); the final chunk is built after the citation check has
+        seen the whole answer, so the list is complete there. `message_id` is fixed before the
+        stream starts; the reply and its citations are saved under it after the final chunk, in
+        the same transaction, so it is valid once the stream has completed.
         """
         conversation = await self._get_or_create_conversation(conversation_id, message)
         applied = (filters or RetrievalFilters()).with_document_id(document_id)
@@ -240,16 +260,19 @@ class RAGService:
                 top_k=outcome.top_k,
                 similarity_threshold=outcome.similarity_threshold,
             )
-            await self._messages.add(
+            reply = await self._messages.add(
                 conversation_id=conversation.id,
                 role=MessageRole.ASSISTANT,
                 content=NO_CONTEXT_RESPONSE,
             )
             await self._conversations.touch(conversation)
-            yield (
+            await self._commit_reply()
+            yield RAGStreamItem(
                 conversation.id,
                 StreamChunk(delta=NO_CONTEXT_RESPONSE, is_final=True),
                 [],
+                (),
+                reply.id,
             )
             return
 
@@ -257,6 +280,9 @@ class RAGService:
         prompt = self._prompt_builder.build(
             context_text=assembled.text, question=message, history=history
         )
+        # As in `answer`: validated before the model is called (and before any event is sent).
+        records = build_citation_records(assembled.sources, ())
+        reply_id = uuid.uuid4()
         citations = StreamingCitationSanitizer(source.source_id for source in assembled.sources)
         guard = self._output_guard.stream()
 
@@ -293,7 +319,13 @@ class RAGService:
                     if chunk.is_final
                     else None
                 )
-                yield conversation.id, chunk.model_copy(update={"delta": delta}), sources
+                yield RAGStreamItem(
+                    conversation.id,
+                    chunk.model_copy(update={"delta": delta}),
+                    sources,
+                    citations.report.removed if chunk.is_final else None,
+                    reply_id if chunk.is_final else None,
+                )
         except LLMError:
             # Mirrors ChatService.stream_message: the API layer catches
             # LLMError to emit a clean terminal SSE event instead of
@@ -324,8 +356,22 @@ class RAGService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=total_tokens,
+            id=reply_id,
+        )
+        await self._citations.add_for_message(
+            message_id=reply_id, records=_mark_cited(records, citations.report.cited)
         )
         await self._conversations.touch(conversation)
+        await self._commit_reply()
+
+    async def _commit_reply(self) -> None:
+        """Commits the reply (and its citations) BEFORE the caller is told it exists (M10 review
+        finding M1). The request session's own commit (`app.db.session.get_session`) runs only
+        after the response body has been sent, so without this a client could receive the
+        message id, and the stream's `[DONE]`, before the reply was committed, and a citation
+        opened straight away would not be found yet. If this commit fails, the exception reaches
+        the caller before `[DONE]` (or the JSON response) and the request session rolls back."""
+        await self._session.commit()
 
     async def _get_or_create_conversation(
         self, conversation_id: uuid.UUID | None, first_message: str
@@ -352,6 +398,10 @@ def _derive_title(message: str) -> str:
     return stripped[: _TITLE_MAX_LENGTH - 1].rstrip() + "…"
 
 
+def _mark_cited(records: list[CitationRecord], cited: tuple[str, ...]) -> list[CitationRecord]:
+    return [dataclasses.replace(record, cited=record.source_id in cited) for record in records]
+
+
 def _to_rag_source(source: AssembledSource, *, cited: bool = False) -> RAGSource:
     return RAGSource(
         source_id=source.source_id,
@@ -361,6 +411,7 @@ def _to_rag_source(source: AssembledSource, *, cited: bool = False) -> RAGSource
         chunk_index=source.chunk_index,
         page_number=source.page_number,
         similarity=source.similarity,
+        passage_truncated=source.passage_truncated,
         cited=cited,
     )
 
@@ -382,4 +433,5 @@ def get_rag_service(
         conversations=ConversationRepository(session, scope),
         messages=MessageRepository(session, scope),
         documents=DocumentRepository(session, scope),
+        citations=CitationRepository(session, scope),
     )

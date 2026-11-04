@@ -19,6 +19,13 @@ export type IconName =
   | 'alert'
   | 'history'
   | 'memory'
+  | 'close'
+  | 'menu'
+  | 'download'
+  | 'overview'
+  | 'stop'
+  | 'quote'
+  | 'file'
 
 const PATHS: Record<IconName, string> = {
   chat: 'M4 4h16v11H9l-5 4v-4H4V4z',
@@ -35,6 +42,13 @@ const PATHS: Record<IconName, string> = {
   history: 'M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4',
   memory: 'M12 3a6 6 0 0 0-3 11.2V17h6v-2.8A6 6 0 0 0 12 3zM9.5 20h5M10 17v3M14 17v3',
   alert: 'M12 8v5M12 17h.01M10.3 3.9L2.7 17a1.5 1.5 0 0 0 1.3 2.3h16a1.5 1.5 0 0 0 1.3-2.3L13.7 3.9a1.5 1.5 0 0 0-2.6 0z',
+  close: 'M6 6l12 12M18 6L6 18',
+  menu: 'M4 7h16M4 12h16M4 17h16',
+  download: 'M12 4v12M7 11l5 5 5-5M4 20h16',
+  overview: 'M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z',
+  stop: 'M7 7h10v10H7z',
+  quote: 'M7 8h4v4c0 2-1 4-4 4M13 8h4v4c0 2-1 4-4 4',
+  file: 'M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v4h4M9 13h6M9 17h6',
 }
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

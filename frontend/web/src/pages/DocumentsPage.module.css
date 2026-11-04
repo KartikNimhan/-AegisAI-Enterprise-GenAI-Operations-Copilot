@@ -27,7 +27,7 @@
 .table th {
   text-align: left;
   padding: var(--space-3) var(--space-4);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-weight: 600;
   font-size: var(--text-xs);
   text-transform: uppercase;
@@ -85,12 +85,50 @@
   cursor: not-allowed;
 }
 
-@media (max-width: 720px) {
+.fileLink {
+  color: var(--accent-700);
+  overflow-wrap: anywhere;
+}
+
+/* The table follows the width it actually has (M10.8): next to the sidebar at 768 px it had only
+   528 px and overflowed. Below 640 px of its own width each document becomes a stacked block,
+   each value labelled from the column it came from (WCAG 1.4.10). */
+.tableWrap {
+  container-type: inline-size;
+}
+
+@container (max-width: 640px) {
   .table thead {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
+
   .table tr {
     display: flex;
     flex-direction: column;
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .table td {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border-bottom: none;
+  }
+
+  .table td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 5.5rem;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+  }
+
+  .actions {
+    justify-content: flex-start;
   }
 }

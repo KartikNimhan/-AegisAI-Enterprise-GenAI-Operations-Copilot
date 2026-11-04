@@ -36,9 +36,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     case 'loading':
       return (
         <Screen title="Signing in…">
-          <p role="status" className={styles.text}>
-            Checking your session.
-          </p>
+          <output className={styles.text}>Checking your session.</output>
         </Screen>
       )
     case 'unconfigured':
@@ -116,9 +114,7 @@ function AccountCheck({ auth, children }: { auth: AuthState; children: ReactNode
   if (check === null) {
     return (
       <Screen title="Signing in…">
-        <p role="status" className={styles.text}>
-          Checking your account.
-        </p>
+        <output className={styles.text}>Checking your account.</output>
       </Screen>
     )
   }

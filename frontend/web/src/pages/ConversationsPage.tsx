@@ -82,9 +82,7 @@ export function ConversationsPage() {
   if (!items) {
     return (
       <Card>
-        <div className={styles.loading} role="status">
-          Loading…
-        </div>
+        <output className={styles.loading}>Loading…</output>
       </Card>
     )
   }

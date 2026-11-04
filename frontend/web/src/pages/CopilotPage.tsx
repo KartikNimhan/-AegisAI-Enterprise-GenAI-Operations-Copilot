@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import { CitationPanel, type CitationTarget } from '../components/Chat/CitationPanel'
 import { Composer } from '../components/Chat/Composer'
 import { MessageBubble } from '../components/Chat/MessageBubble'
 import { EmptyState } from '../components/EmptyState'
 import { Icon } from '../components/Icon'
-import { getConversation } from '../api/conversations'
+import { getConversation, type MessageCitationSummary } from '../api/conversations'
 import { runMultiAgentWorkflow } from '../api/copilot'
 import { streamAgentRun, streamPlainChat, streamRagChat } from '../api/stream'
 import type { StreamRequest } from '../api/stream'
-import type { ChatTurn, ToolStep } from '../types/chat'
+import type { ChatTurn, SourceRef, ToolStep } from '../types/chat'
 import { friendlyMessage } from '../utils/errors'
 import styles from './CopilotPage.module.css'
 
@@ -27,6 +28,20 @@ function makeId(): string {
   return Math.random().toString(36).slice(2)
 }
 
+/** A saved citation as a source of a reopened answer (M10.4 T5): unavailable ones keep no details. */
+function sourceFromCitation(citation: MessageCitationSummary): SourceRef {
+  return {
+    source_id: citation.source_id,
+    cited: citation.cited,
+    status: citation.status,
+    filename: citation.status === 'available' ? citation.filename : null,
+    page: citation.status === 'available' ? citation.page : null,
+    document_id: citation.status === 'available' ? citation.document_id : null,
+    section: citation.status === 'available' ? citation.section : null,
+    passage_truncated: citation.status === 'available' ? (citation.passage_truncated ?? undefined) : undefined,
+  }
+}
+
 function isAbort(error: unknown): boolean {
   // DOMException is not always an `Error` instance across realms (jsdom), so check the name.
   return typeof error === 'object' && error !== null && (error as { name?: string }).name === 'AbortError'
@@ -38,6 +53,10 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
   const [mode, setMode] = useState<Mode>('stream')
   const [loadingConversation, setLoadingConversation] = useState(Boolean(initialConversationId))
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [openCitation, setOpenCitation] = useState<CitationTarget | null>(null)
+  // Read by screen readers when an answer finishes, stops or fails (the text itself is not
+  // announced token by token, which would be unusable).
+  const [announcement, setAnnouncement] = useState('')
   const conversationId = useRef<string | null>(null)
   const controller = useRef<AbortController | null>(null)
 
@@ -58,6 +77,13 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
               id: message.id,
               role: message.role as 'user' | 'assistant',
               content: message.content,
+              ...(message.role === 'assistant'
+                ? {
+                    messageId: message.id,
+                    conversationId: conversation.id,
+                    sources: (message.citations ?? []).map(sourceFromCitation),
+                  }
+                : {}),
             })),
         )
         setLoadingConversation(false)
@@ -92,17 +118,24 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
     try {
       await execute(abort.signal)
       patchTurn(answerId, { streaming: false })
+      setAnnouncement('The answer is complete.')
     } catch (error) {
+      // Only `[DONE]` confirms that the reply was committed. Without it the answer is unconfirmed
+      // (it may or may not have been saved), so its message id is dropped and no citation is
+      // opened from it; a reply that was saved appears when the conversation is reopened.
       if (isAbort(error)) {
         // Stopped by the user (or the page closing): keep what arrived and say so.
-        patchTurn(answerId, { streaming: false, stopped: true })
+        patchTurn(answerId, { streaming: false, stopped: true, messageId: undefined })
+        setAnnouncement('The answer was stopped.')
       } else {
         // Partial text from a broken stream stays visible, with the error beneath it.
         patchTurn(answerId, {
           streaming: false,
           error: friendlyMessage(error),
           retryMessage: message,
+          messageId: undefined,
         })
+        setAnnouncement('The answer could not be completed.')
       }
     } finally {
       if (controller.current === abort) controller.current = null
@@ -124,6 +157,12 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
           patchTurn(answerId, (turn) => ({
             content: turn.content + chunk.delta,
             ...(chunk.is_final && chunk.sources ? { sources: chunk.sources } : {}),
+            ...(chunk.is_final && chunk.message_id
+              ? { messageId: chunk.message_id, conversationId: chunk.conversation_id }
+              : {}),
+            ...(chunk.is_final && chunk.invalid_citations?.length
+              ? { invalidCitations: chunk.invalid_citations }
+              : {}),
           }))
         },
       }),
@@ -179,6 +218,7 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
     const answerId = makeId()
     const answer: ChatTurn = { id: answerId, role: 'assistant', content: '', streaming: true }
     setSending(true)
+    setAnnouncement('Writing the answer…')
     setTurns((prev) =>
       replaceTurnId
         ? // A retry replaces the failed answer; the user's message is already in the transcript.
@@ -199,6 +239,7 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
     controller.current?.abort()
     conversationId.current = null
     setLoadError(null)
+    setOpenCitation(null)
     setTurns([])
   }
 
@@ -233,9 +274,7 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
 
       <div className={styles.transcript}>
         {loadingConversation ? (
-          <p role="status" className={styles.subtitle}>
-            Loading conversation…
-          </p>
+          <output className={styles.subtitle}>Loading conversation…</output>
         ) : loadError ? (
           <EmptyState title="Could not open that conversation" description={loadError} />
         ) : turns.length === 0 ? (
@@ -248,6 +287,16 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
             <MessageBubble
               key={turn.id}
               turn={turn}
+              onOpenCitation={
+                turn.messageId && turn.conversationId
+                  ? (sourceId) =>
+                      setOpenCitation({
+                        conversationId: turn.conversationId as string,
+                        messageId: turn.messageId as string,
+                        sourceId,
+                      })
+                  : undefined
+              }
               onRetry={
                 turn.error && turn.retryMessage && !sending
                   ? () => void send(turn.retryMessage as string, turn.id)
@@ -266,6 +315,10 @@ export function CopilotPage({ initialConversationId }: { initialConversationId?:
         </div>
       )}
       <Composer onSend={(message) => void send(message)} disabled={sending || loadingConversation} />
+      <p className="visually-hidden" aria-live="polite">
+        {announcement}
+      </p>
+      <CitationPanel target={openCitation} onClose={() => setOpenCitation(null)} />
     </div>
   )
 }

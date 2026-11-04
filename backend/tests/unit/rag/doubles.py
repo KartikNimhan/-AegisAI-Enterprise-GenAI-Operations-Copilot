@@ -135,3 +135,24 @@ class FakeDocumentRepositoryForRAG:
 
     async def get(self, document_id: uuid.UUID) -> object | None:
         return object() if document_id in self._existing_ids else None
+
+
+class FakeCitationRepository:
+    """Records what `RAGService` saves (M10.4 T4). Like the real repository it refuses citations
+    for a message that does not exist or is not an assistant message, so a service that saved
+    citations before (or without) its reply fails here too."""
+
+    def __init__(self, messages: Any) -> None:
+        self._messages = messages
+        self.saved: dict[uuid.UUID, list[Any]] = {}
+
+    async def add_for_message(self, *, message_id: uuid.UUID, records: Any) -> None:
+        if not records:
+            return
+        from app.core.exceptions import NotFoundError
+        from app.domain.enums.message_role import MessageRole
+
+        message = next((m for m in self._messages.messages if m.id == message_id), None)
+        if message is None or message.role != MessageRole.ASSISTANT:
+            raise NotFoundError(f"Message {message_id} not found")
+        self.saved.setdefault(message_id, []).extend(records)

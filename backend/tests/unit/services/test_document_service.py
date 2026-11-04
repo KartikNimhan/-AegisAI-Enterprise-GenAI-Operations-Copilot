@@ -250,3 +250,59 @@ def test_the_upload_lock_is_a_postgresql_advisory_lock_scoped_to_user_and_conten
     sql, params = executed[0]
     assert "pg_advisory_xact_lock" in sql
     assert params["key"] == f"document-upload:{user}:abc"  # per user AND per content
+
+
+# -- M10.6: the original file ------------------------------------------------
+
+
+async def test_original_file_is_the_uploaded_bytes_under_the_uploaded_name() -> None:
+    service, *_rest = make_service()
+    content = make_txt_bytes()
+    result = await service.upload(
+        filename="my report.txt", content_type="text/plain", content=content
+    )
+
+    original = await service.get_original_file(result.document.id)
+
+    assert original is not None
+    assert original.content == content
+    assert original.filename == "my report.txt"
+    assert original.filename != result.document.filename  # never the storage key
+    assert original.media_type == "text/plain; charset=utf-8"
+
+
+async def test_original_file_media_type_comes_from_the_validated_type_not_the_declared_one() -> (
+    None
+):
+    service, *_rest = make_service()
+    result = await service.upload(
+        filename="notes.md", content_type="text/plain", content=b"# Notes\n\nSome text."
+    )
+    original = await service.get_original_file(result.document.id)
+    assert original is not None
+    assert original.media_type == "text/markdown; charset=utf-8"
+
+    pdf = await service.upload(
+        filename="a.pdf", content_type="application/pdf", content=make_pdf_bytes()
+    )
+    pdf_original = await service.get_original_file(pdf.document.id)
+    assert pdf_original is not None and pdf_original.media_type == "application/pdf"
+
+
+async def test_original_file_is_none_for_a_document_the_caller_cannot_read() -> None:
+    import uuid
+
+    service, *_rest = make_service()
+    # The fake repository returns None for ids outside its rows, as the scoped repository does for
+    # documents outside the caller's read filter.
+    assert await service.get_original_file(uuid.uuid4()) is None
+
+
+async def test_original_file_is_none_when_the_stored_file_is_missing() -> None:
+    service, _documents, _chunks, storage, _session = make_service()
+    result = await service.upload(
+        filename="gone.txt", content_type="text/plain", content=make_txt_bytes()
+    )
+    storage.files.clear()
+
+    assert await service.get_original_file(result.document.id) is None

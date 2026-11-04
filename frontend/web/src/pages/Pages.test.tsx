@@ -40,6 +40,29 @@ describe('Documents page', () => {
     expect(screen.getByText(DOC.id)).toBeInTheDocument()
   })
 
+  it('links each file name to its viewer and labels every cell for the stacked layout (M10.8)', async () => {
+    installFetchMock(() => ({ status: 200, body: { items: [DOC], total: 1 } }))
+    renderApp('/documents')
+
+    const link = await screen.findByRole('link', { name: 'policy.pdf' })
+    expect(link).toHaveAttribute('href', `/documents/${DOC.id}`)
+    expect(screen.getByRole('columnheader', { name: 'Actions' })).toBeInTheDocument()
+    const labels = screen.getAllByRole('cell').map((cell) => cell.getAttribute('data-label'))
+    expect(labels).toEqual(['Filename', 'Type', 'Size', 'Status', 'Uploaded', null])
+  })
+
+  it('shows a failed first listing as an alert', async () => {
+    let calls = 0
+    installFetchMock(() => {
+      calls += 1
+      return calls === 1
+        ? { status: 500, body: { error: { code: 'internal', message: 'Listing failed' } } }
+        : { status: 200, body: { items: [DOC], total: 1 } }
+    })
+    renderApp('/documents')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Listing failed')
+  })
+
   it('loads chunks only on demand', async () => {
     const fetchMock = installFetchMock((url) => {
       if (url.includes('/chunks')) {

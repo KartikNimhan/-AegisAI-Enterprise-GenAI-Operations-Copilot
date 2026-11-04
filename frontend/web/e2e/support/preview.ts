@@ -13,6 +13,7 @@ export interface PreviewPage {
 
 export const PREVIEW_PAGES: PreviewPage[] = [
   { route: '/', title: 'Copilot', ready: 'No messages yet' },
+  { route: '/overview', title: 'Overview', ready: '[MOCK] What can I expense on a trip?' },
   { route: '/conversations', title: 'Conversations', ready: '[MOCK] What can I expense on a trip?' },
   { route: '/documents', title: 'Documents', ready: '[MOCK] Travel policy.pdf' },
   { route: '/memory', title: 'Memory', ready: '[MOCK] Prefers short answers' },

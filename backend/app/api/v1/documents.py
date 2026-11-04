@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 
@@ -97,6 +98,55 @@ async def get_document(
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
     return DocumentResponse.from_document(document)
+
+
+@router.get(
+    "/{document_id}/file",
+    response_class=Response,
+    responses={200: {"description": "The original uploaded file, as an attachment."}},
+)
+async def download_document_file(
+    document_id: uuid.UUID, document_service: DocumentServiceDep, principal: PrincipalDep
+) -> Response:
+    """The original uploaded file (M10.6), for a caller who can currently read the document.
+
+    Always an attachment, never rendered inline by the browser: uploaded files are untrusted
+    content. The media type comes from the validated document type, and the response may not be
+    sniffed, cached, framed or run as a page (`sandbox`). Anything the caller cannot read is 404.
+    """
+    original = await document_service.get_original_file(document_id)
+    audit.record(
+        "document.downloaded",
+        actor=principal,
+        resource_type="document",
+        resource_id=document_id,
+        outcome="success" if original is not None else "not_found",
+    )
+    if original is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return Response(
+        content=original.content,
+        media_type=original.media_type,
+        headers={
+            "Content-Disposition": content_disposition(original.filename),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
+    )
+
+
+def content_disposition(filename: str) -> str:
+    """`attachment` with an ASCII fallback name and the exact UTF-8 name (RFC 6266 / 5987).
+
+    The fallback keeps only safe characters, so a quote, backslash, CR/LF or path separator in
+    an uploaded name can never break out of the header or change the saved location."""
+    fallback = "".join(
+        c if c.isascii() and (c.isalnum() or c in " ._-()") else "_" for c in filename
+    )
+    fallback = fallback.strip(" .") or "document"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @router.patch("/{document_id}/visibility", response_model=DocumentResponse)

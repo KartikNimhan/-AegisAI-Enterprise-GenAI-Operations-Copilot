@@ -12,7 +12,6 @@
   flex: 1;
   resize: none;
   border: none;
-  outline: none;
   background: transparent;
   font-family: inherit;
   font-size: var(--text-md);
@@ -34,7 +33,7 @@
   flex-shrink: 0;
   border: none;
   border-radius: var(--radius-md);
-  background: var(--accent-500);
+  background: var(--accent-solid);
   color: var(--text-on-accent);
   cursor: pointer;
 }
@@ -45,5 +44,10 @@
 }
 
 .send:not(:disabled):hover {
-  background: var(--accent-600);
+  background: var(--accent-solid-hover);
+}
+
+/* M10.1: the composer as a whole shows that its field has focus. */
+.composer:focus-within {
+  border-color: var(--focus-ring);
 }

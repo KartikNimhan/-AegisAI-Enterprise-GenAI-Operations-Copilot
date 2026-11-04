@@ -1,5 +1,5 @@
 /** Pages the preview may open first (`?route=/documents`). Anything else opens the Copilot. */
-export const PREVIEW_ROUTES = ['/', '/conversations', '/documents', '/memory', '/operations', '/system']
+export const PREVIEW_ROUTES = ['/', '/overview', '/conversations', '/documents', '/memory', '/operations', '/system']
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]']
 

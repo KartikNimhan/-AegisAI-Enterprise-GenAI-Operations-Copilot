@@ -6,6 +6,7 @@ database, model, or Groq call is involved.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -17,10 +18,27 @@ from app.core.exceptions import NotFoundError
 from app.llm.exceptions import LLMError, LLMOutputTruncatedError, LLMTimeoutError
 from app.llm.schemas import StreamChunk, TokenUsage
 from app.main import app
-from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource
+from app.rag.schemas import RAGAnswer, RAGRetrievalMetadata, RAGSource, RAGStreamItem
 from app.rag.service import RAGService, get_rag_service
 
 _CONVERSATION_ID = uuid.uuid4()
+_CHUNK_ID = uuid.uuid4()
+_MESSAGE_ID = uuid.uuid4()
+
+
+def make_source(**overrides: Any) -> RAGSource:
+    defaults: dict[str, Any] = {
+        "source_id": "S1",
+        "chunk_id": _CHUNK_ID,
+        "document_id": uuid.uuid4(),
+        "filename": "Travel Policy.pdf",
+        "chunk_index": 0,
+        "page_number": 4,
+        "similarity": 0.82,
+        "passage_truncated": False,
+    }
+    defaults.update(overrides)
+    return RAGSource(**defaults)
 
 
 def make_answer(**overrides: Any) -> RAGAnswer:
@@ -28,17 +46,7 @@ def make_answer(**overrides: Any) -> RAGAnswer:
         "conversation_id": _CONVERSATION_ID,
         "answer": "Employees may claim travel expenses [S1].",
         "has_context": True,
-        "sources": [
-            RAGSource(
-                source_id="S1",
-                chunk_id=uuid.uuid4(),
-                document_id=uuid.uuid4(),
-                filename="Travel Policy.pdf",
-                chunk_index=0,
-                page_number=4,
-                similarity=0.82,
-            )
-        ],
+        "sources": [make_source()],
         "retrieval": RAGRetrievalMetadata(
             top_k=5,
             similarity_threshold=0.3,
@@ -67,11 +75,15 @@ class FakeRAGService(RAGService):
         answer_error: Exception | None = None,
         stream_chunks: list[StreamChunk] | None = None,
         stream_error: Exception | None = None,
+        stream_sources: list[RAGSource] | None = None,
+        stream_invalid_citations: tuple[str, ...] = (),
     ) -> None:
         self._answer_result = answer_result
         self._answer_error = answer_error
         self._stream_chunks = stream_chunks or []
         self._stream_error = stream_error
+        self._stream_sources = stream_sources
+        self._stream_invalid_citations = stream_invalid_citations
         self.calls: list[dict[str, Any]] = []
 
     async def answer(
@@ -108,7 +120,7 @@ class FakeRAGService(RAGService):
         top_k: int | None = None,
         document_id: uuid.UUID | None = None,
         filters: Any = None,
-    ) -> AsyncIterator[tuple[uuid.UUID, StreamChunk, list[RAGSource] | None]]:
+    ) -> AsyncIterator[RAGStreamItem]:
         self.calls.append(
             {
                 "conversation_id": conversation_id,
@@ -123,9 +135,18 @@ class FakeRAGService(RAGService):
             raise self._stream_error
         resolved_id = conversation_id or _CONVERSATION_ID
         for i, chunk in enumerate(self._stream_chunks):
-            is_last = i == len(self._stream_chunks) - 1
-            sources = make_answer().sources if (is_last and chunk.is_final) else None
-            yield resolved_id, chunk, sources
+            final = i == len(self._stream_chunks) - 1 and chunk.is_final
+            if final:
+                sources = (
+                    self._stream_sources
+                    if self._stream_sources is not None
+                    else make_answer().sources
+                )
+                yield RAGStreamItem(
+                    resolved_id, chunk, sources, self._stream_invalid_citations, _MESSAGE_ID
+                )
+            else:
+                yield RAGStreamItem(resolved_id, chunk, None, None, None)
 
 
 @pytest.fixture
@@ -293,3 +314,144 @@ def test_rag_chat_stream_emits_error_event_on_failure(
     assert response.status_code == 200
     assert "LLMTimeoutError" in body
     assert "[DONE]" not in body
+
+
+# -- M10.4 T2: additive citation fields ----------------------------------------------------------
+
+# Every field the RAG source object carried before M10.4 T2; they must all stay.
+_SOURCE_FIELDS_BEFORE_T2 = {"source_id", "document_id", "filename", "chunk_index", "page"}
+_SOURCE_FIELDS_BEFORE_T2 |= {"similarity", "cited"}
+_SOURCE_FIELDS_ADDED_IN_T2 = {"chunk_id", "passage_truncated"}
+
+
+def _sse_events(body: str) -> list[dict[str, Any]]:
+    """The JSON payloads of a server-sent-event body, in order (`[DONE]` excluded)."""
+    events = []
+    for frame in body.split("\n\n"):
+        data = frame.removeprefix("data: ").strip()
+        if data and data != "[DONE]":
+            events.append(json.loads(data))
+    return events
+
+
+def test_rag_chat_sources_carry_chunk_id_and_passage_truncation(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    sources = [
+        make_source(passage_truncated=True),
+        make_source(source_id="S2", chunk_id=uuid.uuid4(), chunk_index=3),
+    ]
+    override_rag_service(FakeRAGService(answer_result=make_answer(sources=sources)))
+
+    response = client.post("/api/v1/rag/chat", json={"message": "q"})
+
+    assert response.status_code == 200
+    first, second = response.json()["sources"]
+    assert first["chunk_id"] == str(_CHUNK_ID)
+    assert first["passage_truncated"] is True
+    assert second["chunk_id"] == str(sources[1].chunk_id)
+    assert second["passage_truncated"] is False
+    # Additive only: every earlier field is still there, and nothing else was added.
+    assert set(first) == _SOURCE_FIELDS_BEFORE_T2 | _SOURCE_FIELDS_ADDED_IN_T2
+    # No passage text is returned by the chat response (that is the citation endpoint's job).
+    assert "passage" not in first and "content" not in first and "text" not in first
+
+
+def test_rag_chat_still_reports_invalid_citations(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    override_rag_service(FakeRAGService(answer_result=make_answer(invalid_citations=("S9",))))
+
+    response = client.post("/api/v1/rag/chat", json={"message": "q"})
+
+    assert response.json()["invalid_citations"] == ["S9"]
+
+
+def test_rag_chat_stream_final_event_carries_invalid_citations_and_new_source_fields(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    fake = FakeRAGService(
+        stream_chunks=[
+            StreamChunk(delta="Employees "),
+            StreamChunk(delta="may claim.", is_final=True, finish_reason="stop"),
+        ],
+        stream_sources=[make_source(passage_truncated=True)],
+        stream_invalid_citations=("S8", "S9"),
+    )
+    override_rag_service(fake)
+
+    with client.stream("POST", "/api/v1/rag/chat/stream", json={"message": "q"}) as response:
+        body = b"".join(response.iter_bytes()).decode()
+
+    first, final = _sse_events(body)
+    assert body.rstrip().endswith("data: [DONE]")
+    # Only the final event carries sources and invalid citations; earlier ones carry null.
+    assert first["is_final"] is False
+    assert first["sources"] is None and first["invalid_citations"] is None
+    assert final["is_final"] is True
+    assert final["invalid_citations"] == ["S8", "S9"]
+    (source,) = final["sources"]
+    assert source["chunk_id"] == str(_CHUNK_ID)
+    assert source["passage_truncated"] is True
+    assert set(source) == _SOURCE_FIELDS_BEFORE_T2 | _SOURCE_FIELDS_ADDED_IN_T2
+    # The earlier stream fields are unchanged.
+    assert {"conversation_id", "delta", "model", "finish_reason", "is_final", "usage"} <= set(final)
+    assert final["conversation_id"] == str(_CONVERSATION_ID)
+
+
+def test_rag_chat_stream_final_event_reports_an_empty_list_when_nothing_was_removed(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    override_rag_service(
+        FakeRAGService(stream_chunks=[StreamChunk(delta="All cited [S1].", is_final=True)])
+    )
+
+    with client.stream("POST", "/api/v1/rag/chat/stream", json={"message": "q"}) as response:
+        body = b"".join(response.iter_bytes()).decode()
+
+    (final,) = _sse_events(body)
+    assert final["is_final"] is True
+    assert final["invalid_citations"] == []
+
+
+def test_rag_chat_stream_error_event_is_unchanged(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    override_rag_service(FakeRAGService(stream_error=LLMTimeoutError("timed out", provider="groq")))
+
+    with client.stream("POST", "/api/v1/rag/chat/stream", json={"message": "q"}) as response:
+        body = b"".join(response.iter_bytes()).decode()
+
+    (event,) = _sse_events(body)
+    assert set(event) == {"error"}
+    assert event["error"]["code"] == "LLMTimeoutError"
+
+
+# -- M10.4 T4: the saved message's id ------------------------------------------------------------
+
+
+def test_rag_chat_returns_the_saved_message_id(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    override_rag_service(FakeRAGService(answer_result=make_answer(message_id=_MESSAGE_ID)))
+
+    response = client.post("/api/v1/rag/chat", json={"message": "q"})
+
+    assert response.json()["message_id"] == str(_MESSAGE_ID)
+
+
+def test_rag_chat_stream_names_the_message_on_the_final_event_only(
+    client: TestClient, override_rag_service: Any
+) -> None:
+    override_rag_service(
+        FakeRAGService(
+            stream_chunks=[StreamChunk(delta="a "), StreamChunk(delta="b", is_final=True)]
+        )
+    )
+
+    with client.stream("POST", "/api/v1/rag/chat/stream", json={"message": "q"}) as response:
+        body = b"".join(response.iter_bytes()).decode()
+
+    first, final = _sse_events(body)
+    assert first["message_id"] is None
+    assert final["message_id"] == str(_MESSAGE_ID)

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { DocumentDetails } from '../components/Documents/DocumentDetails'
 import { Card } from '../components/Card'
 import { EmptyState } from '../components/EmptyState'
@@ -17,18 +18,30 @@ export function DocumentsPage() {
   const [openId, setOpenId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    setError(null)
     try {
       const { items } = await listDocuments()
       setDocuments(items)
+      setError(null)
     } catch (err) {
       setError(friendlyMessage(err))
     }
   }, [])
 
+  // The first load handles its result in promise callbacks (no synchronous state change in the
+  // effect); uploads, deletes and embedding runs call `refresh`.
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    let active = true
+    listDocuments()
+      .then(({ items }) => {
+        if (active) setDocuments(items)
+      })
+      .catch((err) => {
+        if (active) setError(friendlyMessage(err))
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function handleDelete(id: string) {
     setBusyId(id)
@@ -73,6 +86,7 @@ export function DocumentsPage() {
             description="Upload a PDF, DOCX, TXT, or Markdown file above to get started."
           />
         ) : (
+          <div className={styles.tableWrap}>
           <table className={styles.table}>
             <thead>
               <tr>
@@ -81,23 +95,29 @@ export function DocumentsPage() {
                 <th>Size</th>
                 <th>Status</th>
                 <th>Uploaded</th>
-                <th aria-label="Actions" />
+                <th>
+                  <span className="visually-hidden">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {documents.map((doc) => (
                 <Fragment key={doc.id}>
                   <tr>
-                    <td className={styles.filename}>{doc.filename}</td>
-                    <td>{doc.document_type}</td>
-                    <td>{formatBytes(doc.file_size)}</td>
-                    <td>
+                    <td className={styles.filename} data-label="Filename">
+                      <Link to={`/documents/${encodeURIComponent(doc.id)}`} className={styles.fileLink}>
+                        {doc.filename}
+                      </Link>
+                    </td>
+                    <td data-label="Type">{doc.document_type}</td>
+                    <td data-label="Size">{formatBytes(doc.file_size)}</td>
+                    <td data-label="Status">
                       <StatusPill status={doc.status} />
                       {doc.status === 'failed' && doc.error_message && (
                         <div className={styles.errorMessage}>{doc.error_message}</div>
                       )}
                     </td>
-                    <td>{formatDate(doc.created_at)}</td>
+                    <td data-label="Uploaded">{formatDate(doc.created_at)}</td>
                     <td className={styles.actions}>
                       <button
                         type="button"
@@ -142,6 +162,7 @@ export function DocumentsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </Card>
     </div>

@@ -15,6 +15,7 @@ from docx import Document as DocxDocument
 
 from app.documents.exceptions import ExtractionError
 from app.documents.extractors.base import DocumentExtractor, ExtractionLimits, ExtractionResult
+from app.documents.sections import non_blank_lines
 
 
 def check_zip_bounds(content: bytes, limits: ExtractionLimits) -> None:
@@ -47,6 +48,7 @@ class DocxExtractor(DocumentExtractor):
         try:
             document = DocxDocument(BytesIO(content))
             paragraphs = [p.text for p in document.paragraphs]
+            headings = _headings(document.paragraphs)
         except Exception as exc:
             # A malformed DOCX can fail in python-docx itself (e.g.
             # PackageNotFoundError) or in the zip/XML layers underneath it
@@ -59,4 +61,41 @@ class DocxExtractor(DocumentExtractor):
             "paragraph_count": len(paragraphs),
             "non_empty_paragraph_count": sum(1 for p in paragraphs if p.strip()),
         }
-        return ExtractionResult(pages=[text], metadata=metadata)
+        return ExtractionResult(pages=[text], metadata=metadata, headings=headings)
+
+
+# Bounds on what the heading list may carry across the process boundary (M10.9).
+MAX_HEADINGS = 2000
+MAX_HEADING_LENGTH = 500
+
+
+def _headings(paragraphs: Any) -> tuple[tuple[int, str], ...]:
+    """`(ordinal, prefix)` for each paragraph styled as a heading (see `ExtractionResult`).
+
+    The ordinal counts non-blank lines exactly as they appear in the joined text (a paragraph
+    can hold several lines). Reading a paragraph's style is best effort: if it fails, that
+    paragraph is treated as body text and extraction carries on (M10 review finding L7); a
+    missing section must never fail an otherwise readable document."""
+    headings: list[tuple[int, str]] = []
+    ordinal = 0
+    for paragraph in paragraphs:
+        lines = non_blank_lines(paragraph.text)
+        if lines and len(headings) < MAX_HEADINGS and _paragraph_is_heading(paragraph):
+            headings.append((ordinal, lines[0][:MAX_HEADING_LENGTH]))
+        ordinal += len(lines)
+    return tuple(headings)
+
+
+def _paragraph_is_heading(paragraph: Any) -> bool:
+    try:
+        style = paragraph.style
+        return _is_heading_style(style.name if style is not None else None)
+    except Exception:
+        return False
+
+
+def _is_heading_style(name: str | None) -> bool:
+    """Word's built-in "Title" and "Heading 1".."Heading 9" paragraph styles."""
+    if not name:
+        return False
+    return name == "Title" or (name.startswith("Heading ") and name[8:].isdigit())

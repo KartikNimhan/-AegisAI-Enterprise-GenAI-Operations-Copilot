@@ -113,9 +113,7 @@ export function MemoryPage() {
   if (!items) {
     return (
       <Card>
-        <div className={styles.loading} role="status">
-          Loading…
-        </div>
+        <output className={styles.loading}>Loading…</output>
       </Card>
     )
   }
@@ -164,9 +162,7 @@ export function MemoryPage() {
         </p>
       )}
       {notice && (
-        <p className={styles.meta} role="status">
-          {notice}
-        </p>
+        <output className={styles.meta}>{notice}</output>
       )}
 
       {items.length === 0 ? (

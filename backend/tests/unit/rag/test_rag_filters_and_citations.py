@@ -343,11 +343,13 @@ async def test_streamed_invalid_citation_never_reaches_the_client_or_the_store()
         )
     ]
 
-    sent = "".join(chunk.delta for _id, chunk, _sources in received)
+    sent = "".join(chunk.delta for _id, chunk, _sources, _invalid, _mid in received)
     assert "S8" not in sent
     assert sent == "Rate is 5%  and fixed [S1]."
     assert messages.messages[-1].content == sent  # what was shown is what is stored
     final_sources = received[-1][2]
+    assert received[-1][3] == ("S8",)  # the removed id reaches the final event
+    assert all(item[3] is None for item in received[:-1])
     assert final_sources is not None and [s.cited for s in final_sources] == [True]
 
 
@@ -370,11 +372,13 @@ async def test_streamed_lenticular_citation_is_validated_and_normalized() -> Non
         )
     ]
 
-    sent = "".join(chunk.delta for _id, chunk, _sources in received)
+    sent = "".join(chunk.delta for _id, chunk, _sources, _invalid, _mid in received)
     assert sent == "Held in Larkspur-17 [S1] and ."
     assert "S8" not in sent
     assert messages.messages[-1].content == sent
     final_sources = received[-1][2]
+    assert received[-1][3] == ("S8",)  # the removed id reaches the final event
+    assert all(item[3] is None for item in received[:-1])
     assert final_sources is not None and [s.cited for s in final_sources] == [True]
 
 
@@ -397,11 +401,13 @@ async def test_streamed_source_label_citation_is_validated_and_normalized() -> N
         )
     ]
 
-    sent = "".join(chunk.delta for _id, chunk, _sources in received)
+    sent = "".join(chunk.delta for _id, chunk, _sources, _invalid, _mid in received)
     assert sent == "Held in Larkspur-17 [S1] and ."
     assert "SOURCE" not in sent
     assert messages.messages[-1].content == sent
     final_sources = received[-1][2]
+    assert received[-1][3] == ("S8",)  # the removed id reaches the final event
+    assert all(item[3] is None for item in received[:-1])
     assert final_sources is not None and [s.cited for s in final_sources] == [True]
 
 
@@ -419,5 +425,5 @@ async def test_streamed_text_held_for_a_possible_marker_is_released_on_the_final
         )
     ]
 
-    assert "".join(chunk.delta for _id, chunk, _s in received) == "see [S1"
+    assert "".join(chunk.delta for _id, chunk, _s, _i, _m in received) == "see [S1"
     assert messages.messages[-1].content == "see [S1"

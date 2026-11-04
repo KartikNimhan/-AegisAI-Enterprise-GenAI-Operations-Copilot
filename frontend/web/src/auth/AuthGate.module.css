@@ -66,9 +66,14 @@
 }
 
 .primary {
-  border: 1px solid var(--accent-600);
-  background: var(--accent-600);
-  color: #fff;
+  border: 1px solid var(--accent-solid);
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+.primary:hover {
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
 }
 
 .secondary {

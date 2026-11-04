@@ -129,6 +129,9 @@ class FakeStorage(DocumentStorage):
         self.files[key] = content
 
     async def read(self, *, key: str) -> bytes:
+        # Like LocalFileStorage (a missing file raises FileNotFoundError, not KeyError).
+        if key not in self.files:
+            raise FileNotFoundError(key)
         return self.files[key]
 
     async def delete(self, *, key: str) -> None:

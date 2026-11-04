@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Card } from '../components/Card'
 import { Icon } from '../components/Icon'
-import { StatusBadge, toneFromCheck, type StatusTone } from '../components/StatusBadge'
+import { StatusBadge } from '../components/StatusBadge'
+import { toneFromCheck, type StatusTone } from '../components/statusTone'
 import { getSystemStatus, type SystemStatus } from '../api/system'
 import { friendlyMessage } from '../utils/errors'
 import styles from './SystemStatusPage.module.css'
@@ -9,13 +10,13 @@ import styles from './SystemStatusPage.module.css'
 export function SystemStatusPage() {
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  const load = useCallback(async () => {
     try {
-      setStatus(await getSystemStatus())
+      const next = await getSystemStatus()
+      setStatus(next)
+      setError(null)
     } catch (err) {
       setError(friendlyMessage(err))
     } finally {
@@ -23,9 +24,30 @@ export function SystemStatusPage() {
     }
   }, [])
 
+  // The first load handles its result in promise callbacks (no synchronous state change in the
+  // effect); later loads come from the Refresh button.
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    let active = true
+    getSystemStatus()
+      .then((next) => {
+        if (active) setStatus(next)
+      })
+      .catch((err) => {
+        if (active) setError(friendlyMessage(err))
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  function refresh() {
+    setLoading(true)
+    setError(null)
+    void load()
+  }
 
   return (
     <div className={styles.page}>

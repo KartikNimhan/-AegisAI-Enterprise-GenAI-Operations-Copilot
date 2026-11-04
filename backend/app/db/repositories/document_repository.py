@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.scope import AccessScope
@@ -158,6 +159,14 @@ class DocumentRepository:
         # flush, and reading it in async code raises MissingGreenlet.
         document.updated_at = datetime.now(UTC)
         await self._session.flush()
+        # The assignment does not help when the new value EQUALS the one already held: a coarse
+        # clock (about 1 ms on Windows with Python 3.12) can return the same timestamp as the last
+        # write. SQLAlchemy then sees no change to `updated_at`, `onupdate=func.now()` runs in
+        # SQL, and the attribute is expired. Reload it here, inside this async call and the same
+        # transaction, so building the response never triggers a lazy load. No extra query
+        # otherwise.
+        if "updated_at" in sa_inspect(document).expired_attributes:
+            await self._session.refresh(document, attribute_names=["updated_at"])
         return VisibilityChange(document=document, previous=previous, by_owner=is_owner)
 
     async def delete(self, document_id: uuid.UUID) -> bool:

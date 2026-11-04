@@ -52,7 +52,7 @@ async def rag_chat(request: RAGChatRequest, rag_service: RAGServiceDep) -> RAGCh
 async def rag_chat_stream(request: RAGChatRequest, rag_service: RAGServiceDep) -> StreamingResponse:
     async def event_source() -> AsyncIterator[str]:
         try:
-            async for conversation_id, chunk, sources in rag_service.answer_stream(
+            async for item in rag_service.answer_stream(
                 conversation_id=request.conversation_id,
                 message=request.message,
                 model_role=request.model_role,
@@ -61,13 +61,17 @@ async def rag_chat_stream(request: RAGChatRequest, rag_service: RAGServiceDep) -
                 filters=request.to_filters(),
             ):
                 event = RAGChatStreamChunk(
-                    conversation_id=conversation_id,
+                    conversation_id=item.conversation_id,
                     sources=(
-                        [RAGSourceResponse.from_source(s) for s in sources]
-                        if sources is not None
+                        [RAGSourceResponse.from_source(s) for s in item.sources]
+                        if item.sources is not None
                         else None
                     ),
-                    **chunk.model_dump(),
+                    invalid_citations=(
+                        list(item.invalid_citations) if item.invalid_citations is not None else None
+                    ),
+                    message_id=item.message_id,
+                    **item.chunk.model_dump(),
                 )
                 yield f"data: {event.model_dump_json()}\n\n"
             yield "data: [DONE]\n\n"
