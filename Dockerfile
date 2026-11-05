@@ -29,6 +29,17 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 # ---- runtime -------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
+# Debian security fix the base image predates (Trivy, Security scanning #130: CVE-2026-109518 in
+# apt / libapt-pkg7.0 3.0.3). Only these two packages are upgraded, from the image's own Debian
+# repositories (no `apt-get upgrade`); the version checks are a floor, so the build fails instead
+# of shipping an older one. Remove this step once the base image already contains apt >= 3.0.4.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+        --only-upgrade apt libapt-pkg7.0 \
+    && dpkg --compare-versions "$(dpkg-query --show --showformat='${Version}' apt)" ge 3.0.4 \
+    && dpkg --compare-versions \
+        "$(dpkg-query --show --showformat='${Version}' libapt-pkg7.0)" ge 3.0.4 \
+    && rm -rf /var/lib/apt/lists/*
 # The base image's system pip is never used at runtime (everything runs from
 # /srv/.venv, which has no pip), so it is removed rather than shipped.
 RUN python -m pip uninstall --yes pip

@@ -4,8 +4,10 @@ This file is the **single source of project context and progress**. Update it af
 meaningful task with verified changes and actual test results. Do **not** create `UPDATE.md`,
 `CHANGES.md` or any other progress-tracking file.
 
-Last updated: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
-frontend image; local, uncommitted, CI not yet re-run). Earlier: 2026-11-04 (M10 acceptance-review
+Last updated: 2026-11-05 (PR #37 Trivy blocker CVE-2026-109518: apt/libapt-pkg7.0 >= 3.0.4 floor
+added to the backend and Streamlit images, with a regression test; local, uncommitted, CI not yet
+re-run). Earlier: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
+frontend image; committed by the owner as `30b679f`). Earlier: 2026-11-04 (M10 acceptance-review
 remediation of findings M1, M2, M3, L1, L7, L8 and L10; local, uncommitted). Earlier: 2026-11-04
 (M10.2 shell and Overview; M10.6 scoped original-file download and document viewer; M10.8 page fixes
 and lint ratchet 1; M10.7 offline evidence evaluation; M10.9 section metadata; final verification;
@@ -98,14 +100,16 @@ environment; see the per-milestone evidence in `docs/operations/production-readi
 
 ## Current repository state (verified 2026-11-02; updated 2026-11-03)
 
-- **Current state (verified 2026-11-05):**
-  - the owner committed the M10 work as **`8d242dc`** ("feat(m10): deliver enterprise copilot UI
-    and citation persistence") on `feature/m10-citation-passage-metadata`, on top of `bad9fec`;
-    **PR #37** is open (owner);
-  - working tree: **2 modified** (`frontend/web/Dockerfile`,
-    `backend/tests/unit/test_frontend_proxy_config.py`; the libexpat fix below) plus this file,
-    and **1 untracked** path (`docs/technical-handover/`); nothing staged;
+- **Current state (verified 2026-11-05, after the apt fix):**
+  - `feature/m10-citation-passage-metadata` at **`30b679f`** ("fix(security): update frontend
+    libexpat package floor"), on top of `8d242dc` ("feat(m10): deliver enterprise copilot UI and
+    citation persistence") and `bad9fec`; **PR #37** is open (owner);
+  - working tree: **modified** `Dockerfile`, `frontend/streamlit/Dockerfile` and this file;
+    **untracked** `backend/tests/unit/test_python_image_package_floors.py` (new) and
+    `docs/technical-handover/`; nothing staged;
   - local `aegis_test` still at `0009`.
+- **State earlier on 2026-11-05 (superseded):** HEAD `8d242dc`, with the libexpat fix still
+  uncommitted (it is now `30b679f`).
 - **State 2026-11-04, after the pre-PR cleanup (superseded by the commit above):**
   - branch `feature/m10-citation-passage-metadata` at `bad9fec`;
   - **73 modified and 44 untracked paths** (including `CLAUDE.md` and `docs/technical-handover/`);
@@ -2425,13 +2429,92 @@ from Trivy):**
 | `uv run ruff check backend/tests/unit/test_frontend_proxy_config.py` | All checks passed |
 | `uv run ruff format --check backend/tests/unit/test_frontend_proxy_config.py` | 1 file already formatted |
 
-**Not verified:**
+**Update 2026-11-05:** committed by the owner as `30b679f`. The owner reports that in Security
+scanning #130 the React frontend's SARIF has **no findings** (owner-reported; the artifact was not
+read here).
+
+**Not verified (at the time of the fix):**
 - the image build and the Trivy rescan: there is no Docker locally. They run in the PR's
   `Container image scan (Trivy)` job once the owner pushes this change;
 - whether `2.10.0-r0` also resolves CVE-2026-115506 (check the next report);
 - that the base image's `/etc/apk/repositories` points at `dl-cdn.alpinelinux.org` (standard for
   Alpine images; not inspected). If the floor cannot be met, the build fails visibly instead of
   shipping 2.9.0.
+
+### PR #37 Trivy blocker: apt / libapt-pkg7.0 fix record (2026-11-05, local; on top of `30b679f`, not committed)
+
+**Blocker (owner-reported, from the SARIF artifact of Security scanning #130; the artifact itself
+was not read here):**
+- backend image and Streamlit image, each: **CVE-2026-109518 (HIGH)** in `apt` 3.0.3 and
+  `libapt-pkg7.0` 3.0.3, Trivy's fixed version 3.0.4;
+- the React frontend's SARIF has no findings.
+
+**Source (read from the code):**
+- both images are built on the floating `python:3.12-slim` tag (no digest), in the builder and the
+  runtime stage: `Dockerfile` (backend) and `frontend/streamlit/Dockerfile`;
+- neither Dockerfile had any `apt`/`dpkg` step, so both packages come unchanged from the base
+  image's Debian system;
+- the Debian release is **inferred, not observed**: Debian 13 "trixie", from apt 3.0.x and the
+  `libapt-pkg7.0` soname;
+- the builder stages are not shipped or scanned.
+
+**Change (owner-approved minimal fix):**
+- **`Dockerfile` and `frontend/streamlit/Dockerfile`**: the same step at the top of each
+  **runtime** stage, while still root:
+  - `apt-get update`;
+  - `apt-get install --yes --no-install-recommends --only-upgrade apt libapt-pkg7.0`, from the
+    image's own configured Debian repositories;
+  - `dpkg --compare-versions` of each installed version `ge 3.0.4`, chained with `&&`, so the
+    build fails below the floor;
+  - `rm -rf /var/lib/apt/lists/*`.
+- **Unchanged:** no `apt-get upgrade` or `dist-upgrade`; the base image, the Debian release, the
+  Python dependencies (`uv.lock`) and the application code.
+- **No CVE suppressed or ignored; the security policy is unchanged.**
+- **New `backend/tests/unit/test_python_image_package_floors.py`** (10 cases, parametrized over
+  both Dockerfiles), on the runtime stage with `\`-continued lines joined:
+  - exactly one `RUN` uses `apt-get`, and it runs `apt-get update` and
+    `--only-upgrade apt libapt-pkg7.0`;
+  - no `RUN` contains `apt-get upgrade`, `dist-upgrade` or `full-upgrade` (comments are ignored);
+  - for each package, the `dpkg --compare-versions … ge 3.0.4` check is present and chained with
+    `&&`;
+  - the step ends with `&& rm -rf /var/lib/apt/lists/*`, so the cleanup comes after both checks;
+  - the step comes before the final `USER`, which is not root.
+
+**Mutation check** (a scratchpad script outside the repository, run against modified copies in a
+temporary directory; the repository was not changed). Each mutation was caught by the intended test
+in **both** Dockerfiles:
+
+| Mutation | Caught by |
+|---|---|
+| the libapt-pkg7.0 version check removed | `test_each_package_must_reach_the_floor[...-libapt-pkg7.0]` |
+| `--only-upgrade` replaced by a blanket `apt-get upgrade` | `test_the_runtime_stage_upgrades_only_apt_and_libapt` |
+| the list cleanup removed | `test_the_package_lists_are_removed_after_the_checks` |
+| the step moved after the final `USER` | `test_the_upgrade_runs_as_root_before_the_final_user` |
+
+- Two test-only corrections were made before the final run. The blanket-upgrade check had scanned
+  comments, and the joined lines kept a double space. One assertion also raised `ValueError`
+  instead of failing cleanly, and was replaced by the `endswith` cleanup check.
+
+**Local results** (Windows, 2026-11-05, after the last edit):
+
+| Command | Result |
+|---|---|
+| `uv run pytest backend/tests/unit/test_python_image_package_floors.py -v` | **10 passed**, exit 0 |
+| `uv run ruff check backend/tests/unit/test_python_image_package_floors.py` | All checks passed |
+| `uv run ruff format --check backend/tests/unit/test_python_image_package_floors.py` | 1 file already formatted |
+| `uv run pytest backend/tests/unit/test_k8s_pod_security.py backend/tests/unit/auth/test_settings_auth.py backend/tests/unit/test_frontend_proxy_config.py -q -p no:cacheprovider` (the existing tests that read these Dockerfiles) | 77 passed |
+| `uv run ruff check .` / `uv run ruff format --check .` | All checks passed / 535 files already formatted |
+
+**Not verified:**
+- **the image builds and the Trivy rescan:** no Docker locally; they run in GitHub Actions
+  (`docker-build` in CI, `Container image scan (Trivy)` in Security scanning) once the owner
+  pushes;
+- **availability:** that Debian's default sources for this release already serve `apt` and
+  `libapt-pkg7.0` >= 3.0.4 for amd64. Not checked against official Debian sources (no network in
+  this task). If they do not, the floor fails the build visibly;
+- **the Debian release:** inferred from the package names, not observed in the image;
+- **a newer base already containing the fix:** the floating `python:3.12-slim` tag may already ship
+  apt >= 3.0.4; then the upgrade is a no-op and the checks still pass.
 
 ### M10 acceptance criteria (targets, not results)
 
