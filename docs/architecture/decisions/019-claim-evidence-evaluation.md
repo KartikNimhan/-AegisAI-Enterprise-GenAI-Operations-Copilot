@@ -2,9 +2,24 @@
 
 ## Status
 
-**Proposed** — 2026-11-04. Not accepted: the owner decides ADR 017 D-5 and the gate's numbers.
-Implemented locally as an offline evaluation only. The application is unchanged: every citation
-still says `support: "not_verified"` ("Retrieved source — support not verified").
+**Accepted by the owner — 2026-11-05 (scope decision only; ADR 017 D-5).**
+
+- M10 delivers **retrieval-only citations** and passage traceability. A citation identifies the
+  retrieved source passage the model was given; it does not independently verify the answer claim
+  it follows.
+- **Claim-level verification is deferred to a future milestone.** It is not delivered in M10.
+- Evidence status stays `support: "not_verified"` ("Retrieved source — support not verified").
+  No "Supported" label, or any equivalent promise of claim verification, is introduced.
+- **Not adopted by this decision:** the numeric gate criteria and any choice of checker. The
+  evaluation design below stays *proposed* for the future milestone and needs its own decision
+  there.
+- **The offline evaluation is unchanged and has not passed:** on dataset v1 (42 synthetic claims)
+  the lexical baseline **fails** the gate on every criterion (see "Current measurement").
+
+The evaluation is implemented locally as an offline tool only; the application does not use it.
+
+(Earlier status: **Proposed** — 2026-11-04. "Not accepted: the owner decides ADR 017 D-5 and the
+gate's numbers.")
 
 ## Context
 
@@ -13,7 +28,7 @@ D-5). A model can cite a real source for a sentence the source does not say. M10
 showing "Supported" until a claim-level check has been shown, on an evaluation set, to be reliable
 enough. No such set or measurement existed.
 
-## Decision (proposed)
+## Evaluation design (proposed for the future milestone; not adopted)
 
 1. **Measure before labelling.** `app/evaluation/evidence.py` evaluates a checker on labelled
    claims: `supported` (the passage states it), `unsupported` (it does not), and `conflicting` (it
@@ -63,7 +78,9 @@ cannot match ("needs HR approval", "you have 30 days") or that add words ("Takin
 your …"). That is 7 errors: 4 wrongly called supported (d4, r4, e7, d6) and 3 supported claims
 missed (t3, r2, l3). The checker was **not** tuned to this set.
 
-## Options for a real checker (for D-5)
+## Options for a real checker (for the future milestone; D-5 option (b), deferred)
+
+None of these is chosen: the checker choice is not adopted by the 2026-11-05 scope decision.
 
 | Option | Cost | Failure modes |
 |---|---|---|
@@ -76,6 +93,9 @@ and passages, with labels checked by a second person.
 
 ## Consequences
 
+- **M10 scope (owner, 2026-11-05):** retrieval-only citations and passage traceability.
+  Claim-level verification is deferred to a future milestone, not delivered in M10. This
+  evaluation stays as a measurement tool for that milestone.
 - Answers keep "Retrieved source — support not verified."
 - The evaluation can be re-run offline at any time, and the unit tests pin the current numbers, so
   a change to the checker or the set is visible in review.

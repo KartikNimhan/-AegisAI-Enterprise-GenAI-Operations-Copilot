@@ -4,9 +4,11 @@ This file is the **single source of project context and progress**. Update it af
 meaningful task with verified changes and actual test results. Do **not** create `UPDATE.md`,
 `CHANGES.md` or any other progress-tracking file.
 
-Last updated: 2026-11-05 (PR #37 Trivy blocker CVE-2026-109518: apt/libapt-pkg7.0 >= 3.0.4 floor
-added to the backend and Streamlit images, with a regression test; local, uncommitted, CI not yet
-re-run). Earlier: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
+Last updated: 2026-11-05 (owner decision D-5 / ADR 019: M10 delivers retrieval-only citations;
+claim-level verification deferred to a future milestone; documentation only, uncommitted).
+Earlier: 2026-11-05 (PR #37 Trivy blocker CVE-2026-109518: apt/libapt-pkg7.0 >= 3.0.4 floor added
+to the backend and Streamlit images, with a regression test; committed by the owner as
+`05a6b72`). Earlier: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
 frontend image; committed by the owner as `30b679f`). Earlier: 2026-11-04 (M10 acceptance-review
 remediation of findings M1, M2, M3, L1, L7, L8 and L10; local, uncommitted). Earlier: 2026-11-04
 (M10.2 shell and Overview; M10.6 scoped original-file download and document viewer; M10.8 page fixes
@@ -77,8 +79,10 @@ Dockerfiles, `docker-compose.yml`, Kubernetes manifests in `infra/kubernetes/`.
 
 Key references: `README.md` (roadmap), `docs/architecture/system-design.md`, ADRs 001–019 in
 `docs/architecture/decisions/` (open decisions D-1 to D-12 in ADR 017; ADR 018 citation
-persistence; ADR 019 claim-level evidence evaluation, **Proposed**), and the runbooks in
-`docs/operations/`: production readiness, backup/restore/rollback, observability, security scanning.
+persistence; ADR 019 claim-level evidence evaluation, **Accepted by the owner 2026-11-05, scope
+decision only**: retrieval-only citations in M10, gate criteria and checker not adopted), and the
+runbooks in `docs/operations/`: production readiness, backup/restore/rollback, observability,
+security scanning.
 
 ## Official roadmap (M0–M9, from `README.md`)
 
@@ -100,14 +104,17 @@ environment; see the per-milestone evidence in `docs/operations/production-readi
 
 ## Current repository state (verified 2026-11-02; updated 2026-11-03)
 
-- **Current state (verified 2026-11-05, after the apt fix):**
-  - `feature/m10-citation-passage-metadata` at **`30b679f`** ("fix(security): update frontend
-    libexpat package floor"), on top of `8d242dc` ("feat(m10): deliver enterprise copilot UI and
-    citation persistence") and `bad9fec`; **PR #37** is open (owner);
-  - working tree: **modified** `Dockerfile`, `frontend/streamlit/Dockerfile` and this file;
-    **untracked** `backend/tests/unit/test_python_image_package_floors.py` (new) and
-    `docs/technical-handover/`; nothing staged;
+- **Current state (verified 2026-11-05, after the D-5 documentation update):**
+  - `feature/m10-citation-passage-metadata` at **`05a6b72`** ("fix(security): upgrade apt packages
+    in Python images"), on top of `30b679f` (libexpat floor), `8d242dc` ("feat(m10): deliver
+    enterprise copilot UI and citation persistence") and `bad9fec`; **PR #37** is open (owner);
+  - working tree: **modified** this file and, in `docs/architecture/decisions/`,
+    `017-open-decisions-and-residual-risks.md`, `018-citation-persistence.md` and
+    `019-claim-evidence-evaluation.md` (the D-5 record below);
+    **untracked** `docs/technical-handover/`; nothing staged;
   - local `aegis_test` still at `0009`.
+- **State earlier on 2026-11-05, after the apt fix (superseded):** HEAD `30b679f`, with the apt fix
+  and its test still uncommitted (they are now `05a6b72`).
 - **State earlier on 2026-11-05 (superseded):** HEAD `8d242dc`, with the libexpat fix still
   uncommitted (it is now `30b679f`).
 - **State 2026-11-04, after the pre-PR cleanup (superseded by the commit above):**
@@ -465,11 +472,15 @@ M10 is a separate initiative, not part of the official M0–M9 roadmap. It was a
 to run alongside M9 (see Working rules).
 
 **Current status (reconciled 2026-11-04, after the M10 acceptance review):**
-- **M10.0** is merged (PR #36, `bad9fec`). **M10.1–M10.9** are implemented locally on
-  `feature/m10-citation-passage-metadata` and are **uncommitted**. The owner handles Git.
-- **No phase is Completed.** Each still lacks evidence only the owner can provide: a GitHub CI run;
-  `aegis_test` migrated to `0009` with the integration suite run; a human visual and screen-reader
-  review; and the D-5 decision (M10.7). See "M10 acceptance status" below.
+- **M10.0** is merged (PR #36, `bad9fec`). **M10.1–M10.9** are on
+  `feature/m10-citation-passage-metadata`, committed by the owner (`8d242dc` and the later fixes)
+  and under review in **PR #37**, not merged. The owner handles Git. (Corrected 2026-11-05: this
+  said "uncommitted".)
+- **No phase is Completed.** Each still lacks evidence: a green GitHub CI run on PR #37 and a human
+  visual and screen-reader review. (`aegis_test` was migrated to `0009` and the integration suite
+  run on 2026-11-04.) **D-5 was decided by the owner on 2026-11-05**: M10 delivers retrieval-only
+  citations, and claim-level verification is **deferred to a future milestone**, not delivered in
+  M10 (see the D-5 decision record). See "M10 acceptance status" below.
 - The status table and the per-phase checklists below agree with this. The older per-task records
   further down are kept as history; where a later record supersedes one, it says so.
 
@@ -507,7 +518,8 @@ to run alongside M9 (see Working rules).
 Implementation status of each decision (local, uncommitted unless noted):
 - **Implemented:** 2 (citation API and persistence, M10.4; migration `0009` written, not applied);
   4 (themes and motion preferences, M10.1); 5 (testing approach, M10.0, merged); 6 (evidence
-  wording; "Supported" is never shown); 8 (the palette is in `tokens.css`; its contrast is checked by
+  wording; "Supported" is never shown; per D-5, 2026-11-05, claim-level checking is deferred beyond
+  M10); 8 (the palette is in `tokens.css`; its contrast is checked by
   the token test and by axe in Chromium); 11 (`/overview`, M10.2/M2); 12 (document permissions kept;
   403 handled).
 - **Partly implemented:** 1 (ongoing); 7 (dark-first tokens and primitives; no human visual review
@@ -558,6 +570,10 @@ Decisions as approved:
    - Retrieval alone must never be described as proof that a source supports a claim.
    - Claim-level evidence checking belongs in M10.7. Introduce a "Supported" label only after an
      evaluation set demonstrates sufficient reliability.
+   - **Updated 2026-11-05 (owner, D-5 / ADR 019):** claim-level evidence checking is **deferred
+     from M10.7 to a future milestone**. M10 ships retrieval-only citations and passage
+     traceability; evidence status stays `support: "not_verified"`; no "Supported" label or
+     equivalent promise in M10.
    - A design review passing is never evidence that a citation is correct.
 7. **Visual direction:** an Apple + Linear hybrid, **dark-first** design: a calm, precise,
    content-focused enterprise interface. No Apple assets (SF Pro, SF Symbols, Apple artwork) and
@@ -652,7 +668,7 @@ Decisions as approved:
 | M10.4 Citation API and persistence | In Progress | T1 (passage metadata) implemented locally and owner-approved, 2026-11-03 (uncommitted); T2 (additive response fields) implemented locally and formally accepted, 2026-11-03 (uncommitted); T3 (model + migration `0009`, offline only) implemented locally 2026-11-03; T4–T8 (saving, reopened citations, passage endpoint, isolation tests, ADR 018) implemented locally 2026-11-03 under the full-M10 mission; `aegis_test` migrated to `0009` and the integration suite passed (123 passed, 25 skipped, incl. `test_citation_isolation.py`), 2026-11-04; migration round trip pending in CI; T9 excluded |
 | M10.5 Citation source panel | In Progress | Implemented locally 2026-11-03; browser-tested in preview mode only |
 | M10.6 Original document viewer | In Progress | Implemented locally 2026-11-04 (scoped download route, `/documents/:id` text viewer, cited passage); `test_document_file_isolation.py` passed against `aegis_test` at `0009` (2026-11-04); no PDF rendering; L4/L5 deferred to the owner |
-| M10.7 Claim-level evidence verification | In Progress | Offline evaluation harness, 42-claim synthetic set and lexical baseline implemented 2026-11-04 (gate FAILS; ADR 019 Proposed); no support label shipped; D-5 and the gate criteria await the owner |
+| M10.7 Claim-level evidence verification | In Progress | Offline evaluation harness, 42-claim synthetic set and lexical baseline implemented 2026-11-04 (gate FAILS); no support label shipped. **D-5 decided 2026-11-05:** retrieval-only for M10; claim-level verification deferred to a future milestone, not delivered; ADR 019 Accepted (scope only; gate criteria and checker not adopted). Acceptance evidence for the M10 scope still pending (PR #37 CI) |
 | M10.8 Remaining frontend pages | In Progress | Implemented locally 2026-11-04 (0 axe violations on all pages; no `<main>` overflow at 375/768/1280; lint ratchet 11 → 1); human visual review pending |
 | M10.9 Document section metadata | In Progress | Implemented locally 2026-11-04 for Markdown and DOCX in chunk metadata (no schema change, no migration, no backfill); owner design review of the result pending |
 
@@ -833,15 +849,21 @@ migration `0009` and the integration suite NOT RUN; see the T1, T2, T3 and T4–
   downloads of failed or processing documents (L5), both deferred to the owner; a CI run.
 
 **M10.7 – Claim-level evidence verification.** Status: **In Progress** (offline evaluation only,
-2026-11-04; ADR 019 **Proposed**).
+2026-11-04; ADR 019 **Accepted by the owner 2026-11-05, scope decision only**). Per D-5, M10
+delivers retrieval-only citations: claim-level verification itself is **deferred to a future
+milestone and is not delivered in M10**. This phase's M10 scope is the offline evaluation and the
+unchanged "not verified" label.
 - [x] Define an evaluation set: 42 SYNTHETIC claims written by the coding assistant. It is not
   representative, and far below the proposed gate.
 - [x] Evaluate before enabling support labels: the lexical baseline fails the gate on every
   criterion.
 - [x] Document the method, limitations, cost and failure modes (ADR 019).
 - [x] Keep "Retrieved source — support not verified." (unchanged; enforced by a unit test).
-- [ ] Outstanding for acceptance: the owner's D-5 decision and gate criteria. Only then a real
-  evaluation set and a checker.
+- [x] The owner's D-5 decision (2026-11-05): retrieval-only citations for M10. The gate's numeric
+  criteria and the checker choice are **not adopted**; they stay proposed for the future
+  milestone, with a real evaluation set. The evaluation still **fails** its gate.
+- [ ] Outstanding for acceptance: a green CI run of the M10.7 tests on PR #37
+  (`backend/tests/unit/evaluation/test_evidence.py`). The phase stays In Progress until then.
 
 **M10.8 – Remaining frontend pages.** Status: **In Progress** (implemented locally 2026-11-04).
 - [x] Apply the design system to the remaining pages: tokens and the recorded accessibility and
@@ -1752,7 +1774,9 @@ the Uploader structure.
 
 Under the full-M10 mission, within decision 6: **no "Supported" label exists anywhere.** The
 citation API still returns `support: "not_verified"` and the UI still says "Retrieved source —
-support not verified". D-5 (ADR 017) and the gate's criteria are the owner's decision.
+support not verified". D-5 (ADR 017) and the gate's criteria are the owner's decision. (Update
+2026-11-05: D-5 decided by the owner, retrieval-only for M10; the gate's criteria are not adopted.
+See the D-5 decision record.)
 
 **What was built:**
 - `backend/app/evaluation/evidence.py`: a labelled-claim loader (`supported` / `unsupported` /
@@ -2441,7 +2465,7 @@ read here).
   Alpine images; not inspected). If the floor cannot be met, the build fails visibly instead of
   shipping 2.9.0.
 
-### PR #37 Trivy blocker: apt / libapt-pkg7.0 fix record (2026-11-05, local; on top of `30b679f`, not committed)
+### PR #37 Trivy blocker: apt / libapt-pkg7.0 fix record (2026-11-05; committed by the owner as `05a6b72`)
 
 **Blocker (owner-reported, from the SARIF artifact of Security scanning #130; the artifact itself
 was not read here):**
@@ -2516,6 +2540,63 @@ in **both** Dockerfiles:
 - **a newer base already containing the fix:** the floating `python:3.12-slim` tag may already ship
   apt >= 3.0.4; then the upgrade is a no-op and the checks still pass.
 
+### D-5 / ADR 019 decision record (owner, 2026-11-05; documentation only, not committed)
+
+**Decision (owner-approved, 2026-11-05):**
+- M10 delivers **retrieval-only citations** and passage traceability.
+- Citations identify the retrieved source passages; they do **not** independently verify the
+  individual answer claims they follow.
+- **Claim-level verification is deferred to a future milestone.** It is not delivered in M10.
+- Evidence status stays `support: "not_verified"`.
+- No "Supported" label, or any equivalent promise of claim verification, may be introduced.
+- The offline evaluation stays recorded as **FAILED** on its current 42 synthetic claims. It is
+  not described as passing.
+
+**Recorded in (documentation only; no application code or tests changed):**
+- `docs/architecture/decisions/017-open-decisions-and-residual-risks.md`:
+  - D-5 row: "**Decided (owner, 2026-11-05): (a) for M10.**", following the D-9 convention. The
+    original recommendation is kept in the row;
+  - "Citation scope": the decided M10 scope;
+  - Status: it no longer says "Nothing here is decided". It now says an item is decided only where
+    its row says **Decided** (D-5, D-9), and keeps the old wording as history.
+- `docs/architecture/decisions/019-claim-evidence-evaluation.md`:
+  - Status: **Accepted by the owner — 2026-11-05 (scope decision only)**. The numeric gate
+    criteria and the checker choice are **not adopted**; the earlier "Proposed" status is kept as
+    history;
+  - "Decision (proposed)" renamed to "Evaluation design (proposed for the future milestone; not
+    adopted)";
+  - "Options for a real checker" is for the future milestone, with none chosen;
+  - Consequences: an M10-scope bullet;
+  - **"Current measurement" is unchanged:** 42 synthetic claims, accuracy 0.833, supported
+    precision 0.789, gate **FAIL** on every criterion.
+- `docs/architecture/decisions/018-citation-persistence.md` §8: M10 uses retrieval-only
+  citations, and claim-level verification is deferred. The earlier wording "claim-level checking
+  is M10.7" is kept as history.
+- This file: decision 6 (dated note), the ADR list, the M10.7 status row and phase checklist, the
+  M10 current-status bullets, and dated notes on the historical lines that said D-5 awaited the
+  owner.
+
+**Status consequences:**
+- **M10.7 stays In Progress.** Its M10 scope is the offline evaluation (built; gate fails) and the
+  unchanged "Retrieved source — support not verified" label. The remaining acceptance evidence is
+  a green CI run of `test_evidence.py` on PR #37.
+- **M10 is not complete.** No phase is marked Completed.
+
+**Consistent already (verified by reading; no change needed):**
+- the API's `SupportStatus = Literal["not_verified"]` (`backend/app/api/schemas/citations.py`);
+- the UI strings in `CitationPanel.tsx` and `MessageBubble.tsx`;
+- `docs/security/README.md`;
+- the tests that pin `not_verified` and forbid any production import of the evaluation.
+
+**Left unchanged, by scope (documentation-only change):** two code comments still describe D-5 as
+pending:
+- the `SupportLabelGate` docstring in `backend/app/evaluation/evidence.py` ("the owner decides D-5
+  and these numbers");
+- `scripts/evaluate_evidence.py` ("until the owner decides D-5").
+
+The gate's failure message ("the owner has not approved these criteria or a checker (D-5)",
+pinned by `test_evidence.py`) stays literally true: the criteria and a checker were not approved.
+
 ### M10 acceptance criteria (targets, not results)
 
 - **Contrast (WCAG 2.2 AA):** 4.5:1 for normal text, and 3:1 for interface components and
@@ -2547,6 +2628,8 @@ in **both** Dockerfiles:
 7. M10.6 — document viewer.
 8. M10.8 — remaining frontend pages.
 9. M10.7 — evidence verification, after the D-5 design and evaluation criteria are agreed.
+   (Update 2026-11-05: D-5 decided, retrieval-only for M10; claim-level verification is deferred to
+   a future milestone.)
 10. M10.9 — section metadata, after a separate design review.
 
 ### M10 risks and constraints
@@ -2609,8 +2692,9 @@ in **both** Dockerfiles:
     - runs the whole pytest suite, including the integration tests.
 
     That disposable CI database was authorized by the owner on 2026-11-04; production was not;
-  - decide D-5 (ADR 019), the decision 9 deviation, the Inter font, agent citations (T9) and PDF
-    viewing (`pdfjs-dist`);
+  - (Done 2026-11-05: D-5 decided, retrieval-only citations for M10; see the D-5 decision
+    record.) Still to decide: the decision 9 deviation, the Inter font, agent citations (T9) and
+    PDF viewing (`pdfjs-dist`);
   - decide the open review findings L2–L6 and L9;
   - (Done 2026-11-04: the flaky reduced-motion cursor test is fixed; see the follow-up record.)
   - (Done 2026-11-04: the follow-up findings F1–F3 are fixed; see the F1–F3 record.)
@@ -2624,10 +2708,13 @@ in **both** Dockerfiles:
 - M10.6 is implemented locally (2026-11-04; see its record). Next: M10.8, M10.7, M10.9.
 - M10.8 is implemented locally (2026-11-04; see its record). Next: M10.7, M10.9.
 - M10.7: the offline evaluation is built and its gate fails (see its record; ADR 019 Proposed). **Owner decision needed: D-5 and the gate criteria.** Next: M10.9.
+  (Update 2026-11-05: D-5 decided by the owner, retrieval-only for M10; ADR 019 Accepted, scope
+  only; the gate still fails and its criteria are not adopted.)
 - M10.9 is implemented locally (2026-11-04; see its record). **Every M10 phase now has a local
   implementation; none is marked Completed**, because each still needs evidence only the owner
   can provide: a CI run, the migrated test database, a human visual and screen-reader review, and
-  the D-5 decision.
+  the D-5 decision. (Update 2026-11-05: the test database was migrated on 2026-11-04 and D-5 was
+  decided on 2026-11-05; the CI run and the human reviews are still open.)
 - (Done 2026-11-04: `aegis_test` migrated to `0009`; integration suite 123 passed, including
   both isolation suites. Still open: the migration round trip, pending in CI.)
 

@@ -2,9 +2,12 @@
 
 ## Status
 
-Proposed — 2026-10-22. Nothing here is decided. These items came out of the M0–M8 gap analysis and
-each needs a product or architecture decision, a database, a live provider or an operator before it
-can honestly be called done. This file exists so none of them is mistaken for finished work.
+Proposed — 2026-10-22. This register stays Proposed: an item is decided only where its row says
+**Decided** (so far D-5 and D-9); every other item is still open. These items came out of the M0–M8
+gap analysis and each needs a product or architecture decision, a database, a live provider or an
+operator before it can honestly be called done. This file exists so none of them is mistaken for
+finished work. (Until 2026-11-05 this section said "Nothing here is decided", which was already
+untrue for D-9.)
 
 ## Decisions needed
 
@@ -14,7 +17,7 @@ can honestly be called done. This file exists so none of them is mistaken for fi
 | D-2 | Human approval for sensitive tools (`ToolDefinition.requires_approval`)? | (a) keep the field unused; (b) pause the graph and ask the user | Every current tool is read-only, so there is no exposure today. The first write-capable tool makes this urgent | (a) until a write tool is proposed; make "no write tool without approval" a review rule |
 | D-3 | Move document processing to background workers? | (a) keep it synchronous in the request; (b) a queue and worker (`app/workers/` is empty) | Large documents hold a request open and an embedding job holds a model in the API process. Bounded now by the upload, extraction and rate limits | (b) when real documents get large. It adds a service (queue) and a status-polling UI |
 | D-4 | Add an approximate-nearest-neighbour index (HNSW/IVFFlat)? | (a) exact scan (current, ADR 006); (b) HNSW | Exact search is correct and slows with the corpus. ADR 006 recorded this as a deliberate choice | (a) until measured latency says otherwise. Then add HNSW in a migration after measuring recall on this corpus |
-| D-5 | Check that a cited source actually supports the claim? | (a) retrieval check only (current); (b) an LLM or NLI check | Today `[S2]` only proves S2 was retrieved. A model can cite a real source for an unsupported claim | (a), stated plainly in docs and UI. (b) costs a model call per answer and needs an evaluation set first |
+| D-5 | Check that a cited source actually supports the claim? | (a) retrieval check only (current); (b) an LLM or NLI check | Today `[S2]` only proves S2 was retrieved. A model can cite a real source for an unsupported claim | **Decided (owner, 2026-11-05): (a) for M10.** M10 delivers retrieval-only citations and passage traceability: a citation identifies the retrieved source passage; it does not verify the claim it follows. Evidence status stays `support: "not_verified"`, and no "Supported" label or equivalent promise is introduced. (b), claim-level verification, is **deferred to a future milestone**, after a larger evaluation set; the offline evaluation in ADR 019 currently **fails** its gate. Originally recommended: (a), stated plainly in docs and UI; (b) costs a model call per answer and needs an evaluation set first |
 | D-6 | Unique index on `(owner, checksum)`? | see ADR 016 "Not done" | Concurrent identical uploads are narrowed by an advisory lock but not forbidden by the database | Operator de-duplication, then a migration. Needs a real database |
 | D-7 | Hard database cap on memories per user? | counter column, trigger, or keep the row lock | The cap holds only while every writer uses the service | Keep the row lock; revisit if another writer appears |
 | D-8 | How to version embeddings? | see below | A changed model with an unchanged version label silently mixes vectors | Policy below |
@@ -41,7 +44,9 @@ identity from a Sentence Transformers model name, and does not claim to. Policy:
 
 The `cited` flag and `invalid_citations` list answer one question: *was this source id among the
 chunks retrieved for this question?* They do not say the cited chunk supports the sentence it
-follows. Do not describe this as fact checking.
+follows. Do not describe this as fact checking. This is the decided M10 scope (D-5, owner,
+2026-11-05): citations are retrieval-only, and claim-level verification is deferred to a future
+milestone (ADR 019).
 
 ## Residual risks that need an environment
 

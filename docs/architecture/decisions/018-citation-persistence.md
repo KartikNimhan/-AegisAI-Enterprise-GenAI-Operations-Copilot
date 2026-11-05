@@ -77,7 +77,10 @@ look-alikes and may cut the first source to fit the budget).
    `passage_truncated` (2026-11-04, M10 review finding L2), consistent with the citation endpoint's
    `UnavailableCitation`, which has no such fields at all.
 8. **Evidence.** `support` is always `"not_verified"`: retrieval never proves that a source
-   supports a claim (ADR 017 D-5; claim-level checking is M10.7).
+   supports a claim (ADR 017 D-5). M10 uses **retrieval-only citations** (owner, 2026-11-05):
+   claim-level verification is **deferred to a future milestone**, not part of M10, and no
+   "Supported" label is introduced (ADR 019). (Until 2026-11-05 this read "claim-level checking
+   is M10.7".)
 9. **Out of scope.** Agent and multi-agent sources are not saved (T9 needs separate approval).
 
 ## Consequences
