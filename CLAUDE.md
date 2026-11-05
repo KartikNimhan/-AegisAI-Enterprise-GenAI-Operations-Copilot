@@ -5,7 +5,8 @@ meaningful task with verified changes and actual test results. Do **not** create
 `CHANGES.md` or any other progress-tracking file.
 
 Last updated: 2026-11-05 (owner decision D-5 / ADR 019: M10 delivers retrieval-only citations;
-claim-level verification deferred to a future milestone; documentation only, uncommitted).
+claim-level verification deferred to a future milestone; documentation only; committed by the
+owner as `5f57ddb`).
 Earlier: 2026-11-05 (PR #37 Trivy blocker CVE-2026-109518: apt/libapt-pkg7.0 >= 3.0.4 floor added
 to the backend and Streamlit images, with a regression test; committed by the owner as
 `05a6b72`). Earlier: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
@@ -104,15 +105,18 @@ environment; see the per-milestone evidence in `docs/operations/production-readi
 
 ## Current repository state (verified 2026-11-02; updated 2026-11-03)
 
-- **Current state (verified 2026-11-05, after the D-5 documentation update):**
-  - `feature/m10-citation-passage-metadata` at **`05a6b72`** ("fix(security): upgrade apt packages
-    in Python images"), on top of `30b679f` (libexpat floor), `8d242dc` ("feat(m10): deliver
+- **Current state (verified 2026-11-05, after the D-5 documentation commit):**
+  - `feature/m10-citation-passage-metadata` at **`5f57ddb`** ("docs: record D-5 claim
+    verification scope decision"; this file and ADRs 017, 018 and 019, see the D-5 record below),
+    on top of `05a6b72` (apt floor), `30b679f` (libexpat floor), `8d242dc` ("feat(m10): deliver
     enterprise copilot UI and citation persistence") and `bad9fec`; **PR #37** is open (owner);
-  - working tree: **modified** this file and, in `docs/architecture/decisions/`,
-    `017-open-decisions-and-residual-risks.md`, `018-citation-persistence.md` and
-    `019-claim-evidence-evaluation.md` (the D-5 record below);
-    **untracked** `docs/technical-handover/`; nothing staged;
+  - the local remote-tracking ref `origin/feature/m10-citation-passage-metadata` also points at
+    `5f57ddb` (as of the last fetch or push; not re-checked online);
+  - working tree: **modified** this file only (this status correction); **untracked**
+    `docs/technical-handover/`; nothing staged;
   - local `aegis_test` still at `0009`.
+- **State earlier on 2026-11-05, after the D-5 documentation update (superseded):** HEAD
+  `05a6b72`, with this file and ADRs 017, 018 and 019 still uncommitted (they are now `5f57ddb`).
 - **State earlier on 2026-11-05, after the apt fix (superseded):** HEAD `30b679f`, with the apt fix
   and its test still uncommitted (they are now `05a6b72`).
 - **State earlier on 2026-11-05 (superseded):** HEAD `8d242dc`, with the libexpat fix still
@@ -2410,7 +2414,7 @@ network, dependency install or model call.
 | **A reply committed without `[DONE]`** | Accepted design (documented) | A connection lost between the commit and `[DONE]` leaves a saved reply the client treated as unconfirmed; it reappears on reopening | Acceptance as a known limitation |
 | **Migration round trip** | Pending in CI | Not run locally (it creates and drops databases); `test_ownership_migration.py` goes from head down to `0005` | The PR's CI run |
 
-### PR #37 Trivy blocker: libexpat fix record (2026-11-05, local; on top of `8d242dc`, not committed)
+### PR #37 Trivy blocker: libexpat fix record (2026-11-05; committed by the owner as `30b679f`)
 
 **Blocker (owner-reported, from the `trivy-reports` SARIF artifact of PR #37; the artifact itself
 was not read here):**
@@ -2540,7 +2544,7 @@ in **both** Dockerfiles:
 - **a newer base already containing the fix:** the floating `python:3.12-slim` tag may already ship
   apt >= 3.0.4; then the upgrade is a no-op and the checks still pass.
 
-### D-5 / ADR 019 decision record (owner, 2026-11-05; documentation only, not committed)
+### D-5 / ADR 019 decision record (owner, 2026-11-05; documentation only; committed by the owner as `5f57ddb`)
 
 **Decision (owner-approved, 2026-11-05):**
 - M10 delivers **retrieval-only citations** and passage traceability.
