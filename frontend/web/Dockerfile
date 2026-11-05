@@ -41,14 +41,16 @@ FROM nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28
 USER root
 
 # Alpine v3.24 security fixes the pinned base image predates (Trivy, runs #47
-# and #53). Only these six packages change, from the image's own v3.24
-# repositories; each ">=" is a floor, so the build fails instead of shipping an
-# older one. nginx itself (an nginx.org build) is deliberately not upgraded.
+# and #53; libexpat for PR #37). Only these seven packages change, from the
+# image's own v3.24 repositories; each ">=" is a floor, so the build fails
+# instead of shipping an older one. nginx itself (an nginx.org build) is
+# deliberately not upgraded.
 # Remove this step once the pinned digest already contains these versions.
 RUN apk add --no-cache \
         "brotli-libs>=1.2.1-r0" \
         "curl>=8.23.0-r0" \
         "libcurl>=8.23.0-r0" \
+        "libexpat>=2.10.0-r0" \
         "musl>=1.2.6-r3" \
         "musl-utils>=1.2.6-r3" \
         "zlib>=1.3.2-r1"

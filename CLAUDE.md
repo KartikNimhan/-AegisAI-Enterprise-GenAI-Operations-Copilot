@@ -4,26 +4,28 @@ This file is the **single source of project context and progress**. Update it af
 meaningful task with verified changes and actual test results. Do **not** create `UPDATE.md`,
 `CHANGES.md` or any other progress-tracking file.
 
-Last updated: 2026-11-04 (M10 acceptance-review remediation of findings M1, M2, M3, L1, L7, L8
-and L10; local, uncommitted). Earlier: 2026-11-04 (M10.2 shell and Overview; M10.6 scoped original-file download and document viewer; M10.8 page fixes and lint ratchet 1; M10.7 offline evidence evaluation; M10.9 section metadata; final verification; local). Earlier: 2026-11-03 (full M10 mission started under owner authorization; M10.4 T4–T8
-backend implemented locally: citation saving, `message_id`, citations on reopened conversations,
-the citation passage endpoint, isolation tests (written, not run), ADR 018).
+Last updated: 2026-11-05 (PR #37 Trivy blocker: `libexpat>=2.10.0-r0` floor added to the React
+frontend image; local, uncommitted, CI not yet re-run). Earlier: 2026-11-04 (M10 acceptance-review
+remediation of findings M1, M2, M3, L1, L7, L8 and L10; local, uncommitted). Earlier: 2026-11-04
+(M10.2 shell and Overview; M10.6 scoped original-file download and document viewer; M10.8 page fixes
+and lint ratchet 1; M10.7 offline evidence evaluation; M10.9 section metadata; final verification;
+local). Earlier: 2026-11-03 (full M10 mission started under owner authorization; M10.4 T4–T8 backend
+implemented locally: citation saving, `message_id`, citations on reopened conversations, the
+citation passage endpoint, isolation tests (written, not run), ADR 018).
 Earlier updates: 2026-11-03 (M10.4 T3 implemented locally: `MessageCitation` model and additive
-migration `0009`, written and checked offline only, not applied to any database);
-2026-11-03 (M10.4 T3 read-only review; similarity-range stop and owner decision,
-Option A); 2026-11-03 (M10.4 T2 formally accepted; post-review notes recorded);
-2026-11-03 (M10.4 T2 implemented locally: additive RAG source fields and
-`invalid_citations` on the final stream event; `message_id` deferred to T4; awaiting owner review);
-2026-11-03 (M10.4 read-only assessment of `message_id` timing: deferred to T4);
-2026-11-03 (M10.4 T1 formally approved; final T1 test results and the adversarial
-reconstruction test improvement recorded); 2026-11-03 (M10.4 approved decisions and database restrictions recorded; T1 awaiting
-owner review); 2026-11-03 (M10.4 T1: per-source passage metadata in the context assembler, on
-branch `feature/m10-citation-passage-metadata`; local only, nothing committed);
-2026-11-02 (M10.4 read-only architecture assessment); 2026-11-02 (M10.0 corrective
-pass after the independent review); 2026-11-02 (M10.0 testing and quality foundations implemented locally);
-2026-11-02 (M10 design decisions recorded; M9 paused); 2026-11-02 (M10 plan
-recorded: approved, not implemented); 2026-11-02 (M9, Step 1: repository synchronization and fresh
-baseline).
+migration `0009`, written and checked offline only, not applied to any database); 2026-11-03 (M10.4
+T3 read-only review; similarity-range stop and owner decision, Option A); 2026-11-03 (M10.4 T2
+formally accepted; post-review notes recorded); 2026-11-03 (M10.4 T2 implemented locally: additive
+RAG source fields and `invalid_citations` on the final stream event; `message_id` deferred to T4;
+awaiting owner review); 2026-11-03 (M10.4 read-only assessment of `message_id` timing: deferred to
+T4); 2026-11-03 (M10.4 T1 formally approved; final T1 test results and the adversarial
+reconstruction test improvement recorded); 2026-11-03 (M10.4 approved decisions and database
+restrictions recorded; T1 awaiting owner review); 2026-11-03 (M10.4 T1: per-source passage metadata
+in the context assembler, on branch `feature/m10-citation-passage-metadata`; local only, nothing
+committed); 2026-11-02 (M10.4 read-only architecture assessment); 2026-11-02 (M10.0 corrective pass
+after the independent review); 2026-11-02 (M10.0 testing and quality foundations implemented
+locally); 2026-11-02 (M10 design decisions recorded; M9 paused); 2026-11-02 (M10 plan recorded:
+approved, not implemented); 2026-11-02 (M9, Step 1: repository synchronization and fresh baseline).
 
 ## Working rules
 
@@ -96,7 +98,15 @@ environment; see the per-milestone evidence in `docs/operations/production-readi
 
 ## Current repository state (verified 2026-11-02; updated 2026-11-03)
 
-- **Current state (verified 2026-11-04, after the pre-PR cleanup):**
+- **Current state (verified 2026-11-05):**
+  - the owner committed the M10 work as **`8d242dc`** ("feat(m10): deliver enterprise copilot UI
+    and citation persistence") on `feature/m10-citation-passage-metadata`, on top of `bad9fec`;
+    **PR #37** is open (owner);
+  - working tree: **2 modified** (`frontend/web/Dockerfile`,
+    `backend/tests/unit/test_frontend_proxy_config.py`; the libexpat fix below) plus this file,
+    and **1 untracked** path (`docs/technical-handover/`); nothing staged;
+  - local `aegis_test` still at `0009`.
+- **State 2026-11-04, after the pre-PR cleanup (superseded by the commit above):**
   - branch `feature/m10-citation-passage-metadata` at `bad9fec`;
   - **73 modified and 44 untracked paths** (including `CLAUDE.md` and `docs/technical-handover/`);
   - **nothing staged, committed or pushed**;
@@ -2371,6 +2381,57 @@ network, dependency install or model call.
 | **Rollback after a real commit failure** | Not verified | Unit tests with doubles only; no integration test makes PostgreSQL reject a commit | A database-backed test, if wanted |
 | **A reply committed without `[DONE]`** | Accepted design (documented) | A connection lost between the commit and `[DONE]` leaves a saved reply the client treated as unconfirmed; it reappears on reopening | Acceptance as a known limitation |
 | **Migration round trip** | Pending in CI | Not run locally (it creates and drops databases); `test_ownership_migration.py` goes from head down to `0005` | The PR's CI run |
+
+### PR #37 Trivy blocker: libexpat fix record (2026-11-05, local; on top of `8d242dc`, not committed)
+
+**Blocker (owner-reported, from the `trivy-reports` SARIF artifact of PR #37; the artifact itself
+was not read here):**
+- image `aegisai-frontend`, Alpine Linux 3.24.2;
+- package `libexpat`, installed `2.9.0-r0`, Trivy's fixed version `2.10.0-r0`;
+- blocking HIGH CVEs: CVE-2026-113351, CVE-2026-117610 and CVE-2026-118370;
+- also CVE-2026-115506 (UNKNOWN severity; not blocking under the CRITICAL/HIGH policy).
+
+**Source of the package (read from the code):**
+- `libexpat` is inherited unchanged from the pinned runtime base image
+  `nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4…cdf03` in `frontend/web/Dockerfile`;
+- no installation step in the Dockerfile names it;
+- the `node:22-slim` builder stage is not shipped.
+
+**Package availability (official Alpine sources, read-only web access, 2026-11-05; not inferred
+from Trivy):**
+- `https://pkgs.alpinelinux.org/packages?name=libexpat&branch=v3.24&arch=x86_64` lists
+  `libexpat 2.10.0-r0`, branch v3.24, repository `main`, architecture x86_64, built
+  2026-11-02 13:12:51;
+- `https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/` contains `libexpat-2.10.0-r0.apk`
+  (02-Nov-2026 13:28, 62K), the only `libexpat` file listed, together with `expat`,
+  `expat-dev`, `expat-doc` and `expat-static` 2.10.0-r0;
+- aarch64 was not checked (CI builds amd64 only).
+
+**Change (owner-approved minimal fix):**
+- `frontend/web/Dockerfile`: `"libexpat>=2.10.0-r0"` added to the existing
+  `apk add --no-cache` floor list, and its comment updated from six packages to seven. The pinned
+  base digest, the Alpine release, nginx and every other floor are unchanged.
+- `backend/tests/unit/test_frontend_proxy_config.py`
+  (`test_runtime_package_fixes_are_narrow_minimum_versions`): `"libexpat": "2.10.0-r0"` added to
+  the expected floors, and its docstring updated from six to seven (re-wrapped to the
+  100-character line limit; no other change).
+- **No CVE suppressed or ignored; the security policy is unchanged.**
+
+**Local results** (Windows, 2026-11-05, after the last edit):
+
+| Command | Result |
+|---|---|
+| `uv run pytest backend/tests/unit/test_frontend_proxy_config.py` | **14 passed**, exit 0 |
+| `uv run ruff check backend/tests/unit/test_frontend_proxy_config.py` | All checks passed |
+| `uv run ruff format --check backend/tests/unit/test_frontend_proxy_config.py` | 1 file already formatted |
+
+**Not verified:**
+- the image build and the Trivy rescan: there is no Docker locally. They run in the PR's
+  `Container image scan (Trivy)` job once the owner pushes this change;
+- whether `2.10.0-r0` also resolves CVE-2026-115506 (check the next report);
+- that the base image's `/etc/apk/repositories` points at `dl-cdn.alpinelinux.org` (standard for
+  Alpine images; not inspected). If the floor cannot be met, the build fails visibly instead of
+  shipping 2.9.0.
 
 ### M10 acceptance criteria (targets, not results)
 
