@@ -123,7 +123,10 @@ _RULES: tuple[_Rule, ...] = (
         _url_credentials,
     ),
     _Rule(CREDENTIAL, _KEY_VALUE, _key_value),
-    _Rule(CARD_NUMBER, re.compile(r"(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])"), _card),
+    # Not next to a letter, digit, underscore or hyphen: inside an identifier such as a UUID
+    # ("77599839-2495-4006-91dd-…") the digits read across the hyphens can form a Luhn-valid run,
+    # and redacting it corrupted ids in tool results (agent sources failed to parse).
+    _Rule(CARD_NUMBER, re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])"), _card),
     _Rule(NATIONAL_ID, re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")),  # US SSN shape
     _Rule(
         EMAIL,

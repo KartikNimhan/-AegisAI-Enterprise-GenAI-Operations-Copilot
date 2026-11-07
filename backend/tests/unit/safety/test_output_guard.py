@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import random
+import uuid
 
 import pytest
 import structlog
 
+from app.documents.chunk_ids import compute_chunk_id
 from app.safety.output_guard import (
     CARD_NUMBER,
     CREDENTIAL,
@@ -126,6 +128,46 @@ def test_luhn_valid_card_numbers_are_redacted(card: str) -> None:
     assert result.findings == (CARD_NUMBER,)
 
 
+COMPACT_CARD = CARD.replace(" ", "")
+HYPHENATED_CARD = CARD.replace(" ", "-")
+REDACTED_CARD = "[REDACTED:card_number]"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "count"),
+    [
+        (f"Card: {CARD}.", f"Card: {REDACTED_CARD}.", 1),
+        (f"Card {CARD}, {CARD}!", f"Card {REDACTED_CARD}, {REDACTED_CARD}!", 2),
+        (f"({COMPACT_CARD})", f"({REDACTED_CARD})", 1),
+        (f"[{HYPHENATED_CARD}]", f"[{REDACTED_CARD}]", 1),
+        (f'"{COMPACT_CARD}"', f'"{REDACTED_CARD}"', 1),
+        (f"'{HYPHENATED_CARD}'", f"'{REDACTED_CARD}'", 1),
+        (f"card={COMPACT_CARD};", f"card={REDACTED_CARD};", 1),
+        (f"#{HYPHENATED_CARD}, thanks", f"#{REDACTED_CARD}, thanks", 1),
+        (
+            f"Numbers: {COMPACT_CARD}/{HYPHENATED_CARD}",
+            f"Numbers: {REDACTED_CARD}/{REDACTED_CARD}",
+            2,
+        ),
+        (f"{CARD}\n", f"{REDACTED_CARD}\n", 1),
+    ],
+)
+def test_card_numbers_next_to_punctuation_are_redacted(
+    text: str, expected: str, count: int
+) -> None:
+    result = guard.redact(text)
+
+    assert result.text == expected
+    assert result.findings == (CARD_NUMBER,) * count
+
+
+def test_a_card_number_glued_to_letters_is_not_matched() -> None:
+    # Approved trade-off (2026-11-05): digits attached to a letter or underscore are not read as a
+    # card number, so that identifiers such as UUIDs are never corrupted (see below).
+    for text in (f"card{COMPACT_CARD}", f"{COMPACT_CARD}x", f"id_{COMPACT_CARD}"):
+        assert guard.redact(text).text == text
+
+
 def test_ssn_shaped_numbers_are_redacted() -> None:
     assert guard.redact(f"SSN {SSN}.").findings == (NATIONAL_ID,)
 
@@ -162,6 +204,59 @@ def test_ordinary_text_is_untouched(text: str) -> None:
     assert result.findings == ()
 
 
+# UUIDs whose digits, read across the hyphens, form a Luhn-valid 13-19 digit run: the card rule
+# used to redact part of them, which corrupted ids in agent tool results; a local reproduction
+# showed `_extract_sources` raising ValueError on such a corrupted id. Each one was corrupted by
+# the earlier rule `(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])`.
+CARD_SHAPED_UUIDS = [
+    "77599839-2495-4006-91dd-29ee533f9eb0",  # uuid4; the run starts the id
+    "700fd347-3766-44cf-af23-33192066283d",  # uuid4; the run is in the middle
+    "f0cd3456-12d0-545b-b666-167920970409",  # chunk id (uuid5); the run ends the id
+    "d5861738-4355-576d-a657-0a0f8a11dfcf",  # chunk id (uuid5)
+    "11f3c787-b170-5934-9464-95d98aad39be",  # chunk id (uuid5)
+]
+# Production chunk ids: uuid5 of the document id and the default chunking (1000/150). Indexes 342,
+# 646 and 1379 of this document are three of the ids above.
+SAMPLE_DOCUMENT_ID = uuid.UUID("3f2a9c4e-8b1d-4e6f-a2c7-5d9e0b1f4a63")
+
+
+@pytest.mark.parametrize("value", [*CARD_SHAPED_UUIDS, *(u.upper() for u in CARD_SHAPED_UUIDS)])
+def test_uuids_that_look_like_card_numbers_are_untouched(value: str) -> None:
+    assert uuid.UUID(value)  # a valid id to begin with
+    for text in (value, f"chunk {value} of the policy", f'{{"chunk_id": "{value}"}}'):
+        result = guard.redact(text)
+        assert result.text == text
+        assert result.findings == ()
+
+
+def test_production_chunk_ids_are_untouched() -> None:
+    ids = [
+        str(
+            compute_chunk_id(
+                document_id=SAMPLE_DOCUMENT_ID, chunk_size=1000, chunk_overlap=150, chunk_index=i
+            )
+        )
+        for i in range(2000)
+    ]
+    assert [ids[342], ids[646], ids[1379]] == CARD_SHAPED_UUIDS[2:]  # the sample covers the bug
+
+    redacted, findings = guard.redact_data({"chunk_ids": ids})
+
+    assert redacted == {"chunk_ids": ids}
+    assert findings == ()
+
+
+def test_random_uuid4s_are_untouched() -> None:
+    rng = random.Random(15)  # a fixed sample of 2,000; it contains 700fd347-… above
+    ids = [str(uuid.UUID(int=rng.getrandbits(128), version=4)) for _ in range(2000)]
+    assert "700fd347-3766-44cf-af23-33192066283d" in ids
+
+    redacted, findings = guard.redact_data(ids)
+
+    assert redacted == ids
+    assert findings == ()
+
+
 def test_a_disabled_guard_changes_nothing() -> None:
     off = OutputGuard(enabled=False)
 
@@ -188,6 +283,7 @@ CORPUS = [
     f"Authorization: Bearer {'z' * 30} sent.",
     f"url postgresql://u:{'p' * 10}@h/db and ssn {SSN} end",
     "x" * 2000 + " tail",  # one long token: the hold is bounded
+    f"Sources: {' '.join(CARD_SHAPED_UUIDS)} and card {CARD}.",  # ids kept, card redacted
 ]
 
 

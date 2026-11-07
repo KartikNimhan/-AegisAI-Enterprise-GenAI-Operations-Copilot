@@ -4,7 +4,10 @@ This file is the **single source of project context and progress**. Update it af
 meaningful task with verified changes and actual test results. Do **not** create `UPDATE.md`,
 `CHANGES.md` or any other progress-tracking file.
 
-Last updated: 2026-11-05 (owner decision D-5 / ADR 019: M10 delivers retrieval-only citations;
+Last updated: 2026-11-06 (AIGSEC-015 follow-up: the output guard's card-number rule no longer
+corrupts UUIDs in agent tool results; regex boundary fix with regression tests; local,
+uncommitted, CI not yet run).
+Earlier: 2026-11-05 (owner decision D-5 / ADR 019: M10 delivers retrieval-only citations;
 claim-level verification deferred to a future milestone; documentation only; committed by the
 owner as `5f57ddb`).
 Earlier: 2026-11-05 (PR #37 Trivy blocker CVE-2026-109518: apt/libapt-pkg7.0 >= 3.0.4 floor added
@@ -105,16 +108,21 @@ environment; see the per-milestone evidence in `docs/operations/production-readi
 
 ## Current repository state (verified 2026-11-02; updated 2026-11-03)
 
-- **Current state (verified 2026-11-05, after the D-5 documentation commit):**
-  - `feature/m10-citation-passage-metadata` at **`5f57ddb`** ("docs: record D-5 claim
-    verification scope decision"; this file and ADRs 017, 018 and 019, see the D-5 record below),
-    on top of `05a6b72` (apt floor), `30b679f` (libexpat floor), `8d242dc` ("feat(m10): deliver
-    enterprise copilot UI and citation persistence") and `bad9fec`; **PR #37** is open (owner);
+- **Current state (verified 2026-11-06, after the AIGSEC-015 follow-up fix):**
+  - `feature/m10-citation-passage-metadata` at **`f768434`** ("docs: sync CLAUDE.md with owner
+    commits"), on top of `5f57ddb` (D-5 record), `05a6b72` (apt floor), `30b679f` (libexpat floor),
+    `8d242dc` ("feat(m10): deliver enterprise copilot UI and citation persistence") and `bad9fec`;
+    **PR #37** is open (owner);
   - the local remote-tracking ref `origin/feature/m10-citation-passage-metadata` also points at
-    `5f57ddb` (as of the last fetch or push; not re-checked online);
-  - working tree: **modified** this file only (this status correction); **untracked**
-    `docs/technical-handover/`; nothing staged;
+    `f768434` (as of the last fetch or push; not re-checked online);
+  - working tree: **modified** `backend/app/safety/output_guard.py`, and in
+    `backend/tests/unit/safety/`, `test_output_guard.py` and `test_output_paths.py` (the
+    AIGSEC-015 follow-up record below), and this file; **untracked** `docs/technical-handover/`;
+    nothing staged when this record was written (2026-11-06; not a statement of the current
+    state);
   - local `aegis_test` still at `0009`.
+- **State earlier on 2026-11-05, after the D-5 documentation commit (superseded):** HEAD `5f57ddb`,
+  with only this file modified (a status correction, since committed as `f768434`).
 - **State earlier on 2026-11-05, after the D-5 documentation update (superseded):** HEAD
   `05a6b72`, with this file and ADRs 017, 018 and 019 still uncommitted (they are now `5f57ddb`).
 - **State earlier on 2026-11-05, after the apt fix (superseded):** HEAD `30b679f`, with the apt fix
@@ -244,6 +252,9 @@ load in an earlier session; it passed in this run. It is still flaky.
 
 - AIGSEC-001 to 016: remediated in `3023c82`, with regression tests (see the security remediation
   table in `docs/operations/production-readiness.md`). None verified on a deployed system.
+- AIGSEC-015 follow-up (2026-11-06, local, uncommitted, CI not yet run): the output guard's
+  card-number rule corrupted some UUIDs in agent tool results; boundary fix with regression tests.
+  See the AIGSEC-015 follow-up record under M10.
 - Python advisories (11, in pypdf, pyasn1, langgraph and langgraph-sdk): fixed in `bcccb20`.
   Security scanning has passed since run #77.
 - Open: the scan reports (Trivy medium and low findings, unfixed CVEs hidden by `ignore-unfixed`)
@@ -2601,6 +2612,87 @@ pending:
 The gate's failure message ("the owner has not approved these criteria or a checker (D-5)",
 pinned by `test_evidence.py`) stays literally true: the criteria and a checker were not approved.
 
+### AIGSEC-015 follow-up: output-guard UUID corruption fix record (2026-11-05 to 2026-11-06, local; not committed)
+
+Owner-reported trigger: PR #37's CI (run #171, owner-reported) failed one unit test,
+`backend/tests/unit/memory/test_memory_provenance.py::test_a_real_request_cannot_carry_document_content_along_with_it`
+(owner's summary: 1 failed, 2606 passed, 19 skipped). The CI log was **not** read here, so the
+CI failure's exact cause is **not confirmed**. **Do not record CI #171 as fixed** until a CI run
+on this change passes.
+
+**Root cause (reproduced locally; offline unit tests and scratchpad scripts):**
+- The card-number rule in `backend/app/safety/output_guard.py`,
+  `(?<![\d-])\d(?:[ -]?\d){12,18}(?![\d-])`, accepts hyphens between digits. In some UUIDs the
+  digits read across the hyphens form a Luhn-valid 13-19 digit run, for example
+  `77599839-2495-4006-91dd-…` → `[REDACTED:card_number]dd-…`.
+- The agent's tool node guards every tool result (`_guard_tool_result` in
+  `backend/app/agents/graph.py`), so search results reached the model with corrupted
+  `chunk_id`/`document_id` values.
+- `_extract_sources` (`backend/app/agents/service.py`) then called `uuid.UUID()` on a corrupted id
+  and raised `ValueError: badly formed hexadecimal UUID string`, failing the whole agent run.
+  A local reproduction showed `_extract_sources` raising `ValueError` on a corrupted UUID. The
+  exact CI #171 failure cause remains unconfirmed.
+- Measured with the application's own guard: about 0.16% of random UUID4s and of UUID5s are
+  rewritten. Production chunk ids are deterministic UUID5s, so an affected chunk would break every
+  non-streaming agent run that retrieves it. The memory provenance guard itself is deterministic
+  and was not at fault.
+
+**Fix (owner-approved):** in the `CARD_NUMBER` rule, the boundaries changed from `(?<![\d-])` /
+`(?![\d-])` to `(?<![\w-])` / `(?![\w-])`, with a short comment. No other rule, the streaming
+logic (`_DIGITS_PENDING`), the memory provenance guard and `_extract_sources` are unchanged.
+
+**Approved trade-off:** a card number directly attached to a letter or underscore (for example
+`card4111111111111111` or `id_4111…`) is no longer matched by this rule. A regression test pins
+it.
+
+**Regression tests:**
+- `backend/tests/unit/safety/test_output_guard.py`:
+  - `CARD_SHAPED_UUIDS`: 5 fixtures (2 UUID4s, 3 production-style chunk ids), each corrupted by
+    the old rule, in lower and upper case, alone, in prose and in JSON;
+  - `test_production_chunk_ids_are_untouched`: 2,000 ids from the real `compute_chunk_id`
+    (1000/150), with indexes 342, 646 and 1379 asserted equal to three fixtures;
+  - `test_random_uuid4s_are_untouched`: a fixed seed-15 sample of 2,000, which contains a fixture;
+  - `test_card_numbers_next_to_punctuation_are_redacted`: 10 cases, exact redacted text and exact
+    finding count;
+  - `test_a_card_number_glued_to_letters_is_not_matched`: the trade-off;
+  - a new streaming `CORPUS` line (the UUIDs plus a redacted card), covered by the existing
+    streamed-versus-whole-text equivalence tests.
+- `backend/tests/unit/safety/test_output_paths.py`:
+  `test_ids_in_a_tool_result_survive_the_guard_and_become_sources` runs a full agent with a search
+  result using fixture ids; the ids reach `result.sources` and the tool message unchanged, and a
+  credential in the same result is still redacted. Before the fix it failed with the same
+  `ValueError`. `_agent` gained an optional `result` argument; existing callers are unchanged.
+- Before the fix, the new tests failed against the old rule (17 failures, including the UUID tests
+  and the agent `ValueError`).
+
+**Local verification** (Windows, 2026-11-06, after the last edit; `HF_HUB_OFFLINE=1
+TRANSFORMERS_OFFLINE=1`):
+
+| Command | Result |
+|---|---|
+| `uv run --offline pytest backend/tests/unit/safety/test_output_guard.py backend/tests/unit/safety/test_output_paths.py -q -p no:cacheprovider -k "not a2a_specialists"` | **89 passed, 1 deselected** (the deselected test starts the app lifespan) |
+| `uv run --offline ruff check .` | All checks passed! |
+| `uv run --offline ruff format --check .` | 535 files already formatted |
+| `git diff --check` | passed (exit 0) |
+
+- Earlier in the same work (before the final test-comment corrections, no code change since):
+  `backend/tests/unit/memory` 84 passed (endpoint file excluded); `test_memory_provenance.py`
+  20 of 20 runs passed; `backend/tests/unit/agents` 138 passed; pyright 0 errors on the 3 files.
+- **Disclosure:** two early runs of `test_output_paths.py` included the existing
+  `test_an_a2a_specialists_answer_is_redacted_before_it_leaves`, whose `client` fixture runs the
+  app lifespan (embedding warm-up). The Hugging Face offline flags were set; Hub contact is not
+  expected but was not proven. Later runs deselected it.
+- **Not run:** the full backend suite, the integration suite, GitHub CI.
+
+**Still pending:**
+- **CI verification** on PR #37 after the owner commits and pushes. CI #171 is **not** recorded as
+  fixed.
+- **Out of scope and unresolved (pre-existing, unchanged by this fix):** a space-separated card
+  number directly after an opening bracket or quote, such as `(4111 1111 1111 1111)`, is not
+  redacted. The streaming hold rule `_DIGITS_PENDING` only holds digit runs that start after
+  whitespace, so the text is cut into pieces too short to match. Verified the same before and after
+  this patch; a fix needs a separate owner decision.
+
 ### M10 acceptance criteria (targets, not results)
 
 - **Contrast (WCAG 2.2 AA):** 4.5:1 for normal text, and 3:1 for interface components and
@@ -2700,6 +2792,8 @@ pinned by `test_evidence.py`) stays literally true: the criteria and a checker w
     record.) Still to decide: the decision 9 deviation, the Inter font, agent citations (T9) and
     PDF viewing (`pdfjs-dist`);
   - decide the open review findings L2–L6 and L9;
+  - (Added 2026-11-06.) review, commit and push the AIGSEC-015 follow-up fix (3 files), then
+    confirm the PR #37 CI run; see the AIGSEC-015 follow-up record;
   - (Done 2026-11-04: the flaky reduced-motion cursor test is fixed; see the follow-up record.)
   - (Done 2026-11-04: the follow-up findings F1–F3 are fixed; see the F1–F3 record.)
 
