@@ -21,6 +21,7 @@ from app.rag.service import NO_CONTEXT_RESPONSE, RAGService
 
 from ..services.doubles import FakeConversationRepository, FakeMessageRepository, FakeSession
 from .doubles import (
+    FakeCitationRepository,
     FakeDocumentRepositoryForRAG,
     FakeRetrievalStrategy,
     ScriptedRAGGateway,
@@ -63,6 +64,7 @@ def make_service(
         conversations=conversations,  # type: ignore[arg-type]
         messages=messages,  # type: ignore[arg-type]
         documents=documents,  # type: ignore[arg-type]
+        citations=FakeCitationRepository(messages),  # type: ignore[arg-type]
     )
     return service, conversations, messages, session
 
@@ -280,9 +282,11 @@ async def test_streaming_yields_chunks_and_final_chunk_carries_sources() -> None
     ]
 
     assert len(received) == 2
-    _conv_id, first_chunk, first_sources = received[0]
-    _conv_id, final_chunk, final_sources = received[1]
+    _conv_id, first_chunk, first_sources, first_invalid, first_message_id = received[0]
+    _conv_id, final_chunk, final_sources, final_invalid, final_message_id = received[1]
     assert first_sources is None
+    assert first_invalid is None
+    assert final_invalid == ()
     assert final_chunk.is_final is True
     assert final_sources is not None
     assert len(final_sources) == 1
@@ -304,10 +308,11 @@ async def test_streaming_no_context_yields_single_final_chunk_without_calling_ll
     ]
 
     assert len(received) == 1
-    _conv_id, chunk, sources = received[0]
+    _conv_id, chunk, sources, invalid, _message_id = received[0]
     assert chunk.delta == NO_CONTEXT_RESPONSE
     assert chunk.is_final is True
     assert sources == []
+    assert invalid == ()
     assert gateway.stream_calls == []
 
 
@@ -323,3 +328,102 @@ async def test_streaming_llm_error_rolls_back_session_and_reraises() -> None:
             pass
 
     assert session.rollback_calls == 1
+
+
+# -- M10.4 T2: passage metadata and invalid citations reach the sources --------------------------
+
+
+async def test_answer_sources_carry_the_retrieved_chunk_id_and_an_untruncated_passage() -> None:
+    results = [make_result(content="first"), make_result(content="second")]
+    gateway = ScriptedRAGGateway(completion=make_completion(content="Cited [S1] and [S2]."))
+    service, *_rest = make_service(gateway=gateway, strategy=FakeRetrievalStrategy(results=results))
+
+    answer = await service.answer(
+        conversation_id=None, message="question", model_role=ModelRole.PRIMARY
+    )
+
+    assert [s.chunk_id for s in answer.sources] == [r.chunk_id for r in results]
+    assert [s.passage_truncated for s in answer.sources] == [False, False]
+
+
+async def test_answer_marks_the_first_source_truncated_when_the_budget_cuts_it() -> None:
+    results = [make_result(content="x" * 5000), make_result(content="never fits")]
+    gateway = ScriptedRAGGateway(completion=make_completion(content="Cited [S1]."))
+    service, *_rest = make_service(
+        gateway=gateway,
+        strategy=FakeRetrievalStrategy(results=results),
+        settings=make_settings(rag_max_context_chars=100),
+    )
+
+    answer = await service.answer(
+        conversation_id=None, message="question", model_role=ModelRole.PRIMARY
+    )
+
+    # Source 1 was cut; source 2 did not fit and is not listed at all.
+    assert [(s.source_id, s.passage_truncated) for s in answer.sources] == [("S1", True)]
+    assert answer.sources[0].chunk_id == results[0].chunk_id
+    assert answer.retrieval.context_truncated is True  # the context-wide flag is unchanged
+
+
+async def test_stream_final_sources_carry_chunk_id_and_passage_truncation() -> None:
+    results = [make_result(content="x" * 5000)]
+    gateway = ScriptedRAGGateway(stream_chunks=[StreamChunk(delta="Cited [S1].", is_final=True)])
+    service, *_rest = make_service(
+        gateway=gateway,
+        strategy=FakeRetrievalStrategy(results=results),
+        settings=make_settings(rag_max_context_chars=100),
+    )
+
+    received = [
+        item
+        async for item in service.answer_stream(
+            conversation_id=None, message="question", model_role=ModelRole.PRIMARY
+        )
+    ]
+
+    (_conv_id, _chunk, sources, invalid, _message_id) = received[-1]
+    assert sources is not None
+    assert [(s.chunk_id, s.passage_truncated, s.cited) for s in sources] == [
+        (results[0].chunk_id, True, True)
+    ]
+    assert invalid == ()
+
+
+async def test_stream_reports_removed_citations_on_the_final_chunk_only() -> None:
+    chunks = [
+        StreamChunk(delta="Claim [S9] here"),
+        StreamChunk(delta=" and [S1].", is_final=True, finish_reason="stop"),
+    ]
+    service, _c, messages, _s = make_service(
+        gateway=ScriptedRAGGateway(stream_chunks=chunks),
+        strategy=FakeRetrievalStrategy(results=[make_result()]),
+    )
+
+    received = [
+        item
+        async for item in service.answer_stream(
+            conversation_id=None, message="question", model_role=ModelRole.PRIMARY
+        )
+    ]
+
+    assert [item[3] for item in received] == [None, ("S9",)]
+    assert "S9" not in messages.messages[-1].content
+
+
+async def test_stream_still_saves_the_reply_only_after_the_final_chunk() -> None:
+    """T2 changes what the final chunk carries, not when anything is saved."""
+    chunks = [StreamChunk(delta="Answer "), StreamChunk(delta="[S1].", is_final=True)]
+    service, _c, messages, _s = make_service(
+        gateway=ScriptedRAGGateway(stream_chunks=chunks),
+        strategy=FakeRetrievalStrategy(results=[make_result()]),
+    )
+
+    saved_when_each_chunk_was_yielded = []
+    async for _id, _chunk, _sources, _invalid, _mid in service.answer_stream(
+        conversation_id=None, message="question", model_role=ModelRole.PRIMARY
+    ):
+        saved_when_each_chunk_was_yielded.append(len(messages.messages))
+
+    # Only the user's message exists while chunks are yielded; the reply is saved afterwards.
+    assert saved_when_each_chunk_was_yielded == [1, 1]
+    assert [m.content for m in messages.messages] == ["question", "Answer [S1]."]

@@ -242,14 +242,54 @@ review for sensitive actions), not a complete solution.
 ### Conversation integration: no duplicated persistence logic
 
 `RAGService` reuses `ConversationRepository`/`MessageRepository` directly
-(the same repositories `ChatService` uses) and mirrors
-`ChatService`'s atomicity: one commit per request via
-`app.db.session.get_session`'s ambient commit/rollback for the
-non-streaming endpoint, and an explicit `session.rollback()` before
-re-raising on a mid-stream `LLMError` for the streaming endpoint (the API
-layer catches `LLMError` there to emit a clean terminal SSE event instead
-of propagating, so the ambient rollback never fires on its own — identical
-reasoning to `ChatService.stream_message`). The ~6-line
+(the same repositories `ChatService` uses). Its atomicity: everything a
+turn writes (the conversation if new, the user message, the assistant
+reply, its citation references, the conversation's `updated_at`) is one
+transaction.
+
+**Commit ownership (updated 2026-11-04, M10 review finding M1).** At first
+`RAGService` relied, like `ChatService`, on
+`app.db.session.get_session`'s ambient commit. That commit runs only after
+the response body has been sent, so a client could receive the reply's
+`message_id` (and, on the stream, `[DONE]`) before the reply and its
+citations were committed (ADR 018). `RAGService` now **commits the
+transaction itself** (`_commit_reply`), immediately after the reply, its
+citations and the conversation touch are saved, on all four paths:
+- the JSON answer, before returning;
+- the JSON no-context answer, before returning;
+- the streamed answer, after the final chunk and before the generator ends, so the route's
+  `[DONE]` follows the commit;
+- the streamed no-context answer, before yielding its only item.
+
+`get_session`'s commit afterwards finds nothing left to commit.
+
+**Rollback** is unchanged:
+- an exception before the commit still reaches `get_session`, which rolls back;
+- a mid-stream `LLMError` still triggers an explicit `session.rollback()` before re-raising (the
+  API layer catches `LLMError` there to emit a clean terminal SSE event instead of propagating, so
+  the ambient rollback never fires on its own; identical reasoning to `ChatService.stream_message`);
+- if the commit itself fails, the error reaches the caller before `[DONE]` or the JSON response,
+  and the request session is expected to roll back.
+
+**Evidence, kept apart (2026-11-04):**
+- **Unit tests with test doubles** (`tests/unit/rag/test_reply_commit_ordering.py`, run and
+  passing) show:
+  - the ordering: commit after the save and before the generator ends; `[DONE]` only after it;
+  - no `[DONE]` after a failed commit;
+  - an explicit rollback on a model failure.
+- **Database-backed tests** (the local `aegis_test` at migration `0009`, 2026-11-04, integration
+  suite 123 passed) show the normal paths working against PostgreSQL with the service-owned
+  commit: `test_rag_flow.py` and the citation isolation suite.
+- **Not yet verified against a real database:** that a commit which actually FAILS on the server
+  leaves nothing behind. No integration test makes the server reject a commit. That `get_session`
+  rolls back afterwards is the expected behaviour (its `except` branch, or a failed second commit
+  followed by that rollback), not an observed result.
+
+`ChatService` and the agents still use the ambient commit.
+
+Callers must not expect to add further writes to the same transaction after
+`answer` or `answer_stream` returns: it is already committed. The only
+callers are the two RAG routes, which write nothing afterwards. The ~6-line
 `_get_or_create_conversation` helper is intentionally duplicated from
 `ChatService` rather than extracted into a shared base class or repository
 method: it's small enough that "three similar lines" outweighs introducing

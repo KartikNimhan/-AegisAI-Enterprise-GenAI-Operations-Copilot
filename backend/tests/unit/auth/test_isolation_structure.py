@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.core.security import get_access_scope
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
+from app.db.repositories.citation_repository import CitationRepository
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
 from app.db.repositories.document_repository import DocumentRepository
@@ -34,6 +35,7 @@ BUSINESS_REPOSITORIES = [
     ConversationRepository,
     MessageRepository,
     RetrievalRepository,
+    CitationRepository,
 ]
 
 

@@ -40,7 +40,7 @@ env:
   CLUSTER_NAME: aegis-smoke
   IMAGE_TAG: smoke
   # The newest migration in backend/alembic/versions (a unit test keeps this in step).
-  EXPECTED_ALEMBIC_HEAD: "0008"
+  EXPECTED_ALEMBIC_HEAD: "0009"
 
 jobs:
   smoke:

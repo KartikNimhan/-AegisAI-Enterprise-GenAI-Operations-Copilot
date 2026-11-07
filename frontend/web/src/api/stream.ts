@@ -27,6 +27,9 @@ export interface StreamSource {
   page: number | null
   similarity: number
   cited: boolean
+  /** M10.4: the retrieved chunk, and whether the context budget cut its passage short. */
+  chunk_id?: string
+  passage_truncated?: boolean
 }
 
 export interface StreamChunk {
@@ -34,6 +37,10 @@ export interface StreamChunk {
   delta: string
   is_final: boolean
   sources: StreamSource[] | null
+  /** Final chunk only (M10.4): the saved message's id; valid once the stream ends with [DONE]. */
+  message_id?: string | null
+  /** Final chunk only: citation ids the model wrote that were not retrieved (removed). */
+  invalid_citations?: string[] | null
 }
 
 export interface StreamRequest {
@@ -182,6 +189,8 @@ async function streamConversation(
       delta: body.delta ?? '',
       is_final: Boolean(body.is_final),
       sources: body.sources ?? null,
+      message_id: typeof body.message_id === 'string' ? body.message_id : null,
+      invalid_citations: Array.isArray(body.invalid_citations) ? body.invalid_citations : null,
     })
     return false
   })

@@ -34,15 +34,14 @@ interface PageCase {
 
 const PAGES: PageCase[] = [
   { path: '/', title: 'Copilot', ready: 'No messages yet', account: MEMBER_ACCOUNT },
+  { path: '/overview', title: 'Overview', ready: '[MOCK] What can I expense on a trip?', account: MEMBER_ACCOUNT },
   { path: '/conversations', title: 'Conversations', ready: '[MOCK] What can I expense on a trip?', account: MEMBER_ACCOUNT },
   {
     path: '/documents',
     title: 'Documents',
     ready: '[MOCK] Travel policy.pdf',
     account: MEMBER_ACCOUNT,
-    // Known (M10.0 baseline; fix in M10.8): the "Actions" column header has an aria-label but no
-    // text content (`<th aria-label="Actions" />` in DocumentsPage.tsx).
-    known: ['empty-table-header'],
+    // Fixed in M10.8: the "Actions" column header now has (visually hidden) text.
   },
   { path: '/memory', title: 'Memory', ready: '[MOCK] Prefers short answers', account: MEMBER_ACCOUNT },
   { path: '/operations', title: 'Operations', ready: 'Total documents', account: MEMBER_ACCOUNT },

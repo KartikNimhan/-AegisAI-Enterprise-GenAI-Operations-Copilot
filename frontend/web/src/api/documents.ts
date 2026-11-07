@@ -1,6 +1,6 @@
 /** Wraps Milestone 3's `/api/v1/documents` endpoints (app.api.schemas.documents). */
 
-import { BackendError, requestJson } from './client'
+import { BackendError, parseErrorResponse, requestJson } from './client'
 import { authHeaders, notifyUnauthorized } from '../auth/token'
 import { getApiBaseUrl } from '../config'
 
@@ -152,4 +152,48 @@ export async function getDocumentChunks(
 
 export async function getEmbeddingStatus(documentId: string): Promise<EmbeddingStatus | null> {
   return requestJson<EmbeddingStatus>(`/api/v1/documents/${documentId}/embeddings`)
+}
+
+/** One document's details; `null` never means "missing": a missing or unreadable one is a 404. */
+export async function getDocument(documentId: string, signal?: AbortSignal): Promise<DocumentRecord> {
+  const document = await requestJson<DocumentRecord>(`/api/v1/documents/${encodeURIComponent(documentId)}`, { signal })
+  if (!document) throw new Error('The backend returned an empty response.')
+  return document
+}
+
+/** The most chunks the backend returns per request (`limit` is capped at 200). */
+export const MAX_CHUNKS_PER_REQUEST = 200
+
+/**
+ * Downloads the original uploaded file (M10.6, `GET /documents/{id}/file`) and hands it to the
+ * browser as a download. The file is never opened inside the application: it is untrusted content,
+ * and the backend sends it as an attachment with a sandboxing policy. `filename` is the name the
+ * caller already knows from the document's details.
+ */
+export async function downloadDocumentFile(documentId: string, filename: string): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${getApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/file`, {
+      headers: authHeaders(),
+    })
+  } catch {
+    throw new BackendError('Could not reach the backend. Check that it is running.', { code: 'network_error' })
+  }
+  if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized()
+    throw await parseErrorResponse(response)
+  }
+  const url = URL.createObjectURL(await response.blob())
+  try {
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.rel = 'noopener'
+    document.body.append(link)
+    link.click()
+    link.remove()
+  } finally {
+    // Give the browser a moment to start the download before the object URL is released.
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
 }

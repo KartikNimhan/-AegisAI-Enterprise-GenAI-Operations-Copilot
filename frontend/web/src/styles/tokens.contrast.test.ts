@@ -5,10 +5,9 @@
  * the dark theme (`[data-theme='dark']`, which must match the `prefers-color-scheme: dark` block),
  * and computes the WCAG contrast ratio of each colour pair the CSS modules actually use.
  *
- * Every pair records its CURRENT result per theme. The M10.0 baseline has known failures, listed
- * here as 'fail' with the milestone that fixes them (M10.1, new tokens). The test fails when a
- * result differs from what is recorded, in either direction: a regression fails, and so does a
- * fixed pair that is still marked 'fail', so the list must be updated as issues are fixed.
+ * Every pair records its expected result per theme. Since M10.1 (charcoal and indigo palette,
+ * M10 decision 8) every pair passes in both themes; the test fails if any result changes, so a
+ * token edit that breaks contrast is caught before it ships.
  * A calculation is not a browser test: Playwright and axe check rendered pages separately.
  */
 import { describe, expect, it } from 'vitest'
@@ -74,34 +73,44 @@ interface Pair {
 }
 
 const PASS: Record<Theme, Outcome> = { light: 'pass', dark: 'pass' }
-// Known M10.0 baseline failures; all are fixed by the new tokens planned for M10.1.
-const DARK_FAILS: Record<Theme, Outcome> = { light: 'pass', dark: 'fail' }
-const LIGHT_FAILS: Record<Theme, Outcome> = { light: 'fail', dark: 'pass' }
-const BOTH_FAIL: Record<Theme, Outcome> = { light: 'fail', dark: 'fail' }
 
 const PAIRS: Pair[] = [
   { use: 'body text on the page', foreground: '--text-primary', background: '--surface-page', minimum: 4.5, expected: PASS },
   { use: 'body text on cards', foreground: '--text-primary', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'body text on raised panels', foreground: '--text-primary', background: '--surface-raised', minimum: 4.5, expected: PASS },
+  { use: 'body text on the sidebar', foreground: '--text-primary', background: '--surface-sidebar', minimum: 4.5, expected: PASS },
+  { use: 'body text on a hovered row', foreground: '--text-primary', background: '--surface-hover', minimum: 4.5, expected: PASS },
+  { use: 'body text on a selected item', foreground: '--text-primary', background: '--surface-selected', minimum: 4.5, expected: PASS },
   { use: 'secondary text (buttons, navigation, subtitles)', foreground: '--text-secondary', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'secondary text on the sidebar', foreground: '--text-secondary', background: '--surface-sidebar', minimum: 4.5, expected: PASS },
   { use: 'secondary text on sunken surfaces (Uploaded pill)', foreground: '--text-secondary', background: '--surface-sunken', minimum: 4.5, expected: PASS },
-  { use: 'muted text on cards (meta, hints)', foreground: '--text-muted', background: '--surface-card', minimum: 4.5, expected: LIGHT_FAILS },
-  { use: 'muted text on the page', foreground: '--text-muted', background: '--surface-page', minimum: 4.5, expected: LIGHT_FAILS },
-  { use: 'muted text on sunken surfaces (Unknown badge)', foreground: '--text-muted', background: '--surface-sunken', minimum: 4.5, expected: BOTH_FAIL },
-  { use: 'links on the page', foreground: '--accent-600', background: '--surface-page', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'links on cards', foreground: '--accent-600', background: '--surface-card', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'active navigation item', foreground: '--accent-700', background: '--accent-50', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'Processing pill', foreground: '--accent-600', background: '--accent-50', minimum: 4.5, expected: DARK_FAILS },
+  { use: 'muted text on cards (meta, hints)', foreground: '--text-muted', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'muted text on the page', foreground: '--text-muted', background: '--surface-page', minimum: 4.5, expected: PASS },
+  { use: 'muted text on sunken surfaces (Unknown badge)', foreground: '--text-muted', background: '--surface-sunken', minimum: 4.5, expected: PASS },
+  { use: 'muted text on raised panels', foreground: '--text-muted', background: '--surface-raised', minimum: 4.5, expected: PASS },
+  { use: 'links on the page', foreground: '--accent-600', background: '--surface-page', minimum: 4.5, expected: PASS },
+  { use: 'links on cards', foreground: '--accent-600', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'links on raised panels', foreground: '--accent-600', background: '--surface-raised', minimum: 4.5, expected: PASS },
+  { use: 'active navigation item', foreground: '--accent-700', background: '--accent-50', minimum: 4.5, expected: PASS },
+  { use: 'Processing pill', foreground: '--accent-600', background: '--accent-50', minimum: 4.5, expected: PASS },
   { use: 'user message bubble, logo, send button', foreground: '--text-on-accent', background: '--accent-500', minimum: 4.5, expected: PASS },
-  { use: 'primary button (sign-in screen)', foreground: '--text-on-accent', background: '--accent-600', minimum: 4.5, expected: PASS },
-  { use: 'Healthy / Processed badge', foreground: '--success-500', background: '--success-50', minimum: 4.5, expected: BOTH_FAIL },
-  { use: 'Degraded badge', foreground: '--warning-500', background: '--warning-50', minimum: 4.5, expected: BOTH_FAIL },
-  { use: 'warning notes on cards', foreground: '--warning-500', background: '--surface-card', minimum: 4.5, expected: BOTH_FAIL },
-  { use: 'Unavailable / Failed badge', foreground: '--danger-500', background: '--danger-50', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'error text on the page', foreground: '--danger-500', background: '--surface-page', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'error text on cards', foreground: '--danger-500', background: '--surface-card', minimum: 4.5, expected: DARK_FAILS },
-  { use: 'field borders (composer, text areas)', foreground: '--border-default', background: '--surface-card', minimum: 3, expected: BOTH_FAIL },
-  { use: 'focus ring on cards', foreground: '--accent-500', background: '--surface-card', minimum: 3, expected: DARK_FAILS },
-  { use: 'focus ring on the page', foreground: '--accent-500', background: '--surface-page', minimum: 3, expected: PASS },
+  { use: 'primary button', foreground: '--text-on-accent', background: '--accent-solid', minimum: 4.5, expected: PASS },
+  { use: 'primary button, hovered', foreground: '--text-on-accent', background: '--accent-solid-hover', minimum: 4.5, expected: PASS },
+  { use: 'Healthy / Processed badge', foreground: '--success-500', background: '--success-50', minimum: 4.5, expected: PASS },
+  { use: 'Degraded badge', foreground: '--warning-500', background: '--warning-50', minimum: 4.5, expected: PASS },
+  { use: 'warning notes on cards', foreground: '--warning-500', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'Unavailable / Failed badge', foreground: '--danger-500', background: '--danger-50', minimum: 4.5, expected: PASS },
+  { use: 'error text on the page', foreground: '--danger-500', background: '--surface-page', minimum: 4.5, expected: PASS },
+  { use: 'error text on cards', foreground: '--danger-500', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'info badge', foreground: '--info-500', background: '--info-50', minimum: 4.5, expected: PASS },
+  { use: 'citation marker', foreground: '--citation-text', background: '--citation-bg', minimum: 4.5, expected: PASS },
+  { use: 'citation marker on cards', foreground: '--citation-text', background: '--surface-card', minimum: 4.5, expected: PASS },
+  { use: 'field borders (composer, text areas) on cards', foreground: '--border-default', background: '--surface-card', minimum: 3, expected: PASS },
+  { use: 'field borders on the page', foreground: '--border-default', background: '--surface-page', minimum: 3, expected: PASS },
+  { use: 'focus ring on cards', foreground: '--focus-ring', background: '--surface-card', minimum: 3, expected: PASS },
+  { use: 'focus ring on the page', foreground: '--focus-ring', background: '--surface-page', minimum: 3, expected: PASS },
+  { use: 'focus ring on raised panels', foreground: '--focus-ring', background: '--surface-raised', minimum: 3, expected: PASS },
+  { use: 'focus ring on the sidebar', foreground: '--focus-ring', background: '--surface-sidebar', minimum: 3, expected: PASS },
 ]
 
 describe('design tokens', () => {

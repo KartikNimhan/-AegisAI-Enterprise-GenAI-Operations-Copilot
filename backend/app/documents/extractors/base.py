@@ -47,6 +47,12 @@ class ExtractionResult:
 
     pages: list[str]
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Headings of formats whose headings are not visible in the text (DOCX styles), in document
+    # order, as `(ordinal, prefix)`: the heading's first line is the `ordinal`-th non-blank line
+    # of `text` (from 0), and `prefix` is the start of that line, used only to verify the match
+    # (`app.documents.sections.positioned_headings`). Kept out of `metadata` because that is
+    # copied into the document's metadata, which the API returns (M10.9).
+    headings: tuple[tuple[int, str], ...] = ()
 
     @property
     def text(self) -> str:

@@ -4,6 +4,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   padding: 0 var(--space-6);
   background: var(--surface-card);
   border-bottom: 1px solid var(--border-subtle);
@@ -34,4 +35,56 @@
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+/* Below 768 px: the menu button appears and the e-mail address gives way. The bar may wrap onto
+   a second row, so no control is hidden or overlaps another (WCAG 1.4.10). */
+@media (max-width: 767px) {
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-height);
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .right {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .menu {
+    display: inline-flex;
+  }
+
+  .user {
+    display: none;
+  }
 }

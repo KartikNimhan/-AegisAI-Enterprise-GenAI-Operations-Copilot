@@ -17,8 +17,64 @@
   padding: var(--space-6);
 }
 
-@media (max-width: 720px) {
+/* The focus target of the skip link: no outline on the whole content area. */
+.content:focus {
+  outline: none;
+}
+
+/* Visible only while it has keyboard focus (WCAG 2.4.1, 2.4.7). */
+.skipLink {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 100;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.skipLink:focus {
+  transform: none;
+}
+
+.backdrop {
+  display: none;
+}
+
+/* Below 768 px the sidebar is a drawer. */
+@media (max-width: 767px) {
   .content {
     padding: var(--space-4);
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(var(--sidebar-width), 85vw);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition:
+      transform var(--duration-base) var(--easing-standard),
+      visibility 0s linear var(--duration-base);
+  }
+
+  .drawerOpen .sidebar {
+    transform: none;
+    visibility: visible;
+    transition: transform var(--duration-base) var(--easing-standard);
+  }
+
+  .drawerOpen .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--surface-overlay);
   }
 }

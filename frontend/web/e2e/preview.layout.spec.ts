@@ -63,17 +63,21 @@ for (const theme of THEMES) {
           await openPreview(page, target, { visible: false })
           if (!(await page.getByText(target.ready).first().isVisible())) hidden.push(target.route)
         }
-        // Known M10.0 gap at 375 px: with the 240 px sidebar the content area is 135 px, and the
-        // shared list row (ListPages.module.css) lets its action buttons squeeze the text column to
-        // 0 px, so Conversations titles and Memory notes cannot be read. Fix: M10.2 (mobile drawer)
-        // and M10.8 (list layout). Any other hidden content fails.
-        expect(hidden).toEqual(width === 375 ? ['/conversations', '/memory'] : [])
+        // Fixed in M10.2: at 375 px Conversations titles and Memory notes were squeezed to 0 px by
+        // the fixed 240 px sidebar; with the drawer every page's content is visible at every width.
+        expect(hidden).toEqual([])
       })
 
       test('every page is reachable from the navigation', async ({ page }) => {
         await openPreview(page, COPILOT)
         const nav = page.getByRole('navigation')
         for (const target of PREVIEW_PAGES) {
+          // Below 768 px the navigation is a drawer behind the Menu button (M10.2); it is hidden
+          // until opened, and following a link closes it again.
+          if (width < 768) {
+            await expect(nav).toBeHidden()
+            await page.getByRole('button', { name: 'Open navigation' }).click()
+          }
           await nav.getByRole('link', { name: target.title }).click()
           await expect(page.getByRole('heading', { level: 1 })).toHaveText(target.title)
         }
@@ -83,13 +87,10 @@ for (const theme of THEMES) {
         await openPreview(page, COPILOT)
         const box = await page.getByRole('main').boundingBox()
         if (!box) throw new Error('<main> has no layout box')
-        if (width === 375) {
-          // Known M10.0 gap: the fixed 240 px sidebar leaves exactly 135 px (375 - 240) for the
-          // content, below the 320 px minimum. Fix: M10.2 (mobile drawer); then assert >= 320 here.
-          expect(box.width).toBe(135)
-        } else {
-          expect(box.width).toBeGreaterThanOrEqual(320)
-        }
+        // Fixed in M10.2: below 768 px the sidebar is a drawer, so the content gets the full width
+        // (it was 135 px at 375 px). At least 320 px at every width.
+        expect(box.width).toBeGreaterThanOrEqual(320)
+        if (width < 768) expect(box.width).toBe(width)
       })
     })
   }
@@ -108,7 +109,7 @@ for (const theme of THEMES) {
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Documents')
     })
 
-    test('every tab stop on the Copilot page shows a focus indicator, except the known composer gap', async ({ page }) => {
+    test('every tab stop on the Copilot page shows a focus indicator', async ({ page }) => {
       await openPreview(page, COPILOT)
       const missing: string[] = []
       const seen = new Set<string>()
@@ -121,44 +122,86 @@ for (const theme of THEMES) {
         if (!focused.visible) missing.push(key)
       }
       expect(seen.size).toBeGreaterThan(3)
-      // Known M10.0 gap: the message box sets `outline: none` with no replacement
-      // (Composer.module.css). Fix: M10.1/M10.3. Any other element without a focus indicator fails.
-      // This checks that an indicator EXISTS, not its contrast (the token test covers the ring colour).
-      expect(missing).toEqual(['textarea:Message'])
+      // Fixed in M10.1: the message box no longer removes its outline. Any element without a focus
+      // indicator fails. This checks that an indicator EXISTS, not its contrast (the token test
+      // covers the ring colour).
+      expect(seen.has('textarea:Message')).toBe(true)
+      expect(missing).toEqual([])
     })
 
-    test('first tab stop — known gap: no skip link yet, Tab goes straight to the navigation', async ({ page }) => {
+    test('the first tab stop is a skip link that appears on focus and moves focus to <main>', async ({ page }) => {
       await openPreview(page, COPILOT)
-      // Known M10.0 gap: there is no "skip to main content" link. Fix: M10.2. When it is added,
-      // this test fails and must be changed to assert the skip link is the first tab stop.
-      await expect(page.getByRole('link', { name: /skip to/i })).toHaveCount(0)
+      // Fixed in M10.2 (WCAG 2.4.1): the skip link comes first, is visible while focused, and
+      // Enter moves focus to the main content.
       await page.keyboard.press('Tab')
-      await expect(page.getByRole('navigation').getByRole('link', { name: 'Copilot' })).toBeFocused()
+      const skip = page.getByRole('link', { name: 'Skip to main content' })
+      await expect(skip).toBeFocused()
+      await expect(skip).toBeInViewport()
+      await page.keyboard.press('Enter')
+      await expect(page.getByRole('main')).toBeFocused()
+      // The next Tab continues inside the main content, not back in the navigation.
+      await page.keyboard.press('Tab')
+      expect(await page.evaluate(() => !!document.activeElement?.closest('main'))).toBe(true)
     })
   })
 
   test.describe(`${theme} theme, reduced motion`, () => {
     test.use({ colorScheme: theme, reducedMotion: 'reduce', viewport: { width: 1280, height: 900 } })
 
-    test('known gap: the sidebar still animates its width (0.15s) under reduced motion', async ({ page }) => {
+    test('the sidebar does not animate its width under reduced motion', async ({ page }) => {
       await openPreview(page, COPILOT)
       expect(await reducedMotionIsEmulated(page)).toBe(true)
-      // Known M10.0 gap: the transition ignores prefers-reduced-motion. Fix: M10.1; then assert '0s'.
+      // Fixed in M10.1 (index.css): every transition finishes immediately under reduced motion.
       const duration = await page.locator('aside').evaluate((el) => getComputedStyle(el).transitionDuration)
-      expect(duration).toBe('0.15s')
+      expect(parseFloat(duration)).toBeLessThan(0.001)
     })
 
-    test('known gap: the streaming cursor still blinks under reduced motion', async ({ page }) => {
+    test('the streaming cursor does not blink under reduced motion', async ({ page }) => {
       await openPreview(page, COPILOT)
       expect(await reducedMotionIsEmulated(page)).toBe(true)
+      // The cursor exists only while the answer streams (a few hundred ms in preview mode). Finding
+      // it and then reading its style in a second round trip raced the end of the stream (NaN or a
+      // timeout when it had already gone). So its style is read inside the browser, in the same
+      // task that adds it to the page, by an observer installed before the message is sent.
+      await page.evaluate(() => {
+        const win = window as unknown as { __cursorAnimation?: unknown }
+        const isCursor = (node: Node): node is HTMLElement =>
+          node instanceof HTMLElement && /(^|\s|_)cursor/.test(node.className)
+        const record = (el: HTMLElement) => {
+          const style = getComputedStyle(el)
+          win.__cursorAnimation = {
+            name: style.animationName,
+            duration: style.animationDuration,
+            count: style.animationIterationCount,
+          }
+          observer.disconnect()
+        }
+        const observer = new MutationObserver((mutations) => {
+          for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+              const found = isCursor(node)
+                ? node
+                : node instanceof HTMLElement
+                  ? node.querySelector<HTMLElement>('[class*="cursor"]')
+                  : null
+              if (found) return record(found)
+            }
+          }
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+      })
       await page.getByRole('textbox', { name: 'Message' }).fill('What can I expense on a trip?')
       await page.getByRole('button', { name: 'Send message' }).click()
       // The cursor must actually appear (a missing cursor fails here, it is not a "known" result).
-      const cursor = page.locator('[class*="cursor"]').first()
-      await cursor.waitFor()
-      // Known M10.0 gap: its `blink` animation ignores prefers-reduced-motion. Fix: M10.1/M10.3;
-      // then assert animationName is 'none'. (CSS-module names are hashed, e.g. `_blink_8jjvr_1`.)
-      expect(await cursor.evaluate((el) => getComputedStyle(el).animationName)).toMatch(/blink/)
+      const handle = await page.waitForFunction(
+        () => (window as unknown as { __cursorAnimation?: unknown }).__cursorAnimation,
+      )
+      const animation = (await handle.jsonValue()) as { name: string; duration: string; count: string }
+      // Fixed in M10.1 (index.css): the blink animation still exists but runs once, for 0.01 ms, so
+      // the cursor stays still instead of blinking.
+      expect(animation.name).toMatch(/blink/)
+      expect(parseFloat(animation.duration)).toBeLessThan(0.001)
+      expect(animation.count).toBe('1')
     })
   })
 }

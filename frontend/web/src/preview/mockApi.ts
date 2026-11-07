@@ -24,6 +24,7 @@ import {
   MOCK_SYSTEM_STATUS,
   MOCK_WORKFLOW_AGENTS,
   mockAnswerFor,
+  mockCitation,
 } from './mockData'
 
 /** Pause between streamed frames, so an answer visibly arrives word by word. */
@@ -59,6 +60,7 @@ function namedFrame(event: string, payload: unknown): string {
 }
 
 const CONVERSATION_ID = 'preview-conversation'
+const MESSAGE_ID = 'preview-message'
 
 function words(text: string): string[] {
   return text.split(' ').map((word, index) => (index === 0 ? word : ` ${word}`))
@@ -77,6 +79,9 @@ function chatStream(question: string, rag: boolean): string[] {
       delta: '',
       is_final: true,
       sources: rag ? answer.sources : null,
+      // M10.4: the RAG stream names the saved message; plain chat saves no citations.
+      message_id: rag ? MESSAGE_ID : null,
+      invalid_citations: rag ? [] : null,
     }),
   )
   frames.push('data: [DONE]\n\n')
@@ -109,8 +114,11 @@ function workflow(question: string) {
 /** The pure routing table: method + path (+ the chat question) in, canned reply out. No I/O. */
 export function previewReply(method: string, rawUrl: string, question = ''): MockReply {
   let path: string
+  let search: URLSearchParams
   try {
-    path = new URL(rawUrl, 'http://preview.invalid').pathname
+    const url = new URL(rawUrl, 'http://preview.invalid')
+    path = url.pathname
+    search = url.searchParams
   } catch {
     return { status: 404, body: NOT_IN_PREVIEW }
   }
@@ -139,12 +147,24 @@ export function previewReply(method: string, rawUrl: string, question = ''): Moc
   if (/^\/api\/v1\/documents\/[^/]+\/chunks$/.test(path)) {
     return { status: 200, body: { items: MOCK_CHUNKS, total: MOCK_CHUNKS.length } }
   }
+  // The preview holds no files: a download is answered "not found", never with made-up bytes.
+  if (/^\/api\/v1\/documents\/[^/]+\/file$/.test(path)) return { status: 404, body: NOT_IN_PREVIEW }
+  const documentMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path)
+  if (documentMatch) {
+    const found = MOCK_DOCUMENTS.find((document) => document.id === documentMatch[1])
+    return found ? { status: 200, body: found } : { status: 404, body: NOT_IN_PREVIEW }
+  }
   if (/^\/api\/v1\/documents\/[^/]+\/embeddings$/.test(path)) {
     return { status: 200, body: MOCK_EMBEDDING_STATUS }
   }
   if (path === '/api/v1/operations/summary') return { status: 200, body: MOCK_OPERATIONS }
   if (path === '/api/v1/system/status') return { status: 200, body: MOCK_SYSTEM_STATUS }
   if (path === '/api/v1/conversations') return { status: 200, body: MOCK_CONVERSATIONS }
+  const citation = /^\/api\/v1\/conversations\/[^/]+\/messages\/([^/]+)\/citations\/(S[1-9][0-9]{0,2})$/.exec(path)
+  if (citation) {
+    const neighbors = Number(search.get('neighbors') ?? '0')
+    return { status: 200, body: mockCitation(citation[1], citation[2], neighbors) }
+  }
   const conversation = /^\/api\/v1\/conversations\/([^/]+)$/.exec(path)
   if (conversation) {
     const found = MOCK_CONVERSATIONS.find((item) => item.id === conversation[1])

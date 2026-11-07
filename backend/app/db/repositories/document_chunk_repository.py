@@ -45,6 +45,54 @@ class DocumentChunkRepository:
         )
         return list(result.scalars().all()), total or 0
 
+    async def get_readable_with_documents(
+        self, references: list[tuple[uuid.UUID, uuid.UUID]]
+    ) -> dict[uuid.UUID, tuple[DocumentChunk, Document]]:
+        """The chunks the caller may read NOW, keyed by chunk id, for `(chunk_id, document_id)`
+        references saved earlier (M10.4 citations). A chunk counts only if it still exists, still
+        belongs to that same document, and that document passes the read filter today; anything
+        else is simply absent, so a deleted, re-shared or foreign source is indistinguishable
+        from a missing one. One query for all references.
+
+        Matching is on the exact `(chunk_id, document_id)` pair (M10 review finding L1): two
+        references to the same chunk with different documents do not collapse into one, so a
+        reference naming the wrong document never borrows the right one's result. Callers must
+        still compare the returned document with their own reference (`CitationService`)."""
+        if not references:
+            return {}
+        wanted = set(references)
+        result = await self._session.execute(
+            select(DocumentChunk, Document)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                DocumentChunk.id.in_({chunk_id for chunk_id, _document_id in wanted}),
+                self._scope.document_read_filter(Document),
+            )
+        )
+        return {
+            chunk.id: (chunk, document)
+            for chunk, document in result.all()
+            if (chunk.id, document.id) in wanted and chunk.document_id == document.id
+        }
+
+    async def list_readable_range(
+        self, document_id: uuid.UUID, *, first_index: int, last_index: int
+    ) -> list[DocumentChunk]:
+        """Chunks `first_index..last_index` (inclusive) of a document the caller may read now,
+        in order; empty if the document is not readable."""
+        result = await self._session.execute(
+            select(DocumentChunk)
+            .join(Document, Document.id == DocumentChunk.document_id)
+            .where(
+                DocumentChunk.document_id == document_id,
+                DocumentChunk.chunk_index >= first_index,
+                DocumentChunk.chunk_index <= last_index,
+                self._scope.document_read_filter(Document),
+            )
+            .order_by(DocumentChunk.chunk_index)
+        )
+        return list(result.scalars().all())
+
     async def count_by_document(self, document_id: uuid.UUID) -> int:
         total = await self._session.scalar(
             select(func.count())

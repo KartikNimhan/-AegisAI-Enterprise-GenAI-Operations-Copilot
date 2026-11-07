@@ -87,22 +87,34 @@ class RAGChatRequest(BaseModel):
 
 class RAGSourceResponse(BaseModel):
     source_id: str
+    # The retrieved chunk this source is. Ids are not secrets: every read of a chunk is checked
+    # against the caller's current access scope, never against knowledge of the id.
+    chunk_id: uuid.UUID
     document_id: uuid.UUID
     filename: str
     chunk_index: int
     page: int | None = None
     similarity: float
+    passage_truncated: bool = Field(
+        default=False,
+        description=(
+            "True when the context budget cut this source's passage short before the model saw "
+            "it. Only the first source can be cut; a source that does not fit is not listed."
+        ),
+    )
     cited: bool = False
 
     @classmethod
     def from_source(cls, source: RAGSource) -> RAGSourceResponse:
         return cls(
             source_id=source.source_id,
+            chunk_id=source.chunk_id,
             document_id=source.document_id,
             filename=source.filename,
             chunk_index=source.chunk_index,
             page=source.page_number,
             similarity=source.similarity,
+            passage_truncated=source.passage_truncated,
             cited=source.cited,
         )
 
@@ -148,6 +160,10 @@ class RAGChatResponse(BaseModel):
         default_factory=list,
         description="Citation ids the model wrote that were not retrieved sources (removed).",
     )
+    message_id: uuid.UUID | None = Field(
+        default=None,
+        description="The saved assistant message; its citations are read through this id.",
+    )
 
     @classmethod
     def from_answer(cls, result: RAGAnswer) -> RAGChatResponse:
@@ -163,16 +179,18 @@ class RAGChatResponse(BaseModel):
             finish_reason=result.finish_reason,
             request_id=result.request_id,
             invalid_citations=list(result.invalid_citations),
+            message_id=result.message_id,
         )
 
 
 class RAGChatStreamChunk(BaseModel):
     """One SSE `data:` payload for the streaming RAG endpoint.
 
-    `sources` is populated only on the final chunk (`is_final=True`) —
-    mirroring how `usage` is only populated on the final chunk of the plain
-    chat stream — since sources come from retrieval, computed once before
-    generation starts, not incrementally per token.
+    `sources` and `invalid_citations` are populated only on the final chunk
+    (`is_final=True`) — mirroring how `usage` is only populated on the final
+    chunk of the plain chat stream — since sources come from retrieval,
+    computed once before generation starts, not incrementally per token, and
+    the citation check is only complete once the whole answer has been seen.
     """
 
     conversation_id: uuid.UUID
@@ -183,3 +201,17 @@ class RAGChatStreamChunk(BaseModel):
     usage: TokenUsage | None = None
     request_id: str | None = None
     sources: list[RAGSourceResponse] | None = None
+    invalid_citations: list[str] | None = Field(
+        default=None,
+        description=(
+            "Final chunk only: citation ids the model wrote that were not retrieved sources "
+            "(removed from the streamed text). Null on every other chunk."
+        ),
+    )
+    message_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Final chunk only: the id the assistant message is saved under. The reply is saved "
+            "after the final chunk, so the id is valid once the stream ends with [DONE]."
+        ),
+    )

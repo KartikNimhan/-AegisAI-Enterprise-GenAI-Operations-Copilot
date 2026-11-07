@@ -8,6 +8,7 @@ Fake credentials are assembled at runtime (see test_output_guard.py).
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.api.v1.analyst_agent import get_analyst_agent_service
 from app.config import Settings
 from app.llm.schemas import ChatRole, ModelRole, StreamChunk, TokenUsage
 from app.main import app
+from app.rag.retrieval.schemas import RetrievalResult
 from app.rag.retrieval.service import RetrievalService
 
 from ..agents.doubles import ScriptedAgentGateway, make_final_completion, make_tool_call_completion
@@ -37,6 +39,7 @@ from ..services.doubles import (
 )
 from ..services.test_chat_service import make_completion as make_chat_completion
 from ..services.test_chat_service import make_service as make_chat_service
+from .test_output_guard import CARD_SHAPED_UUIDS
 
 SECRET = "gsk" + "_" + "Ab3" * 12
 
@@ -115,7 +118,7 @@ async def test_a_streamed_rag_answer_matches_the_stored_one_and_never_leaks() ->
 
     deltas = [
         chunk.delta
-        async for _id, chunk, _sources in service.answer_stream(
+        async for _id, chunk, _sources, _invalid, _mid in service.answer_stream(
             conversation_id=None, message="key?", model_role=ModelRole.FAST
         )
     ]
@@ -129,12 +132,14 @@ async def test_a_streamed_rag_answer_matches_the_stored_one_and_never_leaks() ->
 # -- agents -------------------------------------------------------------------------------------
 
 
-async def _agent(gateway: ScriptedAgentGateway, retrieved: str) -> AgentService:
+async def _agent(
+    gateway: ScriptedAgentGateway, retrieved: str, result: RetrievalResult | None = None
+) -> AgentService:
     settings = Settings(agent_timeout_seconds=5.0)
     registry = await build_tool_registry(
         documents=FakeDocumentRepository(),  # type: ignore[arg-type]
         retrieval=RetrievalService(
-            strategy=FakeRetrievalStrategy(results=[make_result(content=retrieved)]),
+            strategy=FakeRetrievalStrategy(results=[result or make_result(content=retrieved)]),
             settings=settings,
         ),
         settings=settings,
@@ -168,6 +173,34 @@ async def test_a_tool_result_is_redacted_before_the_model_sees_it() -> None:
     payload = json.loads(tool_message.content)  # still valid JSON with the same structure
     assert payload["success"] is True
     assert "[REDACTED:credential]" in json.dumps(payload["data"])
+
+
+async def test_ids_in_a_tool_result_survive_the_guard_and_become_sources() -> None:
+    """Regression: the card rule used to redact part of some UUIDs, so `_extract_sources` raised
+    ValueError on the corrupted chunk id and the whole run failed (reproduced locally). These ids
+    were corrupted by the earlier rule; a credential in the same result is still redacted."""
+    chunk_id, document_id = uuid.UUID(CARD_SHAPED_UUIDS[2]), uuid.UUID(CARD_SHAPED_UUIDS[0])
+    gateway = ScriptedAgentGateway(
+        effects=[
+            make_tool_call_completion(tool_name="search_knowledge_base", arguments={"query": "k"}),
+            make_final_completion("Found it."),
+        ]
+    )
+    retrieved = make_result(
+        chunk_id=chunk_id, document_id=document_id, content=f"The deploy key is {SECRET}."
+    )
+    agent = await _agent(gateway, retrieved="", result=retrieved)
+
+    result = await agent.run(conversation_id=None, message="Find the deploy key")
+
+    assert [(s.chunk_id, s.document_id) for s in result.sources] == [(chunk_id, document_id)]
+    (tool_message,) = [
+        m for m in gateway.chat_completion_calls[1]["messages"] if m.role == ChatRole.TOOL
+    ]
+    assert str(chunk_id) in tool_message.content and str(document_id) in tool_message.content
+    assert "[REDACTED:credential]" in tool_message.content
+    assert SECRET not in tool_message.content
+    assert "card_number" not in tool_message.content
 
 
 async def test_an_agent_answer_is_returned_and_stored_redacted() -> None:

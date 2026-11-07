@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
+from app.db.repositories.citation_repository import CitationRepository
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
 from app.db.repositories.document_repository import DocumentRepository
@@ -197,6 +198,7 @@ def _rag_service(
         conversations=ConversationRepository(db_session, scope),
         messages=MessageRepository(db_session, scope),
         documents=documents,
+        citations=CitationRepository(db_session, scope),
     )
 
 

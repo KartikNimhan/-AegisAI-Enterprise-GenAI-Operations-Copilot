@@ -248,8 +248,8 @@ async def test_ownership_migrations_and_backfill_in_a_throwaway_database() -> No
 
             # -- 0007 now succeeds ----------------------------------------------------------
             _alembic(url, "upgrade", "head")
-            # head is 0008 (agent memories); 0007 was applied on the way
-            assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0008"
+            # head is 0009 (message citations); 0007 and 0008 were applied on the way
+            assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0009"
             assert await _scalar(url, "SELECT count(*) FROM agent_memories") == 0
             assert await _nullable(url, "conversations", "owner_user_id") == "NO"
             assert await _nullable(url, "documents", "organization_id") == "NO"

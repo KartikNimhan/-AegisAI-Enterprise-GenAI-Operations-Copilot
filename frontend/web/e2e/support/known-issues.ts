@@ -6,10 +6,11 @@
  * The test fails if a page has any other violation, MORE affected elements, or FEWER (an
  * improvement must be recorded here, so the list only ever shrinks).
  *
- * - color-contrast (serious): text below 4.5:1, on every page in both themes. The causes are the
- *   current tokens (src/styles/tokens.contrast.test.ts lists each failing pair). Fix: M10.1.
- * - empty-table-header (minor): the Documents table's actions column header has an aria-label but
- *   no text. Fix: M10.8.
+ * - color-contrast (serious): text below 4.5:1, on every page in both themes. FIXED in M10.1
+ *   (2026-11-03): the new tokens pass every pair (src/styles/tokens.contrast.test.ts) and axe finds
+ *   no contrast violation on any page.
+ * - empty-table-header (minor): the Documents table's actions column header had an aria-label but
+ *   no text. FIXED in M10.8 (2026-11-04): it has visually hidden text.
  */
 /**
  * Horizontal overflow INSIDE the independently scrollable `<main>` element (its scrollWidth is
@@ -25,30 +26,17 @@
  * Fix: M10.2 (responsive shell: the sidebar becomes a drawer) and M10.8 (page layouts).
  */
 export const KNOWN_MAIN_OVERFLOW: Record<number, Record<string, { content: number; visible: number }>> = {
-  375: {
-    '/': { content: 422, visible: 135 },
-    '/documents': { content: 149, visible: 135 },
-    '/memory': { content: 206, visible: 135 },
-    '/operations': { content: 205, visible: 135 },
-    '/system': { content: 216, visible: 135 },
-  },
-  768: {
-    '/documents': { content: 605, visible: 528 },
-  },
+  // M10.2 (2026-11-04): the sidebar is a drawer below 768 px and the Copilot header wraps, so
+  // nothing overflows at 375 px any more. Re-measured in Chromium; the M10.0 values were
+  // 375 px: Copilot 422/135, Documents 149/135, Memory 206/135, Operations 205/135, System 216/135.
+  375: {},
+  // M10.8 (2026-11-04): the Documents table stacks when its own width is below 640 px, so it no
+  // longer overflows at 768 px (M10.0 measurement 605/528).
+  768: {},
   1280: {},
 }
 
 export const KNOWN_ISSUES: Record<string, Record<string, number>> = {
-  '/ light': { 'color-contrast': 2 },
-  '/conversations light': { 'color-contrast': 3 },
-  '/documents light': { 'color-contrast': 8, 'empty-table-header': 1 },
-  '/memory light': { 'color-contrast': 4 },
-  '/operations light': { 'color-contrast': 3 },
-  '/system light': { 'color-contrast': 5 },
-  '/ dark': { 'color-contrast': 2 },
-  '/conversations dark': { 'color-contrast': 2 },
-  '/documents dark': { 'color-contrast': 6, 'empty-table-header': 1 },
-  '/memory dark': { 'color-contrast': 2 },
-  '/operations dark': { 'color-contrast': 2 },
-  '/system dark': { 'color-contrast': 5 },
+  // M10.1 (2026-11-03): every color-contrast violation is gone in both themes. M10.8 (2026-11-04):
+  // the Documents empty-table-header is fixed too; no known axe violation remains on any page.
 }

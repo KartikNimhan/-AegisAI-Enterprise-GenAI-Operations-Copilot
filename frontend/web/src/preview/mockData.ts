@@ -127,8 +127,62 @@ export const MOCK_CONVERSATIONS = [
 
 export const MOCK_CONVERSATION_MESSAGES = [
   { id: 'm1', role: 'user', content: '[MOCK] What can I expense on a trip?', model: null, input_tokens: null, output_tokens: null, total_tokens: null, created_at: WHEN },
-  { id: 'm2', role: 'assistant', content: '[MOCK] Economy fares and capped hotel stays [S1].', model: null, input_tokens: null, output_tokens: null, total_tokens: null, created_at: WHEN },
+  {
+    id: 'm2',
+    role: 'assistant',
+    content: '[MOCK] Economy fares and capped hotel stays [S1].',
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    created_at: WHEN,
+    // A saved citation (M10.4), as the backend lists it with a reopened conversation.
+    citations: [
+      {
+        source_id: 'S1',
+        status: 'available',
+        cited: true,
+        passage_truncated: false,
+        support: 'not_verified',
+        document_id: '00000000-0000-4000-8000-000000000001',
+        chunk_id: '10000000-0000-4000-8000-000000000001',
+        filename: '[MOCK] Travel policy.pdf',
+        chunk_index: 0,
+        page: 2,
+        section: null,
+      },
+    ],
+  },
 ]
+
+/** The preview's answer to the citation endpoint (M10.4 T6): always the first mock chunk, clearly
+ * mock text, with the second chunk as its neighbour when surrounding text is requested. */
+export function mockCitation(messageId: string, sourceId: string, neighbors: number) {
+  return {
+    status: 'available',
+    message_id: messageId,
+    source_id: sourceId,
+    cited: true,
+    support: 'not_verified',
+    document_id: MOCK_DOCUMENTS[0].id,
+    chunk_id: MOCK_CHUNKS[0].id,
+    filename: MOCK_DOCUMENTS[0].filename,
+    chunk_index: 0,
+    page: 2,
+    section: null,
+    similarity: 0.91,
+    passage: { text: MOCK_CHUNKS[0].content, characters: MOCK_CHUNKS[0].content.length, truncated: false },
+    neighbors:
+      neighbors > 0
+        ? {
+            before: [],
+            after: [
+              { chunk_id: MOCK_CHUNKS[1].id, chunk_index: 1, page: 2, section: null, text: MOCK_CHUNKS[1].content },
+            ],
+          }
+        : null,
+  }
+}
 
 export const MOCK_MEMORIES = [
   {

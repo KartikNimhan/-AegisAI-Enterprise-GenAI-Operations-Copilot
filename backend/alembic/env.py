@@ -19,6 +19,7 @@ from app.domain.models import (  # noqa: F401
     Document,
     DocumentChunk,
     Message,
+    MessageCitation,
     Organization,
     User,
     UserIdentity,

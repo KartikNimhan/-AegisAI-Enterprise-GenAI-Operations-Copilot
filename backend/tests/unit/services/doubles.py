@@ -7,7 +7,7 @@ it. None of these touch a real database or the real Groq SDK.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,9 +22,20 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.rollback_calls = 0
+        self.commit_calls = 0
+        # Called on every commit, so a test can see what had been saved at that moment (M1).
+        self.on_commit: Callable[[], None] | None = None
+        self.commit_error: Exception | None = None
 
     async def rollback(self) -> None:
         self.rollback_calls += 1
+
+    async def commit(self) -> None:
+        self.commit_calls += 1
+        if self.on_commit is not None:
+            self.on_commit()
+        if self.commit_error is not None:
+            raise self.commit_error
 
 
 class FakeConversationRepository:
@@ -68,8 +79,9 @@ class FakeMessageRepository:
         content: str,
         **kwargs: Any,
     ) -> Message:
+        message_id = kwargs.pop("id", None) or uuid.uuid4()
         message = Message(
-            id=uuid.uuid4(),
+            id=message_id,
             conversation_id=conversation_id,
             role=role,
             content=content,

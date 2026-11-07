@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.repositories.chunk_embedding_repository import ChunkEmbeddingRepository
+from app.db.repositories.citation_repository import CitationRepository
 from app.db.repositories.conversation_repository import ConversationRepository
 from app.db.repositories.document_chunk_repository import DocumentChunkRepository
 from app.db.repositories.document_repository import DocumentRepository
@@ -137,6 +138,7 @@ async def test_full_pipeline_answers_using_the_real_model_and_real_pgvector(
         conversations=ConversationRepository(db_session, scope_of(db_session)),
         messages=MessageRepository(db_session, scope_of(db_session)),
         documents=document_repo,
+        citations=CitationRepository(db_session, scope_of(db_session)),
     )
 
     answer = await rag_service.answer(

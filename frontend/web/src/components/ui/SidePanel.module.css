@@ -1,0 +1,76 @@
+.layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-overlay);
+}
+
+.panel {
+  /* Reset the user-agent <dialog> styles. */
+  inset: auto;
+  margin: 0;
+  padding: 0;
+  border: none;
+  max-width: none;
+  max-height: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(var(--panel-width), 100vw);
+  height: 100%;
+  background: var(--surface-raised);
+  border-left: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.footer {
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}

@@ -65,10 +65,15 @@ class MessageRepository:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         total_tokens: int | None = None,
+        id: uuid.UUID | None = None,
     ) -> Message:
+        """`id` lets a caller fix the message's id before saving it (the streaming RAG answer
+        announces it in its final event, which is sent before the reply is saved). Omitted, the
+        model generates one, exactly as before."""
         if not await self._conversation_is_visible(conversation_id):
             raise NotFoundError(f"Conversation {conversation_id} not found")
         message = Message(
+            id=id or uuid.uuid4(),
             conversation_id=conversation_id,
             role=role,
             content=content,

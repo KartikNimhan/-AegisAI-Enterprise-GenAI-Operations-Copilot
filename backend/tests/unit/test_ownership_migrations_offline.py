@@ -53,8 +53,9 @@ def _statements(sql: str) -> list[str]:
     return [s.strip() for s in cleaned.split(";") if s.strip()]
 
 
-def test_there_is_a_single_head_and_it_is_0008() -> None:
-    assert ScriptDirectory.from_config(_config()).get_heads() == ["0008"]
+def test_there_is_a_single_head_and_it_is_0009() -> None:
+    # 0009 (message citations, M10.4 T3) is the newest migration; 0006/0007 are checked below.
+    assert ScriptDirectory.from_config(_config()).get_heads() == ["0009"]
 
 
 def test_the_chain_continues_from_the_identity_migration() -> None:

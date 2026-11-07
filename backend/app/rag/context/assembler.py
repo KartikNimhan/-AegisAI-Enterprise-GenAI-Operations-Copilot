@@ -11,6 +11,7 @@ tell where a given piece of text came from.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -18,6 +19,18 @@ from dataclasses import dataclass
 from app.rag.retrieval.schemas import RetrievalResult
 
 _BLOCK_SEPARATOR = "\n\n---\n\n"
+
+# Names the rendering `model_visible_passage` applies (marker neutralization, then a cut to the
+# recorded length). Saved with every citation (M10.4 decision 4): if the rendering ever changes,
+# this must change too, so citations saved under the old rendering read as unavailable instead of
+# showing text the model never saw.
+PASSAGE_RENDERING_VERSION = "neutralize-markers-v1"
+
+
+def passage_sha256(passage: str) -> str:
+    """SHA-256 (64 lowercase hex characters) of a passage's UTF-8 bytes."""
+    return hashlib.sha256(passage.encode("utf-8")).hexdigest()
+
 
 # Text from a document that looks like one of OUR markers: `[SOURCE 2]`, `[/SOURCE 2]`, `[S3]`,
 # `[S1, S2]`. Left alone, a document could plant a fake source boundary in the prompt, or write
@@ -41,10 +54,27 @@ def _single_line(text: str) -> str:
     return " ".join(neutralize_markers(text).split())
 
 
+def model_visible_passage(chunk_content: str, passage_chars: int) -> str:
+    """The exact passage of a chunk that the model was given: its stored content with marker
+    look-alikes neutralized, cut to the recorded length. Chunks are never edited after ingestion,
+    so the stored content plus `AssembledSource.passage_chars` is enough to rebuild it later
+    without keeping a copy of the text."""
+    if passage_chars < 0:
+        raise ValueError("passage_chars must not be negative")
+    return neutralize_markers(chunk_content)[:passage_chars]
+
+
 @dataclass(frozen=True)
 class AssembledSource:
     """One chunk that made it into the assembled context, with the
-    `source_id` the prompt and the LLM's citations both reference."""
+    `source_id` the prompt and the LLM's citations both reference.
+
+    `passage_chars` is how many characters of the chunk's neutralized content (see
+    `model_visible_passage`) the model actually received, after the source header.
+    `passage_truncated` is True when the context budget cut that passage short. Only the first
+    source can be cut; a later source that does not fit is dropped and never appears here.
+    `passage_sha256` is the SHA-256 of exactly that passage (rendered with
+    `PASSAGE_RENDERING_VERSION`), so a later rebuild can be verified (M10.4 decision 4)."""
 
     source_id: str
     chunk_id: uuid.UUID
@@ -54,6 +84,9 @@ class AssembledSource:
     page_number: int | None
     distance: float
     similarity: float
+    passage_chars: int
+    passage_truncated: bool
+    passage_sha256: str
 
 
 @dataclass(frozen=True)
@@ -80,7 +113,9 @@ class ContextAssembler:
             header_lines = [f"[SOURCE {index}]", f"Document: {_single_line(result.filename)}"]
             if result.page_number is not None:
                 header_lines.append(f"Page: {result.page_number}")
-            block = "\n".join(header_lines) + "\n\n" + neutralize_markers(result.content)
+            header = "\n".join(header_lines) + "\n\n"
+            passage = neutralize_markers(result.content)
+            block = header + passage
 
             separator_len = len(_BLOCK_SEPARATOR) if blocks else 0
             if total_chars + separator_len + len(block) > self._max_context_chars:
@@ -92,13 +127,22 @@ class ContextAssembler:
                     available = self._max_context_chars
                     block = block[:available]
                     blocks.append(block)
-                    sources.append(_to_source(source_id, result))
+                    # The cut can fall inside the header, leaving none of the passage.
+                    included = max(0, min(len(passage), available - len(header)))
+                    sources.append(
+                        _to_source(
+                            source_id,
+                            result,
+                            passage=passage[:included],
+                            passage_truncated=included < len(passage),
+                        )
+                    )
                     total_chars += len(block)
                 truncated = True
                 break
 
             blocks.append(block)
-            sources.append(_to_source(source_id, result))
+            sources.append(_to_source(source_id, result, passage=passage, passage_truncated=False))
             total_chars += separator_len + len(block)
 
         return AssembledContext(
@@ -106,7 +150,10 @@ class ContextAssembler:
         )
 
 
-def _to_source(source_id: str, result: RetrievalResult) -> AssembledSource:
+def _to_source(
+    source_id: str, result: RetrievalResult, *, passage: str, passage_truncated: bool
+) -> AssembledSource:
+    """`passage` is exactly the text of this source the model received (after the header)."""
     return AssembledSource(
         source_id=source_id,
         chunk_id=result.chunk_id,
@@ -116,4 +163,7 @@ def _to_source(source_id: str, result: RetrievalResult) -> AssembledSource:
         page_number=result.page_number,
         distance=result.distance,
         similarity=result.similarity,
+        passage_chars=len(passage),
+        passage_truncated=passage_truncated,
+        passage_sha256=passage_sha256(passage),
     )

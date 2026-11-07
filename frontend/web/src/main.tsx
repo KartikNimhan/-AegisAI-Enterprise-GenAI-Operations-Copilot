@@ -5,6 +5,10 @@ import { App } from './App.tsx'
 import { AuthGate } from './auth/AuthGate'
 import { OidcAuthProvider } from './auth/OidcAuthProvider'
 import './index.css'
+import { applyStoredThemePreference } from './theme/theme'
+
+// Before the first render, so a saved Light or Dark choice never flashes the system theme.
+applyStoredThemePreference()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
